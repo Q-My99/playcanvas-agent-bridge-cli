@@ -6,14 +6,14 @@ The core interface is the `pcbridge` command plus a local daemon and a Chrome Ma
 
 ## Install
 
-When published to npm:
+From npm:
 
 ```bash
 npm install -g playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-From this GitHub repository before npm publishing:
+From this GitHub repository for unreleased changes:
 
 ```bash
 npm install -g github:Q-My99/playcanvas-agent-bridge-cli
@@ -23,8 +23,8 @@ pcbridge install-skill --agent all
 One-shot with npx:
 
 ```bash
-npx github:Q-My99/playcanvas-agent-bridge-cli doctor
-npx github:Q-My99/playcanvas-agent-bridge-cli install-skill --agent all
+npx playcanvas-agent-bridge-cli doctor
+npx playcanvas-agent-bridge-cli install-skill --agent all
 ```
 
 ## Install the Chrome extension

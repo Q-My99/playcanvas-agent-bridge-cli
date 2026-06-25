@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
@@ -786,7 +787,19 @@ async function main(): Promise<void> {
   }
 }
 
-const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+function isCliEntrypoint(): boolean {
+  const entrypoint = process.argv[1];
+  if (!entrypoint) return false;
+
+  const modulePath = fileURLToPath(import.meta.url);
+  try {
+    return realpathSync(entrypoint) === modulePath;
+  } catch {
+    return entrypoint === modulePath;
+  }
+}
+
+const isMain = isCliEntrypoint();
 if (isMain) {
   main();
 }

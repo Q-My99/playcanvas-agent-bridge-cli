@@ -6,14 +6,14 @@
 
 ## 安装
 
-发布到 npm 后：
+从 npm 安装：
 
 ```bash
 npm install -g playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-在 npm 发布前，也可以直接从这个 GitHub 仓库安装：
+如果要测试尚未发布的改动，也可以直接从这个 GitHub 仓库安装：
 
 ```bash
 npm install -g github:Q-My99/playcanvas-agent-bridge-cli
@@ -23,8 +23,8 @@ pcbridge install-skill --agent all
 用 npx 一次性运行：
 
 ```bash
-npx github:Q-My99/playcanvas-agent-bridge-cli doctor
-npx github:Q-My99/playcanvas-agent-bridge-cli install-skill --agent all
+npx playcanvas-agent-bridge-cli doctor
+npx playcanvas-agent-bridge-cli install-skill --agent all
 ```
 
 ## 安装 Chrome 插件
