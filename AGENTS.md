@@ -6,6 +6,154 @@ This project should build a CLI-first automation bridge for controlling an alrea
 
 The important product decision: **do not make MCP the core interface**. The core should be a normal command-line tool plus a local daemon and Chrome extension. MCP can be added later as a thin adapter that shells out to the CLI, but the main implementation must be usable without any MCP client.
 
+## Current Project Progress
+
+Status as of 2026-06-25:
+
+- Git repository initialized and pushed to GitHub:
+  - `https://github.com/Q-My99/playcanvas-agent-bridge-cli`
+  - default branch: `main`
+- Package version is currently `0.2.0`.
+- The npm package has **not** been published yet. Publishing to npm remains unfinished.
+- Temporary test files should be written under project-local `./tmp/`, not `/tmp`. The `tmp/` directory is ignored by git.
+- The generated local Chrome extension lives at `~/.pcbridge/extension`. After extension source changes, run `node dist/cli.js install-extension --no-open`, then reload the unpacked extension in Chrome.
+
+Completed implementation:
+
+- TypeScript package scaffold with `pnpm`, `tsconfig`, `package.json`, and `pcbridge` bin entry.
+- Local daemon:
+  - HTTP control API for CLI commands.
+  - WebSocket endpoint for the Chrome extension.
+  - binds to `127.0.0.1:17329`.
+  - session token stored under `~/.pcbridge/session.json`.
+  - tracks multiple connected PlayCanvas Editor targets.
+  - supports `current`, `tab:<id>`, `scene:<id>`, and `project:<id>` target selection.
+- Chrome Manifest V3 extension:
+  - `MAIN` world content script for real page access to `window.editor`, `pc`, and `pcui`.
+  - isolated content script for WebSocket connection and postMessage bridge.
+  - service worker for tab metadata and generated config loading.
+  - auto-connect and reconnect to local daemon.
+  - extension manifest version is synced to package version `0.2.0`.
+- Core CLI commands:
+  - `pcbridge doctor`
+  - `pcbridge daemon start`
+  - `pcbridge daemon status`
+  - `pcbridge targets`
+  - `pcbridge eval --code/--file/--stdin`
+  - `pcbridge install-extension`
+  - `pcbridge install-skill --agent codex|claude|cursor|windsurf|all`
+- Structured entity commands:
+  - `entity list`
+  - `entity get`
+  - `entity create`
+  - `entity patch`
+  - `entity delete`
+  - `entity add-component`
+  - `entity remove-component`
+  - `entity set-material`
+  - `entity add-script`
+- Structured asset/material/script commands:
+  - `asset list`
+  - `asset get`
+  - `asset folder ensure`
+  - `asset upload`
+  - `asset delete`
+  - `material create`
+  - `script create`
+  - `script set-text`
+  - `script parse`
+- Viewport capture:
+  - `viewport capture` now uses dedicated `bridge:captureViewport` RPC rather than `bridge:eval`, so large PNG base64 is not truncated by eval serialization.
+  - PNG is now the default output format.
+  - WebP is still available with `--format webp`.
+- Agent support:
+  - Codex skill at `skills/codex/playcanvas-agent-bridge-cli`.
+  - Claude skill at `skills/claude/playcanvas-agent-bridge-cli`.
+  - Cursor rule at `skills/cursor/playcanvas-agent-bridge-cli.mdc`.
+  - Windsurf rule at `skills/windsurf/playcanvas-agent-bridge-cli.md`.
+- Documentation:
+  - English README: `README.md`.
+  - Chinese README: `README.zh-CN.md`.
+  - READMEs include Chrome extension install instructions, CLI usage, structured commands, and texture/material/script workflow examples.
+
+Verified against a real open PlayCanvas Editor scene:
+
+- Test scene:
+  - URL: `https://playcanvas.com/editor/scene/2533764`
+  - project id: `1552681`
+  - scene id: `2533764`
+- Verified target registration:
+  - `pcbridge targets` listed the editor tab with `ready: true`.
+- Verified generic eval:
+  - `pcbridge eval` returned `hasEditor: true` and valid `editor.api.globals`.
+- Verified read commands:
+  - `entity list`
+  - `asset list`
+- Verified write commands:
+  - created a temporary box entity.
+  - patched it.
+  - deleted it.
+- Verified image/material/script workflow:
+  - uploaded `/Users/qmy/Downloads/已生成图像 1.png` as a texture.
+  - created organized folders under `AI Agent Bridge/Texture Script Box Demo/{Textures,Materials,Scripts}`.
+  - created material `PCBridge Cat City Material`.
+  - created script asset `pcbridgeJumpingBox.js`.
+  - created entity `PCBridge Textured Jumping Box`.
+  - bound the material to the entity render component.
+  - mounted script `pcbridgeJumpingBox` with jump attributes.
+  - parsed the script successfully and verified attributes `amplitude` and `speed`.
+- Verified structured command workflow:
+  - `asset folder ensure`
+  - `asset upload`
+  - `material create`
+  - `script create`
+  - `entity create`
+  - `entity set-material`
+  - `entity add-script`
+  - `entity delete`
+  - `asset delete`
+- Verified PNG viewport capture:
+  - output path: `./tmp/viewport-test.png`
+  - PNG was complete, non-transparent, and 1200 x 687.
+  - verified pixel alpha was 255 across all pixels.
+- Verified local checks:
+  - `pnpm build`
+  - `pnpm check`
+  - `pnpm pack --pack-destination ./tmp`
+  - Codex skill validator.
+
+Known unfinished work:
+
+- Publish package to npm.
+- Replace README GitHub install instructions with npm-first instructions after publish.
+- Add `pcbridge daemon install-service` or another durable service installation flow if needed.
+- Add more structured scene commands:
+  - `scene settings get`
+  - `scene settings patch`
+  - `viewport focus`
+- Add remaining structured entity operations:
+  - `entity duplicate`
+  - `entity reparent`
+- Consider structured material update commands:
+  - `material patch`
+  - `material assign-texture`
+- Consider asset folder deletion safeguards:
+  - recursive delete should require explicit confirmation or a separate dangerous flag.
+- Consider npm release automation and version sync for:
+  - `package.json`
+  - `src/config.ts`
+  - `extension/manifest.json`
+
+Important lessons from testing:
+
+- Do not route large binary/base64 results through `bridge:eval`; eval serialization truncates long strings. Use dedicated page methods such as `bridge:captureViewport`.
+- After changing extension files, regenerate `~/.pcbridge/extension` and reload the unpacked Chrome extension.
+- When testing in this repo, use `./tmp` for screenshots, tarballs, and generated task files.
+- Asset workflows should use task-scoped folders such as:
+  - `AI Agent Bridge/<task name>/Textures`
+  - `AI Agent Bridge/<task name>/Materials`
+  - `AI Agent Bridge/<task name>/Scripts`
+
 ## Target Outcome
 
 Build an installable package that exposes a `pcbridge` command:
@@ -615,4 +763,3 @@ The success path is:
 3. `pcbridge targets` sees it;
 4. `pcbridge eval` runs JavaScript inside that page;
 5. structured commands grow on top of that foundation.
-
