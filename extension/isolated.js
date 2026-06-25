@@ -34,6 +34,18 @@
     return { code: "EXTENSION_ERROR", message: String(error) };
   }
 
+  function requestRuntime(message) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(message, (response) => {
+          resolve(response || null);
+        });
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+
   function callMain(method, params, timeoutMs) {
     const id = requestId();
     const timeout = Number(timeoutMs || 15000);
@@ -78,25 +90,18 @@
   });
 
   async function loadConfig() {
-    try {
-      const response = await fetch(chrome.runtime.getURL("config.json"));
-      if (!response.ok) return DEFAULT_CONFIG;
-      return { ...DEFAULT_CONFIG, ...(await response.json()) };
-    } catch {
-      return DEFAULT_CONFIG;
+    const loaded = await requestRuntime({ type: "pcbridge:getConfig" });
+    const next = { ...DEFAULT_CONFIG, ...(loaded || {}) };
+    if (!next.token) {
+      console.warn(
+        "[pcbridge] Missing local token. Run pcbridge install-extension and load ~/.pcbridge/extension."
+      );
     }
+    return next;
   }
 
   function getTabInfo() {
-    return new Promise((resolve) => {
-      try {
-        chrome.runtime.sendMessage({ type: "pcbridge:getTabInfo" }, (response) => {
-          resolve(response || {});
-        });
-      } catch {
-        resolve({});
-      }
-    });
+    return requestRuntime({ type: "pcbridge:getTabInfo" });
   }
 
   async function describeTarget() {
@@ -158,6 +163,7 @@
     }
 
     ws.addEventListener("open", () => {
+      console.info("[pcbridge] connected to local daemon");
       sendTargetUpdate();
     });
 
