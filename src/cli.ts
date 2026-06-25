@@ -34,7 +34,6 @@ import {
   scriptCreateSnippet,
   scriptParseSnippet,
   scriptSetTextSnippet,
-  viewportCaptureSnippet,
 } from "./snippets.js";
 import { fail, ok, type Envelope, type JsonValue } from "./shared/protocol.js";
 
@@ -159,10 +158,10 @@ async function fetchDaemon(
   return body;
 }
 
-async function rpcEval(
+async function rpcCall(
   args: Args,
-  code: string,
-  commandArgs: Record<string, JsonValue> = {},
+  method: string,
+  params: Record<string, JsonValue> = {},
   defaultTimeoutMs = 15000,
 ): Promise<Envelope> {
   const timeoutMs = Number(flagString(args, "timeout-ms", String(defaultTimeoutMs)));
@@ -170,15 +169,26 @@ async function rpcEval(
     method: "POST",
     body: JSON.stringify({
       target: flagString(args, "target", "current"),
-      method: "bridge:eval",
+      method,
       timeoutMs,
       params: {
-        code,
+        ...params,
         timeoutMs,
-        args: commandArgs as JsonValue,
       },
     }),
   });
+}
+
+async function rpcEval(
+  args: Args,
+  code: string,
+  commandArgs: Record<string, JsonValue> = {},
+  defaultTimeoutMs = 15000,
+): Promise<Envelope> {
+  return rpcCall(args, "bridge:eval", {
+    code,
+    args: commandArgs as JsonValue,
+  }, defaultTimeoutMs);
 }
 
 function listEnvelope(raw: Envelope): Envelope {
@@ -683,7 +693,7 @@ async function handleViewport(args: Args): Promise<Envelope> {
     return fail("UNKNOWN_COMMAND", `Unknown viewport command: ${subcommand || ""}`);
   }
 
-  const raw = await rpcEval(args, viewportCaptureSnippet(), {
+  const raw = await rpcCall(args, "bridge:captureViewport", {
     format: flagString(args, "format") || "png",
     quality: Number(flagString(args, "quality", "0.85")),
     maxWidth: Number(flagString(args, "max-width", "1200")),
