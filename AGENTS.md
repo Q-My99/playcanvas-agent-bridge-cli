@@ -13,8 +13,11 @@ Status as of 2026-06-25:
 - Git repository initialized and pushed to GitHub:
   - `https://github.com/Q-My99/playcanvas-agent-bridge-cli`
   - default branch: `main`
-- Package version is currently `0.2.0`.
-- The npm package has **not** been published yet. Publishing to npm remains unfinished.
+- Package version is currently `0.2.1`.
+- The npm package has been published:
+  - package: `playcanvas-agent-bridge-cli`
+  - npm latest: `0.2.1`
+  - registry: `https://registry.npmjs.org/`
 - Temporary test files should be written under project-local `./tmp/`, not `/tmp`. The `tmp/` directory is ignored by git.
 - The generated local Chrome extension lives at `~/.pcbridge/extension`. After extension source changes, run `node dist/cli.js install-extension --no-open`, then reload the unpacked extension in Chrome.
 
@@ -33,7 +36,7 @@ Completed implementation:
   - isolated content script for WebSocket connection and postMessage bridge.
   - service worker for tab metadata and generated config loading.
   - auto-connect and reconnect to local daemon.
-  - extension manifest version is synced to package version `0.2.0`.
+  - extension manifest version is synced to package version `0.2.1`.
 - Core CLI commands:
   - `pcbridge doctor`
   - `pcbridge daemon start`
@@ -74,7 +77,8 @@ Completed implementation:
 - Documentation:
   - English README: `README.md`.
   - Chinese README: `README.zh-CN.md`.
-  - READMEs include Chrome extension install instructions, CLI usage, structured commands, and texture/material/script workflow examples.
+  - READMEs include npm-first install instructions, Chrome extension install instructions, CLI usage, structured commands, and texture/material/script workflow examples.
+  - GitHub install instructions remain as an unreleased-change fallback.
 
 Verified against a real open PlayCanvas Editor scene:
 
@@ -121,11 +125,52 @@ Verified against a real open PlayCanvas Editor scene:
   - `pnpm check`
   - `pnpm pack --pack-destination ./tmp`
   - Codex skill validator.
+- Verified published npm/global install flow for `0.2.1`:
+  - `npm uninstall -g playcanvas-agent-bridge-cli`
+  - `npm install -g playcanvas-agent-bridge-cli@latest --registry=https://registry.npmjs.org/`
+  - `npm view playcanvas-agent-bridge-cli version dist-tags.latest bin --registry=https://registry.npmjs.org/`
+  - `pcbridge version` returned `0.2.1`.
+  - `npx -y playcanvas-agent-bridge-cli@latest version --registry=https://registry.npmjs.org/` returned `0.2.1`.
+  - `npx -y playcanvas-agent-bridge-cli@latest doctor --registry=https://registry.npmjs.org/` worked.
+- Verified README install/use flow from the global npm package:
+  - `pcbridge doctor`
+  - `pcbridge daemon status`
+  - `pcbridge install-skill --agent all`
+  - installed Codex, Claude, Cursor, and Windsurf skill/rule files under the documented home-directory paths.
+  - `pcbridge install-extension --no-open`
+  - generated `~/.pcbridge/extension` with manifest version `0.2.1`, `main.js`, `isolated.js`, and a `config.json` token.
+  - `pcbridge daemon start --json`
+  - extension connected to the open PlayCanvas Editor tab.
+  - `pcbridge targets` listed scene `2533764`, project `1552681`, and a ready connected `tab:<id>` target.
+  - `pcbridge eval --target current --code "return { href: location.href, hasEditor: !!editor, entityCount: editor.api.globals.entities.list().length }"` returned `hasEditor: true`.
+  - target selection worked for `current`, `scene:2533764`, `project:1552681`, and `tab:742400021`.
+- Verified README structured commands from the global npm package:
+  - `entity list`
+  - `entity get`
+  - `entity create`
+  - `entity patch`
+  - `entity set-material`
+  - `entity add-script`
+  - `entity delete`
+  - `asset list`
+  - `asset get`
+  - `asset folder ensure`
+  - `asset upload`
+  - `asset delete`
+  - `material create`
+  - `script create`
+  - `script set-text`
+  - `script parse`
+  - test entity, texture, material, script, and task folders were cleaned up after verification.
+  - final cleanup check returned no leftover README install test assets or entities.
+- Verified npm-package viewport capture:
+  - output path: `./tmp/npm-global-readme-viewport.png`
+  - PNG was complete and 1200 x 687.
 
 Known unfinished work:
 
-- Publish package to npm.
-- Replace README GitHub install instructions with npm-first instructions after publish.
+- Push the `0.2.1` release-prep commit to GitHub if it has not already been pushed.
+- Create a GitHub tag/release for `v0.2.1` if desired.
 - Add `pcbridge daemon install-service` or another durable service installation flow if needed.
 - Add more structured scene commands:
   - `scene settings get`
@@ -148,6 +193,7 @@ Important lessons from testing:
 
 - Do not route large binary/base64 results through `bridge:eval`; eval serialization truncates long strings. Use dedicated page methods such as `bridge:captureViewport`.
 - After changing extension files, regenerate `~/.pcbridge/extension` and reload the unpacked Chrome extension.
+- npm global bin entries are symlinks. The CLI entrypoint check must resolve the real path, otherwise `pcbridge doctor` can exit with no output even though `node dist/cli.js doctor` works.
 - When testing in this repo, use `./tmp` for screenshots, tarballs, and generated task files.
 - Asset workflows should use task-scoped folders such as:
   - `AI Agent Bridge/<task name>/Textures`
