@@ -41,6 +41,9 @@ The command generates a local unpacked extension directory at:
 ~/.pcbridge/extension
 ```
 
+On Windows this path is under your user home directory. The path printed by
+`pcbridge install-extension` is the source of truth.
+
 Then in Chrome:
 
 1. Open `chrome://extensions`.
@@ -87,7 +90,7 @@ pcbridge script create --target current --filename controller.js --file ./contro
 pcbridge script set-text --target current --asset-id <asset_id> --file ./controller.js
 pcbridge script parse --target current --asset-id <asset_id>
 
-pcbridge viewport capture --target current --out /tmp/playcanvas-viewport.png
+pcbridge viewport capture --target current --out ./tmp/playcanvas-viewport.png
 ```
 
 ## Texture + material + script workflow

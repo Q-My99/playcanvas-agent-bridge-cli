@@ -85,7 +85,7 @@ pcbridge script parse --target current --asset-id <id>
 Capture the viewport:
 
 ```bash
-pcbridge viewport capture --target current --out /tmp/playcanvas-viewport.png
+pcbridge viewport capture --target current --out ./tmp/playcanvas-viewport.png
 ```
 
 ## Asset Organization

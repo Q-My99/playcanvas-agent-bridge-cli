@@ -26,7 +26,7 @@ pcbridge asset upload --target current --file ./texture.png --name TaskTexture -
 pcbridge material create --target current --name TaskMaterial --folder "AI Agent Bridge/My Task/Materials" --diffuse-map <texture_asset_id>
 pcbridge script create --target current --filename controller.js --file ./script.js --folder "AI Agent Bridge/My Task/Scripts"
 pcbridge script set-text --target current --asset-id <id> --file ./script.js
-pcbridge viewport capture --target current --out /tmp/playcanvas.png
+pcbridge viewport capture --target current --out ./tmp/playcanvas.png
 ```
 
 Put generated assets under `AI Agent Bridge/<task name>/Textures`, `Materials`, and `Scripts`.

@@ -94,7 +94,7 @@
     const next = { ...DEFAULT_CONFIG, ...(loaded || {}) };
     if (!next.token) {
       console.warn(
-        "[pcbridge] Missing local token. Run pcbridge install-extension and load ~/.pcbridge/extension."
+        "[pcbridge] Missing local token. Run pcbridge install-extension and load the generated extension directory."
       );
     }
     return next;

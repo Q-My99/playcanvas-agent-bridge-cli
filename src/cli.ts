@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -434,6 +435,7 @@ function openChromeExtensions(): void {
 
   try {
     const child = spawn(command, args, { detached: true, stdio: "ignore" });
+    child.on("error", () => undefined);
     child.unref();
   } catch {
     // The printed chrome://extensions URL is enough when opening fails.
@@ -448,24 +450,24 @@ async function installSkill(args: Args): Promise<Envelope> {
 
   for (const item of agents) {
     if (item === "codex") {
-      const dest = join(process.env.CODEX_HOME || join(process.env.HOME || "", ".codex"), "skills");
+      const dest = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "skills");
       const source = join(root, "skills", "codex", "playcanvas-agent-bridge-cli");
       const target = join(dest, "playcanvas-agent-bridge-cli");
       await copyDir(source, target, { clean: true });
       installed.push({ agent: item, path: target });
     } else if (item === "claude") {
-      const target = join(process.env.HOME || "", ".claude", "skills", "playcanvas-agent-bridge-cli");
+      const target = join(homedir(), ".claude", "skills", "playcanvas-agent-bridge-cli");
       await copyDir(join(root, "skills", "claude", "playcanvas-agent-bridge-cli"), target, {
         clean: true,
       });
       installed.push({ agent: item, path: target });
     } else if (item === "cursor") {
-      const target = join(process.env.HOME || "", ".cursor", "rules", "playcanvas-agent-bridge-cli.mdc");
+      const target = join(homedir(), ".cursor", "rules", "playcanvas-agent-bridge-cli.mdc");
       await mkdir(dirname(target), { recursive: true });
       await writeFile(target, await readFile(join(root, "skills", "cursor", "playcanvas-agent-bridge-cli.mdc")));
       installed.push({ agent: item, path: target });
     } else if (item === "windsurf") {
-      const target = join(process.env.HOME || "", ".windsurf", "rules", "playcanvas-agent-bridge-cli.md");
+      const target = join(homedir(), ".windsurf", "rules", "playcanvas-agent-bridge-cli.md");
       await mkdir(dirname(target), { recursive: true });
       await writeFile(target, await readFile(join(root, "skills", "windsurf", "playcanvas-agent-bridge-cli.md")));
       installed.push({ agent: item, path: target });
@@ -735,7 +737,7 @@ function usage(): Envelope {
       "pcbridge script create --target current --filename controller.js --file ./controller.js",
       "pcbridge entity set-material --target current --id <resource_id> --material-id <asset_id>",
       "pcbridge entity add-script --target current --id <resource_id> --script-name controller",
-      "pcbridge viewport capture --target current --out /tmp/viewport.png",
+      "pcbridge viewport capture --target current --out ./tmp/viewport.png",
     ],
   });
 }

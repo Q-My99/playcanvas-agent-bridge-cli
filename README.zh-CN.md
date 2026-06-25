@@ -41,6 +41,9 @@ pcbridge install-extension
 ~/.pcbridge/extension
 ```
 
+在 Windows 上，这个目录会位于你的用户主目录下。请以
+`pcbridge install-extension` 实际打印出来的路径为准。
+
 然后在 Chrome 中操作：
 
 1. 打开 `chrome://extensions`。
@@ -87,7 +90,7 @@ pcbridge script create --target current --filename controller.js --file ./contro
 pcbridge script set-text --target current --asset-id <asset_id> --file ./controller.js
 pcbridge script parse --target current --asset-id <asset_id>
 
-pcbridge viewport capture --target current --out /tmp/playcanvas-viewport.png
+pcbridge viewport capture --target current --out ./tmp/playcanvas-viewport.png
 ```
 
 ## 贴图 + 材质 + 脚本工作流
