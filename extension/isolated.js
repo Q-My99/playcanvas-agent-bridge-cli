@@ -111,6 +111,7 @@
         clientId,
         tabId: tabInfo.tabId,
         windowId: tabInfo.windowId,
+        extensionVersion: chrome.runtime.getManifest().version,
         ...(response.data || {}),
         url: (response.data && response.data.url) || location.href,
         title: (response.data && response.data.title) || document.title || "",
@@ -121,6 +122,7 @@
         clientId,
         tabId: tabInfo.tabId,
         windowId: tabInfo.windowId,
+        extensionVersion: chrome.runtime.getManifest().version,
         url: location.href,
         title: document.title || "",
         ready: false

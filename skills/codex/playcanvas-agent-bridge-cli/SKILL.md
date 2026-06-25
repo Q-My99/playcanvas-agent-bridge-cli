@@ -28,11 +28,12 @@ If no target appears, tell the user to run `pcbridge install-extension`, load th
 ## Workflow
 
 1. Run `pcbridge targets` and choose an explicit target when possible.
-2. Prefer structured commands for common tasks: `entity`, `asset`, `material`, `script`, and `viewport`.
-3. Use `pcbridge eval` only for custom Editor API work.
-4. Return compact JSON from snippets. Never return raw `editor`, `Entity`, `Asset`, `entities.root`, or app objects.
-5. Use PlayCanvas history options for writes when available.
-6. Verify writes with a read-only command after mutation.
+2. Use layered help to load only the command group you need: `pcbridge help`, then `pcbridge help entity|asset|material|script|scene|store|viewport|eval`.
+3. Use structured commands for small, known operations that map cleanly to one Editor action.
+4. Use `pcbridge eval` for exploratory API inspection, custom Editor/Engine workflows, and large multi-step scene edits where one script is clearer than many CLI calls.
+5. Return compact JSON from snippets. Never return raw `editor`, `Entity`, `Asset`, `entities.root`, or app objects.
+6. Use PlayCanvas history options for writes when available.
+7. Verify writes with a read-only command after mutation.
 
 ## Safe Commands
 
@@ -47,24 +48,30 @@ List entities:
 ```bash
 pcbridge entity list --target current --limit 50
 pcbridge entity list --target scene:<sceneId> --name Player --component render
+pcbridge entity list --target current --tag enemy
 ```
 
 Create an entity from JSON:
 
 ```bash
 pcbridge entity create --target current --json ./entity.json
+pcbridge entity create-many --target current --json ./entities.json
 ```
 
 Patch an entity:
 
 ```bash
 pcbridge entity patch --target current --id <resource_id> --set name=Player --set position='[0,1,0]'
+pcbridge entity patch-many --target current --json ./edits.json
+pcbridge entity duplicate --target current --id <resource_id>
+pcbridge entity reparent --target current --id <resource_id> --parent <parent_resource_id>
 ```
 
 Modify components and materials:
 
 ```bash
 pcbridge entity add-component --target current --id <resource_id> --component render --data '{"type":"box"}'
+pcbridge entity add-components --target current --id <resource_id> --json ./components.json
 pcbridge entity set-material --target current --id <resource_id> --material-id <material_asset_id>
 pcbridge entity add-script --target current --id <resource_id> --asset-id <script_asset_id> --attributes '{"speed":2.4}'
 pcbridge entity delete --target current --id <resource_id>
@@ -74,12 +81,25 @@ Work with assets and scripts:
 
 ```bash
 pcbridge asset list --target current --type script --limit 50
+pcbridge asset create --target current --json ./assets.json
 pcbridge asset folder ensure --target current --path "AI Agent Bridge/My Task/Textures"
 pcbridge asset upload --target current --file ./texture.png --name TaskTexture --folder "AI Agent Bridge/My Task/Textures"
+pcbridge asset instantiate --target current --id <template_asset_id>
 pcbridge material create --target current --name TaskMaterial --folder "AI Agent Bridge/My Task/Materials" --diffuse-map <texture_asset_id>
+pcbridge material patch --target current --asset-id <material_asset_id> --set diffuse='[1,0,0]'
 pcbridge script create --target current --filename controller.js --file ./controller.js --folder "AI Agent Bridge/My Task/Scripts"
 pcbridge script set-text --target current --asset-id <id> --file ./controller.js
 pcbridge script parse --target current --asset-id <id>
+```
+
+Scene, store, and viewport:
+
+```bash
+pcbridge scene settings get --target current
+pcbridge scene settings patch --target current --json ./scene-settings.json
+pcbridge store search --target current --search vehicle --limit 20
+pcbridge store get --target current --id <store_asset_id>
+pcbridge viewport focus --target current --id <resource_id> --view perspective
 ```
 
 Capture the viewport:

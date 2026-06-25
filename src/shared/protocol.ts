@@ -34,6 +34,7 @@ export type TargetInfo = {
   projectId?: string;
   sceneId?: string;
   branchId?: string;
+  extensionVersion?: string;
   ready: boolean;
   connected: boolean;
   lastSeen: string;

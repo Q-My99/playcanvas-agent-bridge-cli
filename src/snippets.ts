@@ -88,14 +88,6 @@ async function resolveFolder(assets, args) {
   return { folder: null, created: [] };
 }
 
-function bytesFromBase64(base64) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes;
-}
 `;
 
 export function entityListSnippet(): string {
@@ -110,6 +102,9 @@ if (args.name) {
 }
 if (args.component) {
   items = items.filter((entity) => Boolean(entity.get("components." + args.component)));
+}
+if (args.tag) {
+  items = items.filter((entity) => (entity.get("tags") || []).includes(args.tag));
 }
 const total = items.length;
 const offset = Math.max(0, Number(args.offset || 0));
@@ -167,6 +162,51 @@ return readEntity(entity);
 `;
 }
 
+export function entityCreateManySnippet(): string {
+  return `
+${entityReader}
+const args = command.args || {};
+const entitiesApi = editor.api.globals.entities;
+const definitions = Array.isArray(args.entities) && args.entities.length ? args.entities : [];
+if (!definitions.length) {
+  throw new Error("entities must be a non-empty array.");
+}
+const created = [];
+for (const definition of definitions) {
+  const data = { ...(definition.entity || definition) };
+  const parentId = definition.parent || data.parent;
+  if (!parentId) {
+    data.parent = entitiesApi.root;
+  } else if (typeof parentId === "string") {
+    const parent = entitiesApi.get(parentId);
+    if (!parent) {
+      throw new Error("Parent entity not found: " + parentId);
+    }
+    data.parent = parent;
+  }
+  data.position = data.position || [0, 0, 0];
+  data.rotation = data.rotation || [0, 0, 0];
+  data.scale = data.scale || [1, 1, 1];
+  data.enabled = data.enabled !== false;
+  data.components = data.components || {};
+  data.children = data.children || [];
+  data.tags = data.tags || [];
+  const entity = entitiesApi.create(data, { history: true, select: false });
+  if (!entity) {
+    throw new Error("PlayCanvas did not return a created entity.");
+  }
+  created.push(entity);
+}
+if (created.length) {
+  editor.api.globals.selection.set(created, { history: true });
+}
+return {
+  affected: created.length,
+  entities: created.map(readEntity)
+};
+`;
+}
+
 export function entityPatchSnippet(): string {
   return `
 ${entityReader}
@@ -177,6 +217,86 @@ if (!entity) {
 }
 for (const change of args.sets || []) {
   entity.set(change.path, change.value);
+}
+return readEntity(entity);
+`;
+}
+
+export function entityPatchManySnippet(): string {
+  return `
+${entityReader}
+const args = command.args || {};
+const entities = editor.api.globals.entities;
+const edits = Array.isArray(args.edits) ? args.edits : [];
+if (!edits.length) {
+  throw new Error("edits must be a non-empty array.");
+}
+const changed = new Map();
+const missing = [];
+for (const edit of edits) {
+  const entity = entities.get(edit.id);
+  if (!entity) {
+    missing.push(edit.id);
+    continue;
+  }
+  entity.set(edit.path, edit.value);
+  changed.set(edit.id, entity);
+}
+return {
+  affected: changed.size,
+  entities: Array.from(changed.values()).map(readEntity),
+  missing
+};
+`;
+}
+
+export function entityDuplicateSnippet(): string {
+  return `
+${entityReader}
+const args = command.args || {};
+const entitiesApi = editor.api.globals.entities;
+const ids = Array.isArray(args.ids) && args.ids.length ? args.ids : [args.id];
+const entities = ids.map((id) => entitiesApi.get(id)).filter(Boolean);
+const missing = ids.filter((id) => !entitiesApi.get(id));
+if (!entities.length) {
+  return { affected: 0, duplicated: [], missing };
+}
+const duplicated = await entitiesApi.duplicate(entities, {
+  history: true,
+  rename: args.rename !== false,
+  select: args.select !== false
+});
+return {
+  affected: duplicated.length,
+  duplicated: duplicated.map(readEntity),
+  missing
+};
+`;
+}
+
+export function entityReparentSnippet(): string {
+  return `
+${entityReader}
+const args = command.args || {};
+const entities = editor.api.globals.entities;
+const entity = entities.get(args.id);
+if (!entity) {
+  throw new Error("Entity not found: " + args.id);
+}
+const parent = entities.get(args.parent);
+if (!parent) {
+  throw new Error("Parent entity not found: " + args.parent);
+}
+if (typeof entity.reparent === "function") {
+  entity.reparent(parent, args.index === undefined || args.index === null ? undefined : Number(args.index), {
+    history: true,
+    preserveTransform: args.preserveTransform !== false
+  });
+} else {
+  await entities.reparent([{ entity, parent, index: args.index }], {
+    history: true,
+    preserveTransform: args.preserveTransform !== false
+  });
 }
 return readEntity(entity);
 `;
@@ -225,6 +345,32 @@ return readEntity(entity);
 `;
 }
 
+export function entityAddComponentsSnippet(): string {
+  return `
+${entityReader}
+const args = command.args || {};
+const entity = editor.api.globals.entities.get(args.id);
+if (!entity) {
+  throw new Error("Entity not found: " + args.id);
+}
+const components = args.components || {};
+if (!components || typeof components !== "object" || Array.isArray(components)) {
+  throw new Error("components must be a JSON object.");
+}
+for (const [name, data] of Object.entries(components)) {
+  if (entity.get("components." + name)) {
+    entity.set("components." + name, {
+      ...(entity.get("components." + name) || {}),
+      ...(data || {})
+    });
+  } else {
+    entity.addComponent(name, data || {});
+  }
+}
+return readEntity(entity);
+`;
+}
+
 export function entityRemoveComponentSnippet(): string {
   return `
 ${entityReader}
@@ -241,6 +387,33 @@ if (entity.get("components." + args.component)) {
   return { affected: 1, entity: readEntity(entity) };
 }
 return { affected: 0, entity: readEntity(entity) };
+`;
+}
+
+export function entityRemoveComponentsSnippet(): string {
+  return `
+${entityReader}
+const args = command.args || {};
+const entity = editor.api.globals.entities.get(args.id);
+if (!entity) {
+  throw new Error("Entity not found: " + args.id);
+}
+const components = Array.isArray(args.components) ? args.components : [];
+if (!components.length) {
+  throw new Error("components must be a non-empty array.");
+}
+const removed = [];
+for (const component of components) {
+  if (entity.get("components." + component)) {
+    entity.removeComponent(component);
+    removed.push(component);
+  }
+}
+return {
+  affected: removed.length,
+  removed,
+  entity: readEntity(entity)
+};
 `;
 }
 
@@ -347,6 +520,9 @@ if (args.name) {
   const needle = String(args.name).toLowerCase();
   items = items.filter((asset) => String(asset.get("name") || "").toLowerCase().includes(needle));
 }
+if (args.tag) {
+  items = items.filter((asset) => (asset.get("tags") || []).includes(args.tag));
+}
 const total = items.length;
 const offset = Math.max(0, Number(args.offset || 0));
 const limit = Math.max(1, Math.min(Number(args.limit || 50), 500));
@@ -373,6 +549,61 @@ return args.full ? asset.json() : readAsset(asset);
 `;
 }
 
+export function assetCreateManySnippet(): string {
+  return `
+${assetReader}
+const args = command.args || {};
+const assetsApi = editor.api.globals.assets;
+const entitiesApi = editor.api.globals.entities;
+const defs = Array.isArray(args.assets) && args.assets.length ? args.assets : [];
+if (!defs.length) {
+  throw new Error("assets must be a non-empty array.");
+}
+const created = [];
+for (const definition of defs) {
+  const type = definition.type;
+  const options = { ...(definition.options || {}) };
+  if (options.folder !== undefined && options.folder !== null && options.folder !== "") {
+    const folder = assetsApi.get(Number(options.folder));
+    if (!folder || folder.get("type") !== "folder") {
+      throw new Error("Folder asset not found: " + options.folder);
+    }
+    options.folder = folder;
+  }
+  if (type === "template") {
+    const entity = entitiesApi.get(options.entity);
+    if (!entity) {
+      throw new Error("Template source entity not found: " + options.entity);
+    }
+    options.entity = entity;
+  }
+
+  let asset = null;
+  if (type === "material" && options.data && options.data.name && !options.name) {
+    options.name = options.data.name;
+  }
+  if (type === "css") asset = await assetsApi.createCss(options);
+  else if (type === "folder") asset = await assetsApi.createFolder(options);
+  else if (type === "html") asset = await assetsApi.createHtml(options);
+  else if (type === "material") asset = await assetsApi.createMaterial(options);
+  else if (type === "script") asset = await assetsApi.createScript(options);
+  else if (type === "shader") asset = await assetsApi.createShader(options);
+  else if (type === "template") asset = await assetsApi.createTemplate(options);
+  else if (type === "text") asset = await assetsApi.createText(options);
+  else throw new Error("Unsupported asset type: " + type);
+
+  if (!asset) {
+    throw new Error("Failed to create asset of type: " + type);
+  }
+  created.push(asset);
+}
+return {
+  affected: created.length,
+  assets: created.map(readAsset)
+};
+`;
+}
+
 export function assetFolderEnsureSnippet(): string {
   return `
 ${assetReader}
@@ -390,36 +621,35 @@ return {
 `;
 }
 
-export function assetUploadSnippet(): string {
+export function assetInstantiateTemplateSnippet(): string {
   return `
+${entityReader}
 ${assetReader}
-${assetFolderHelpers}
 const args = command.args || {};
-if (!args.base64) {
-  throw new Error("base64 file content is required.");
+const assetsApi = editor.api.globals.assets;
+const ids = Array.isArray(args.ids) && args.ids.length ? args.ids : [args.id];
+const templates = [];
+const missing = [];
+for (const id of ids) {
+  const asset = assetsApi.get(Number(id));
+  if (!asset) {
+    missing.push(id);
+    continue;
+  }
+  if (asset.get("type") !== "template") {
+    throw new Error("Asset is not a template: " + id);
+  }
+  templates.push(asset);
 }
-if (!args.name) {
-  throw new Error("name is required.");
+if (!templates.length) {
+  return { affected: 0, entities: [], missing };
 }
-if (!args.type) {
-  throw new Error("type is required.");
-}
-const assets = editor.api.globals.assets;
-const folderResult = await resolveFolder(assets, args);
-const blob = new Blob([bytesFromBase64(args.base64)], {
-  type: args.mime || "application/octet-stream"
-});
-const asset = await assets.upload({
-  name: args.name,
-  type: args.type,
-  folder: folderResult.folder || undefined,
-  filename: args.filename || args.name,
-  file: blob,
-  preload: args.preload !== false
-}, null);
+const entities = await assetsApi.instantiateTemplates(templates);
 return {
-  asset: readAsset(asset),
-  createdFolders: folderResult.created.map(readAsset)
+  affected: entities.length,
+  entities: entities.map(readEntity),
+  templates: templates.map(readAsset),
+  missing
 };
 `;
 }
@@ -487,6 +717,31 @@ return {
     normalMap: material.get("data.normalMap")
   },
   createdFolders: folderResult.created.map(readAsset)
+};
+`;
+}
+
+export function materialPatchSnippet(): string {
+  return `
+${assetReader}
+const args = command.args || {};
+const asset = editor.api.globals.assets.get(Number(args.assetId));
+if (!asset) {
+  throw new Error("Asset not found: " + args.assetId);
+}
+if (asset.get("type") !== "material") {
+  throw new Error("Asset is not a material: " + args.assetId);
+}
+const data = args.data || {};
+for (const [key, value] of Object.entries(data)) {
+  asset.set("data." + key, value);
+}
+for (const change of args.sets || []) {
+  asset.set("data." + change.path, change.value);
+}
+return {
+  asset: readAsset(asset),
+  data: asset.get("data") || {}
 };
 `;
 }
@@ -573,6 +828,96 @@ return {
   asset: readAsset(asset),
   scripts: data?.scripts || {}
 };
+`;
+}
+
+export function sceneSettingsGetSnippet(): string {
+  return `
+return editor.api.globals.settings.scene.json();
+`;
+}
+
+export function sceneSettingsPatchSnippet(): string {
+  return `
+const args = command.args || {};
+const settings = args.settings || {};
+const scene = editor.api.globals.settings.scene;
+function iterate(value, prefix) {
+  for (const [key, child] of Object.entries(value || {})) {
+    const path = prefix ? prefix + "." + key : key;
+    if (child && typeof child === "object" && !Array.isArray(child)) {
+      iterate(child, path);
+    } else {
+      scene.set(path, child);
+    }
+  }
+}
+iterate(settings, "");
+for (const change of args.sets || []) {
+  scene.set(change.path, change.value);
+}
+return scene.json();
+`;
+}
+
+export function storeSearchSnippet(): string {
+  return `
+const args = command.args || {};
+const params = new URLSearchParams();
+if (args.search) params.set("search", String(args.search));
+params.set("regexp", "true");
+if (args.order) params.set("order", args.order === "desc" ? "-1" : "1");
+if (args.skip !== undefined && args.skip !== null) params.set("skip", String(args.skip));
+if (args.limit !== undefined && args.limit !== null) params.set("limit", String(args.limit));
+const response = await fetch("/api/store?" + params.toString());
+const body = await response.json().catch(() => ({}));
+if (!response.ok || body.error) {
+  throw new Error(body.error || "Failed to search PlayCanvas store.");
+}
+return body;
+`;
+}
+
+export function storeGetSnippet(): string {
+  return `
+const args = command.args || {};
+if (!args.id) {
+  throw new Error("id is required.");
+}
+const response = await fetch("/api/store/" + encodeURIComponent(args.id));
+const body = await response.json().catch(() => ({}));
+if (!response.ok || body.error) {
+  throw new Error(body.error || "Failed to get PlayCanvas store asset.");
+}
+return body;
+`;
+}
+
+export function storeDownloadSnippet(): string {
+  return `
+const args = command.args || {};
+if (!args.id || !args.name || !args.license) {
+  throw new Error("id, name, and license are required.");
+}
+const response = await fetch("/api/store/" + encodeURIComponent(args.id) + "/clone", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    scope: {
+      type: "project",
+      id: window.config?.project?.id
+    },
+    name: args.name,
+    store: "playcanvas",
+    targetFolderId: args.folderId === undefined ? null : Number(args.folderId),
+    license: args.license
+  })
+});
+const body = await response.json().catch(() => ({}));
+if (!response.ok || body.error) {
+  throw new Error(body.error || "Failed to download PlayCanvas store asset.");
+}
+return body;
 `;
 }
 

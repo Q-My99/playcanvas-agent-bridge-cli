@@ -20,22 +20,35 @@ import { createDaemonServer } from "./daemon/server.js";
 import {
   assetDeleteSnippet,
   assetFolderEnsureSnippet,
+  assetCreateManySnippet,
   assetGetSnippet,
+  assetInstantiateTemplateSnippet,
   assetListSnippet,
-  assetUploadSnippet,
+  entityAddComponentsSnippet,
   entityAddComponentSnippet,
   entityAddScriptSnippet,
+  entityCreateManySnippet,
   entityCreateSnippet,
   entityDeleteSnippet,
+  entityDuplicateSnippet,
   entityGetSnippet,
   entityListSnippet,
+  entityPatchManySnippet,
   entityPatchSnippet,
+  entityReparentSnippet,
+  entityRemoveComponentsSnippet,
   entityRemoveComponentSnippet,
   entitySetMaterialSnippet,
   materialCreateSnippet,
+  materialPatchSnippet,
+  sceneSettingsGetSnippet,
+  sceneSettingsPatchSnippet,
   scriptCreateSnippet,
   scriptParseSnippet,
   scriptSetTextSnippet,
+  storeDownloadSnippet,
+  storeGetSnippet,
+  storeSearchSnippet,
 } from "./snippets.js";
 import { fail, ok, type Envelope, type JsonValue } from "./shared/protocol.js";
 
@@ -130,7 +143,7 @@ function parseJsonValue(raw: string): JsonValue {
   }
 }
 
-function parseSets(values: string[]): JsonValue {
+function parseSets(values: string[]): Array<{ path: string; value: JsonValue }> {
   return values.map((item) => {
     const eq = item.indexOf("=");
     if (eq === -1) {
@@ -140,7 +153,7 @@ function parseSets(values: string[]): JsonValue {
       path: item.slice(0, eq),
       value: parseJsonValue(item.slice(eq + 1)),
     };
-  }) as unknown as JsonValue;
+  });
 }
 
 async function fetchDaemon(
@@ -300,16 +313,57 @@ async function doctor(): Promise<Envelope> {
   }
 
   const extensionExists = Boolean(session) && (await pathExists(EXTENSION_INSTALL_DIR));
+  let generatedExtensionVersion: string | null = null;
+  if (extensionExists) {
+    try {
+      const manifest = JSON.parse(await readFile(join(EXTENSION_INSTALL_DIR, "manifest.json"), "utf8")) as {
+        version?: string;
+      };
+      generatedExtensionVersion = manifest.version || null;
+    } catch {
+      generatedExtensionVersion = null;
+    }
+  }
   checks.push({
     name: "extension",
-    ok: extensionExists,
+    ok: extensionExists && generatedExtensionVersion === VERSION,
     path: EXTENSION_INSTALL_DIR,
-    message: extensionExists
-      ? "Generated unpacked extension directory exists."
+    version: generatedExtensionVersion,
+    expectedVersion: VERSION,
+    message: extensionExists && generatedExtensionVersion === VERSION
+      ? "Generated unpacked extension directory exists and matches package version."
+      : extensionExists
+        ? "Generated unpacked extension version does not match package version."
       : "Generated unpacked extension directory was not found.",
   });
   if (!extensionExists) {
     nextActions.push("Run pcbridge install-extension and load the printed directory in Chrome.");
+  } else if (generatedExtensionVersion !== VERSION) {
+    nextActions.push("Run pcbridge install-extension --no-open, then reload the unpacked extension in Chrome.");
+  }
+
+  try {
+    const targets = await fetchDaemon("/targets");
+    if (targets.ok && Array.isArray(targets.data)) {
+      const connectedVersions = targets.data
+        .map((target) => (target && typeof target === "object" && !Array.isArray(target) ? target.extensionVersion : null))
+        .filter(Boolean);
+      const mismatched = connectedVersions.filter((version) => version !== VERSION);
+      checks.push({
+        name: "connected-extension-version",
+        ok: mismatched.length === 0,
+        versions: connectedVersions as unknown as JsonValue,
+        expectedVersion: VERSION,
+        message: mismatched.length
+          ? "One or more connected Editor tabs are using an older extension version."
+          : "Connected extension versions match the package version.",
+      });
+      if (mismatched.length) {
+        nextActions.push("Reload the unpacked extension and refresh the PlayCanvas Editor tab.");
+      }
+    }
+  } catch {
+    // Daemon reachability is already reported above.
   }
 
   return ok({
@@ -487,6 +541,7 @@ async function handleEntity(args: Args): Promise<Envelope> {
       await rpcEval(args, entityListSnippet(), {
         name: flagString(args, "name") || null,
         component: flagString(args, "component") || null,
+        tag: flagString(args, "tag") || null,
         limit: Number(flagString(args, "limit", "50")),
         offset: Number(flagString(args, "offset", "0")),
         full: flagBool(args, "full"),
@@ -504,10 +559,50 @@ async function handleEntity(args: Args): Promise<Envelope> {
     const data = JSON.parse(await readFile(file, "utf8")) as JsonValue;
     return rpcEval(args, entityCreateSnippet(), { data });
   }
+  if (subcommand === "create-many") {
+    const file = flagString(args, "json");
+    if (!file) return fail("INVALID_REQUEST", "entity create-many requires --json <file>.");
+    const data = JSON.parse(await readFile(file, "utf8")) as JsonValue;
+    const entities = Array.isArray(data)
+      ? data
+      : objectJson(data, "entity create-many data").entities;
+    return rpcEval(args, entityCreateManySnippet(), { entities: entities || [] }, 30000);
+  }
   if (subcommand === "patch") {
     const id = flagString(args, "id");
     if (!id) return fail("INVALID_REQUEST", "entity patch requires --id.");
     return rpcEval(args, entityPatchSnippet(), { id, sets: parseSets(flagList(args, "set")) });
+  }
+  if (subcommand === "patch-many") {
+    const file = flagString(args, "json");
+    if (!file) return fail("INVALID_REQUEST", "entity patch-many requires --json <file>.");
+    const data = JSON.parse(await readFile(file, "utf8")) as JsonValue;
+    const edits = Array.isArray(data)
+      ? data
+      : objectJson(data, "entity patch-many data").edits;
+    return rpcEval(args, entityPatchManySnippet(), { edits: edits || [] }, 30000);
+  }
+  if (subcommand === "duplicate") {
+    const ids = flagList(args, "id");
+    const id = flagString(args, "id");
+    if (!ids.length && !id) return fail("INVALID_REQUEST", "entity duplicate requires --id.");
+    return rpcEval(args, entityDuplicateSnippet(), {
+      ids: ids as unknown as JsonValue,
+      id: id || null,
+      rename: !flagBool(args, "no-rename"),
+      select: !flagBool(args, "no-select"),
+    });
+  }
+  if (subcommand === "reparent") {
+    const id = flagString(args, "id");
+    const parent = flagString(args, "parent");
+    if (!id || !parent) return fail("INVALID_REQUEST", "entity reparent requires --id and --parent.");
+    return rpcEval(args, entityReparentSnippet(), {
+      id,
+      parent,
+      index: flagString(args, "index") === undefined ? null : Number(flagString(args, "index")),
+      preserveTransform: !flagBool(args, "no-preserve-transform"),
+    });
   }
   if (subcommand === "delete") {
     const ids = flagList(args, "id");
@@ -530,13 +625,42 @@ async function handleEntity(args: Args): Promise<Envelope> {
       data: objectJson(data, "component data") as unknown as JsonValue,
     });
   }
+  if (subcommand === "add-components") {
+    const id = flagString(args, "id");
+    const data = await readJsonFlag(args, "json");
+    if (!id || data === undefined) {
+      return fail("INVALID_REQUEST", "entity add-components requires --id and --json <file>.");
+    }
+    return rpcEval(args, entityAddComponentsSnippet(), {
+      id,
+      components: objectJson(data, "components") as unknown as JsonValue,
+    });
+  }
   if (subcommand === "remove-component") {
     const id = flagString(args, "id");
+    const components = flagList(args, "component");
     const component = flagString(args, "component");
-    if (!id || !component) {
+    if (!id || (!components.length && !component)) {
       return fail("INVALID_REQUEST", "entity remove-component requires --id and --component.");
     }
-    return rpcEval(args, entityRemoveComponentSnippet(), { id, component });
+    if (components.length > 1) {
+      return rpcEval(args, entityRemoveComponentsSnippet(), {
+        id,
+        components: components as unknown as JsonValue,
+      });
+    }
+    return rpcEval(args, entityRemoveComponentSnippet(), { id, component: component || components[0] });
+  }
+  if (subcommand === "remove-components") {
+    const id = flagString(args, "id");
+    const components = flagList(args, "component");
+    if (!id || !components.length) {
+      return fail("INVALID_REQUEST", "entity remove-components requires --id and at least one --component.");
+    }
+    return rpcEval(args, entityRemoveComponentsSnippet(), {
+      id,
+      components: components as unknown as JsonValue,
+    });
   }
   if (subcommand === "set-material") {
     const id = flagString(args, "id");
@@ -575,6 +699,7 @@ async function handleAsset(args: Args): Promise<Envelope> {
       await rpcEval(args, assetListSnippet(), {
         name: flagString(args, "name") || null,
         type: flagString(args, "type") || null,
+        tag: flagString(args, "tag") || null,
         limit: Number(flagString(args, "limit", "50")),
         offset: Number(flagString(args, "offset", "0")),
         full: flagBool(args, "full"),
@@ -586,10 +711,28 @@ async function handleAsset(args: Args): Promise<Envelope> {
     if (!id) return fail("INVALID_REQUEST", "asset get requires --id.");
     return rpcEval(args, assetGetSnippet(), { id, full: flagBool(args, "full") });
   }
+  if (subcommand === "create") {
+    const file = flagString(args, "json");
+    if (!file) return fail("INVALID_REQUEST", "asset create requires --json <file>.");
+    const data = JSON.parse(await readFile(file, "utf8")) as JsonValue;
+    const assets = Array.isArray(data)
+      ? data
+      : objectJson(data, "asset create data").assets || [data];
+    return rpcEval(args, assetCreateManySnippet(), { assets }, 60000);
+  }
   if (subcommand === "folder" && args._[2] === "ensure") {
     const path = flagString(args, "path");
     if (!path) return fail("INVALID_REQUEST", "asset folder ensure requires --path.");
     return rpcEval(args, assetFolderEnsureSnippet(), { path });
+  }
+  if (subcommand === "instantiate") {
+    const ids = flagList(args, "id");
+    const id = flagString(args, "id");
+    if (!ids.length && !id) return fail("INVALID_REQUEST", "asset instantiate requires --id.");
+    return rpcEval(args, assetInstantiateTemplateSnippet(), {
+      ids: ids as unknown as JsonValue,
+      id: id || null,
+    }, 60000);
   }
   if (subcommand === "upload") {
     const file = flagString(args, "file");
@@ -598,9 +741,9 @@ async function handleAsset(args: Args): Promise<Envelope> {
     const type = flagString(args, "type") || inferAssetType(file);
     if (!type) return fail("INVALID_REQUEST", "asset upload requires --type for this file.");
     const filename = flagString(args, "filename") || basename(file);
-    return rpcEval(
+    return rpcCall(
       args,
-      assetUploadSnippet(),
+      "bridge:uploadAsset",
       {
         base64: fileBuffer.toString("base64"),
         mime: flagString(args, "mime") || inferMime(file),
@@ -647,6 +790,28 @@ async function handleMaterial(args: Args): Promise<Envelope> {
       30000,
     );
   }
+  if (subcommand === "patch") {
+    const assetId = flagString(args, "asset-id") || flagString(args, "id");
+    if (!assetId) return fail("INVALID_REQUEST", "material patch requires --asset-id.");
+    const data =
+      (await readJsonFlag(args, "json")) ??
+      (flagString(args, "data") ? parseJsonValue(flagString(args, "data") || "{}") : {});
+    return rpcEval(args, materialPatchSnippet(), {
+      assetId,
+      data: objectJson(data, "material data") as unknown as JsonValue,
+      sets: parseSets(flagList(args, "set")),
+    });
+  }
+  if (subcommand === "set-diffuse") {
+    const assetId = flagString(args, "asset-id") || flagString(args, "id");
+    const color = flagString(args, "color");
+    if (!assetId || !color) return fail("INVALID_REQUEST", "material set-diffuse requires --asset-id and --color.");
+    return rpcEval(args, materialPatchSnippet(), {
+      assetId,
+      data: { diffuse: parseJsonValue(color) } as unknown as JsonValue,
+      sets: [],
+    });
+  }
   return fail("UNKNOWN_COMMAND", `Unknown material command: ${subcommand || ""}`);
 }
 
@@ -690,8 +855,74 @@ async function handleScript(args: Args): Promise<Envelope> {
   return fail("UNKNOWN_COMMAND", `Unknown script command: ${subcommand || ""}`);
 }
 
+async function handleScene(args: Args): Promise<Envelope> {
+  const subcommand = args._[1];
+  if (subcommand === "settings" && (args._[2] || "get") === "get") {
+    return rpcEval(args, sceneSettingsGetSnippet());
+  }
+  if (subcommand === "settings" && args._[2] === "patch") {
+    const data = (await readJsonFlag(args, "json")) ?? {};
+    const sets = parseSets(flagList(args, "set"));
+    if (!Object.keys(objectJson(data, "scene settings")).length && !sets.length) {
+      return fail("INVALID_REQUEST", "scene settings patch requires --json <file> or --set path=value.");
+    }
+    return rpcEval(args, sceneSettingsPatchSnippet(), {
+      settings: objectJson(data, "scene settings") as unknown as JsonValue,
+      sets,
+    });
+  }
+  return fail("UNKNOWN_COMMAND", `Unknown scene command: ${[subcommand, args._[2]].filter(Boolean).join(" ")}`);
+}
+
+async function handleStore(args: Args): Promise<Envelope> {
+  const subcommand = args._[1] || "search";
+  if (subcommand === "search") {
+    const search = flagString(args, "search") || flagString(args, "q");
+    if (!search) return fail("INVALID_REQUEST", "store search requires --search.");
+    return rpcEval(args, storeSearchSnippet(), {
+      search,
+      order: flagString(args, "order") || null,
+      skip: Number(flagString(args, "skip", "0")),
+      limit: Number(flagString(args, "limit", "20")),
+    }, 30000);
+  }
+  if (subcommand === "get") {
+    const id = flagString(args, "id");
+    if (!id) return fail("INVALID_REQUEST", "store get requires --id.");
+    return rpcEval(args, storeGetSnippet(), { id }, 30000);
+  }
+  if (subcommand === "download") {
+    const id = flagString(args, "id");
+    const name = flagString(args, "name");
+    const license = await readJsonFlag(args, "license-json");
+    if (!id || !name || license === undefined) {
+      return fail("INVALID_REQUEST", "store download requires --id, --name, and --license-json.");
+    }
+    return rpcEval(args, storeDownloadSnippet(), {
+      id,
+      name,
+      license: objectJson(license, "license") as unknown as JsonValue,
+      folderId: flagString(args, "folder-id") || null,
+    }, 120000);
+  }
+  return fail("UNKNOWN_COMMAND", `Unknown store command: ${subcommand}`);
+}
+
 async function handleViewport(args: Args): Promise<Envelope> {
   const subcommand = args._[1];
+  if (subcommand === "focus") {
+    const ids = flagList(args, "id");
+    const id = flagString(args, "id");
+    if (!ids.length && !id) return fail("INVALID_REQUEST", "viewport focus requires --id.");
+    return rpcCall(args, "bridge:focusViewport", {
+      ids: ids as unknown as JsonValue,
+      id: id || null,
+      view: flagString(args, "view") || null,
+      yaw: flagString(args, "yaw") === undefined ? null : Number(flagString(args, "yaw")),
+      pitch: flagString(args, "pitch") === undefined ? null : Number(flagString(args, "pitch")),
+    });
+  }
+
   if (subcommand !== "capture") {
     return fail("UNKNOWN_COMMAND", `Unknown viewport command: ${subcommand || ""}`);
   }
@@ -721,26 +952,98 @@ async function handleViewport(args: Args): Promise<Envelope> {
   return raw;
 }
 
-function usage(): Envelope {
-  return ok({
-    usage: [
+function help(group = "overview"): Envelope {
+  const groups: Record<string, string[]> = {
+    overview: [
+      "pcbridge help core",
+      "pcbridge help entity",
+      "pcbridge help asset",
+      "pcbridge help material",
+      "pcbridge help script",
+      "pcbridge help scene",
+      "pcbridge help store",
+      "pcbridge help viewport",
+      "pcbridge help eval",
+    ],
+    core: [
       "pcbridge doctor",
       "pcbridge install-extension",
       "pcbridge install-skill --agent codex|claude|cursor|windsurf|all",
       "pcbridge daemon start",
       "pcbridge daemon status",
       "pcbridge targets",
-      "pcbridge eval --target current --code \"return location.href\"",
-      "pcbridge entity list --target current",
-      "pcbridge asset list --target current --type script",
-      "pcbridge asset upload --target current --file ./texture.png --folder \"AI Agent Bridge/Textures\"",
-      "pcbridge material create --target current --name Mat --diffuse-map <asset_id>",
-      "pcbridge script create --target current --filename controller.js --file ./controller.js",
-      "pcbridge entity set-material --target current --id <resource_id> --material-id <asset_id>",
-      "pcbridge entity add-script --target current --id <resource_id> --script-name controller",
-      "pcbridge viewport capture --target current --out ./tmp/viewport.png",
+      "pcbridge version",
     ],
+    entity: [
+      "pcbridge entity list --target current --limit 50 [--name Player] [--component render] [--tag enemy] [--full]",
+      "pcbridge entity get --target current --id <resource_id> [--full]",
+      "pcbridge entity create --target current --json ./entity.json",
+      "pcbridge entity create-many --target current --json ./entities.json",
+      "pcbridge entity patch --target current --id <resource_id> --set position='[0,1,0]'",
+      "pcbridge entity patch-many --target current --json ./edits.json",
+      "pcbridge entity duplicate --target current --id <resource_id> [--no-rename]",
+      "pcbridge entity reparent --target current --id <resource_id> --parent <parent_resource_id> [--index 0] [--no-preserve-transform]",
+      "pcbridge entity add-component --target current --id <resource_id> --component render --data '{\"type\":\"box\"}'",
+      "pcbridge entity add-components --target current --id <resource_id> --json ./components.json",
+      "pcbridge entity remove-component --target current --id <resource_id> --component render",
+      "pcbridge entity set-material --target current --id <resource_id> --material-id <asset_id>",
+      "pcbridge entity add-script --target current --id <resource_id> --asset-id <script_asset_id> --attributes-json ./attrs.json",
+      "pcbridge entity delete --target current --id <resource_id>",
+    ],
+    asset: [
+      "pcbridge asset list --target current [--type script] [--name controller] [--tag ui] [--limit 50] [--full]",
+      "pcbridge asset get --target current --id <asset_id> [--full]",
+      "pcbridge asset create --target current --json ./assets.json",
+      "pcbridge asset folder ensure --target current --path \"AI Agent Bridge/Task/Textures\"",
+      "pcbridge asset upload --target current --file ./texture.png --folder \"AI Agent Bridge/Task/Textures\"",
+      "pcbridge asset instantiate --target current --id <template_asset_id>",
+      "pcbridge asset delete --target current --id <asset_id>",
+    ],
+    material: [
+      "pcbridge material create --target current --name Mat --diffuse-map <texture_asset_id>",
+      "pcbridge material patch --target current --asset-id <asset_id> --set diffuse='[1,0,0]'",
+      "pcbridge material patch --target current --asset-id <asset_id> --json ./material-data.json",
+      "pcbridge material set-diffuse --target current --asset-id <asset_id> --color '[1,0,0]'",
+    ],
+    script: [
+      "pcbridge script create --target current --filename controller.js --file ./controller.js",
+      "pcbridge script set-text --target current --asset-id <asset_id> --file ./controller.js",
+      "pcbridge script parse --target current --asset-id <asset_id>",
+    ],
+    scene: [
+      "pcbridge scene settings get --target current",
+      "pcbridge scene settings patch --target current --json ./scene-settings.json",
+      "pcbridge scene settings patch --target current --set render.fog='\"linear\"' --set physics.gravity='[0,-9.8,0]'",
+    ],
+    store: [
+      "pcbridge store search --target current --search vehicle --limit 20",
+      "pcbridge store get --target current --id <store_asset_id>",
+      "pcbridge store download --target current --id <store_asset_id> --name AssetName --license-json ./license.json",
+    ],
+    viewport: [
+      "pcbridge viewport capture --target current --out ./tmp/viewport.png [--format png|webp]",
+      "pcbridge viewport focus --target current --id <resource_id> [--view perspective|top|bottom|front|back|left|right]",
+    ],
+    eval: [
+      "Use eval for custom Editor/Engine workflows, large multi-step scene edits, exploratory API inspection, and operations not yet structured.",
+      "pcbridge eval --target current --code \"return { href: location.href, hasEditor: !!editor }\"",
+      "pcbridge eval --target current --file ./task.js",
+      "pcbridge eval --target current --stdin",
+    ],
+  };
+
+  const commands = groups[group];
+  if (!commands) {
+    return fail("UNKNOWN_HELP_TOPIC", `Unknown help topic: ${group}.`, undefined, Object.keys(groups) as unknown as JsonValue);
+  }
+  return ok({
+    topic: group,
+    commands,
   });
+}
+
+function usage(): Envelope {
+  return help("overview");
 }
 
 async function main(): Promise<void> {
@@ -753,8 +1056,10 @@ async function main(): Promise<void> {
   }
 
   try {
-    if (command === "help" || command === "--help" || command === "-h") {
-      print(usage());
+    if (command !== "help" && args._[1] === "help") {
+      print(help(command));
+    } else if (command === "help" || command === "--help" || command === "-h") {
+      print(help(args._[1] || "overview"));
     } else if (command === "doctor") {
       print(await doctor());
     } else if (command === "install-extension") {
@@ -773,6 +1078,10 @@ async function main(): Promise<void> {
       print(await handleMaterial(args));
     } else if (command === "script") {
       print(await handleScript(args));
+    } else if (command === "scene") {
+      print(await handleScene(args));
+    } else if (command === "store") {
+      print(await handleStore(args));
     } else if (command === "viewport") {
       print(await handleViewport(args));
     } else if (command === "version" || command === "--version" || command === "-v") {

@@ -28,6 +28,7 @@ export class TargetRegistry {
       projectId: info.projectId || existing?.projectId,
       sceneId: info.sceneId || existing?.sceneId,
       branchId: info.branchId || existing?.branchId,
+      extensionVersion: info.extensionVersion || existing?.extensionVersion,
       ready: Boolean(info.ready),
       connected: true,
       lastSeen: now,

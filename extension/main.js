@@ -128,6 +128,78 @@
     };
   }
 
+  function readAsset(asset) {
+    const get = (path) => {
+      try {
+        return asset.get(path);
+      } catch {
+        return undefined;
+      }
+    };
+    const path = get("path") || [];
+    return {
+      id: get("id"),
+      name: get("name"),
+      type: get("type"),
+      path,
+      folder: Array.isArray(path) && path.length ? path[path.length - 1] : null,
+      tags: get("tags") || [],
+      file: get("file") || null
+    };
+  }
+
+  function splitAssetPath(path) {
+    if (Array.isArray(path)) return path.map(String).map((part) => part.trim()).filter(Boolean);
+    return String(path || "")
+      .split("/")
+      .map((part) => part.trim())
+      .filter(Boolean);
+  }
+
+  function isChildFolder(asset, name, parent) {
+    if (!asset || asset.get("type") !== "folder" || asset.get("name") !== name) return false;
+    const path = asset.get("path") || [];
+    if (!parent) return path.length === 0;
+    return path[path.length - 1] === parent.get("id");
+  }
+
+  async function ensureFolderPath(assets, path) {
+    const created = [];
+    let parent = null;
+    for (const name of splitAssetPath(path)) {
+      let folder = assets.list().find((asset) => isChildFolder(asset, name, parent));
+      if (!folder) {
+        folder = await assets.createFolder({ name, folder: parent || undefined });
+        created.push(folder);
+      }
+      parent = folder;
+    }
+    return { folder: parent, created };
+  }
+
+  async function resolveFolder(assets, params) {
+    if (params.folderId !== undefined && params.folderId !== null && params.folderId !== "") {
+      const folder = assets.get(Number(params.folderId));
+      if (!folder || folder.get("type") !== "folder") {
+        throw new Error("Folder asset not found: " + params.folderId);
+      }
+      return { folder, created: [] };
+    }
+    if (params.folder) {
+      return ensureFolderPath(assets, params.folder);
+    }
+    return { folder: null, created: [] };
+  }
+
+  function bytesFromBase64(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  }
+
   function withTimeout(promise, timeoutMs) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms.`)), timeoutMs);
@@ -240,11 +312,95 @@
     };
   }
 
+  async function uploadAsset(params) {
+    if (!params.base64) throw new Error("base64 file content is required.");
+    if (!params.name) throw new Error("name is required.");
+    if (!params.type) throw new Error("type is required.");
+
+    const assets = window.editor.api.globals.assets;
+    const folderResult = await resolveFolder(assets, params);
+    const blob = new Blob([bytesFromBase64(params.base64)], {
+      type: params.mime || "application/octet-stream"
+    });
+    const asset = await assets.upload(
+      {
+        name: params.name,
+        type: params.type,
+        folder: folderResult.folder || undefined,
+        filename: params.filename || params.name,
+        file: blob,
+        preload: params.preload !== false
+      },
+      null
+    );
+    return {
+      asset: readAsset(asset),
+      createdFolders: folderResult.created.map(readAsset)
+    };
+  }
+
+  function focusViewport(params) {
+    const ids = Array.isArray(params.ids) && params.ids.length ? params.ids : [params.id];
+    const entitiesApi = window.editor.api.globals.entities;
+    const entities = ids.map((id) => entitiesApi.get(id)).filter(Boolean);
+    if (!entities.length) {
+      throw new Error("No valid entities found.");
+    }
+
+    window.editor.api.globals.selection.set(entities, { history: true });
+
+    const camera = window.editor.call("camera:current");
+    if (!camera) {
+      throw new Error("Could not retrieve current camera.");
+    }
+    const aabb = window.editor.call("selection:aabb");
+    if (!aabb) {
+      throw new Error("Could not calculate selection bounds.");
+    }
+
+    let distance = Math.max(aabb.halfExtents.x, aabb.halfExtents.y, aabb.halfExtents.z);
+    distance /= Math.tan(0.5 * camera.camera.fov * Math.PI / 180.0);
+    distance = distance * 1.1 + 1;
+
+    if (params.view) {
+      const views = {
+        top: [-90, 0],
+        bottom: [90, 0],
+        front: [0, 0],
+        back: [0, 180],
+        left: [0, -90],
+        right: [0, 90],
+        perspective: [-25, 45]
+      };
+      const angles = views[params.view];
+      if (angles) {
+        camera.setEulerAngles(angles[0], angles[1], 0);
+      }
+    } else if (
+      (params.yaw !== undefined && params.yaw !== null) ||
+      (params.pitch !== undefined && params.pitch !== null)
+    ) {
+      const yaw = params.yaw ?? 45;
+      const pitch = params.pitch ?? -25;
+      camera.setEulerAngles(pitch, yaw, 0);
+    }
+
+    window.editor.call("camera:focus", aabb.center, distance);
+    return {
+      focused: ids,
+      view: params.view || null,
+      yaw: params.yaw ?? null,
+      pitch: params.pitch ?? null
+    };
+  }
+
   async function callMethod(method, params, requestId) {
     if (method === "bridge:ping") return { pong: true, href: location.href };
     if (method === "bridge:describeTarget") return describeTarget();
     if (method === "bridge:eval") return evalInPage(params || {}, requestId);
     if (method === "bridge:captureViewport") return captureViewport(params || {});
+    if (method === "bridge:uploadAsset") return uploadAsset(params || {});
+    if (method === "bridge:focusViewport") return focusViewport(params || {});
     throw new Error(`Unknown bridge method: ${method}`);
   }
 

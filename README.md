@@ -68,29 +68,66 @@ pcbridge targets
 pcbridge eval --target current --code "return { href: location.href, hasEditor: !!editor }"
 ```
 
+## Progressive help
+
+The CLI exposes layered help so agents can load only the command surface they need:
+
+```bash
+pcbridge help
+pcbridge help entity
+pcbridge help asset
+pcbridge help material
+pcbridge help script
+pcbridge help scene
+pcbridge help store
+pcbridge help viewport
+pcbridge help eval
+```
+
+Use structured commands for small, known operations that map cleanly to one Editor action. Use
+`pcbridge eval` for exploratory work, custom Editor/Engine API workflows, and large multi-step
+scene edits where one script is clearer and faster than many CLI calls.
+
 ## Common commands
 
 ```bash
 pcbridge entity list --target current --limit 50
+pcbridge entity list --target current --tag enemy --component render
 pcbridge entity create --target current --json ./entity.json
+pcbridge entity create-many --target current --json ./entities.json
 pcbridge entity patch --target current --id <resource_id> --set position='[0,1,0]'
+pcbridge entity patch-many --target current --json ./edits.json
+pcbridge entity duplicate --target current --id <resource_id>
+pcbridge entity reparent --target current --id <resource_id> --parent <parent_resource_id>
 pcbridge entity set-material --target current --id <resource_id> --material-id <material_asset_id>
 pcbridge entity add-script --target current --id <resource_id> --asset-id <script_asset_id> --attributes '{"speed":2.5}'
 pcbridge entity delete --target current --id <resource_id>
 
 pcbridge asset list --target current --type script
+pcbridge asset list --target current --tag generated
 pcbridge asset get --target current --id <asset_id>
+pcbridge asset create --target current --json ./assets.json
 pcbridge asset folder ensure --target current --path "AI Agent Bridge/Demo/Textures"
 pcbridge asset upload --target current --file ./texture.png --name DemoTexture --folder "AI Agent Bridge/Demo/Textures"
+pcbridge asset instantiate --target current --id <template_asset_id>
 pcbridge asset delete --target current --id <asset_id>
 
 pcbridge material create --target current --name DemoMaterial --folder "AI Agent Bridge/Demo/Materials" --diffuse-map <texture_asset_id>
+pcbridge material patch --target current --asset-id <asset_id> --set diffuse='[1,0,0]'
 
 pcbridge script create --target current --filename controller.js --file ./controller.js --folder "AI Agent Bridge/Demo/Scripts"
 pcbridge script set-text --target current --asset-id <asset_id> --file ./controller.js
 pcbridge script parse --target current --asset-id <asset_id>
 
+pcbridge scene settings get --target current
+pcbridge scene settings patch --target current --set physics.gravity='[0,-9.8,0]'
+
+pcbridge store search --target current --search vehicle --limit 20
+pcbridge store get --target current --id <store_asset_id>
+pcbridge store download --target current --id <store_asset_id> --name Vehicle --license-json ./license.json
+
 pcbridge viewport capture --target current --out ./tmp/playcanvas-viewport.png
+pcbridge viewport focus --target current --id <resource_id> --view perspective
 ```
 
 ## Texture + material + script workflow

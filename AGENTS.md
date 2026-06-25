@@ -13,11 +13,12 @@ Status as of 2026-06-25:
 - Git repository initialized and pushed to GitHub:
   - `https://github.com/Q-My99/playcanvas-agent-bridge-cli`
   - default branch: `main`
-- Package version is currently `0.2.1`.
+- Package version is currently `0.2.2`.
 - The npm package has been published:
   - package: `playcanvas-agent-bridge-cli`
   - npm latest: `0.2.1`
   - registry: `https://registry.npmjs.org/`
+  - local `0.2.2` changes have not been published to npm yet.
 - Temporary test files should be written under project-local `./tmp/`, not `/tmp`. The `tmp/` directory is ignored by git.
 - The generated local Chrome extension lives at `~/.pcbridge/extension`. After extension source changes, run `node dist/cli.js install-extension --no-open`, then reload the unpacked extension in Chrome.
 
@@ -36,7 +37,7 @@ Completed implementation:
   - isolated content script for WebSocket connection and postMessage bridge.
   - service worker for tab metadata and generated config loading.
   - auto-connect and reconnect to local daemon.
-  - extension manifest version is synced to package version `0.2.1`.
+  - extension manifest version is synced to package version `0.2.2`.
 - Core CLI commands:
   - `pcbridge doctor`
   - `pcbridge daemon start`
@@ -49,26 +50,51 @@ Completed implementation:
   - `entity list`
   - `entity get`
   - `entity create`
+  - `entity create-many`
   - `entity patch`
+  - `entity patch-many`
+  - `entity duplicate`
+  - `entity reparent`
   - `entity delete`
   - `entity add-component`
+  - `entity add-components`
   - `entity remove-component`
+  - `entity remove-components`
   - `entity set-material`
   - `entity add-script`
 - Structured asset/material/script commands:
   - `asset list`
   - `asset get`
+  - `asset create`
   - `asset folder ensure`
   - `asset upload`
+  - `asset instantiate`
   - `asset delete`
   - `material create`
+  - `material patch`
+  - `material set-diffuse`
   - `script create`
   - `script set-text`
   - `script parse`
+- Structured scene/store commands:
+  - `scene settings get`
+  - `scene settings patch`
+  - `store search`
+  - `store get`
+  - `store download`
 - Viewport capture:
   - `viewport capture` now uses dedicated `bridge:captureViewport` RPC rather than `bridge:eval`, so large PNG base64 is not truncated by eval serialization.
   - PNG is now the default output format.
   - WebP is still available with `--format webp`.
+- Viewport focus:
+  - `viewport focus` uses dedicated `bridge:focusViewport` RPC and supports named views such as `perspective`, `top`, `front`, and `right`.
+- Progressive CLI help:
+  - `pcbridge help`
+  - `pcbridge help entity|asset|material|script|scene|store|viewport|eval`
+- Large binary upload hygiene:
+  - `asset upload` now uses dedicated `bridge:uploadAsset` RPC rather than returning through eval serialization.
+- Diagnostics:
+  - `doctor` checks generated extension manifest version and connected tab extension versions against the package version.
 - Agent support:
   - Codex skill at `skills/codex/playcanvas-agent-bridge-cli`.
   - Claude skill at `skills/claude/playcanvas-agent-bridge-cli`.
@@ -169,18 +195,10 @@ Verified against a real open PlayCanvas Editor scene:
 
 Known unfinished work:
 
-- Push the `0.2.1` release-prep commit to GitHub if it has not already been pushed.
-- Create a GitHub tag/release for `v0.2.1` if desired.
+- Publish local version `0.2.2` to npm after verification.
+- Create a GitHub tag/release for `v0.2.2` if desired.
 - Add `pcbridge daemon install-service` or another durable service installation flow if needed.
-- Add more structured scene commands:
-  - `scene settings get`
-  - `scene settings patch`
-  - `viewport focus`
-- Add remaining structured entity operations:
-  - `entity duplicate`
-  - `entity reparent`
-- Consider structured material update commands:
-  - `material patch`
+- Consider structured material texture assignment helpers beyond generic `material patch`:
   - `material assign-texture`
 - Consider asset folder deletion safeguards:
   - recursive delete should require explicit confirmation or a separate dangerous flag.
