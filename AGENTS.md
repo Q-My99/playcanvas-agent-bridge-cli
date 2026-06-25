@@ -16,9 +16,8 @@ Status as of 2026-06-25:
 - Package version is currently `0.2.2`.
 - The npm package has been published:
   - package: `playcanvas-agent-bridge-cli`
-  - npm latest: `0.2.1`
+  - npm latest: `0.2.2`
   - registry: `https://registry.npmjs.org/`
-  - local `0.2.2` changes have not been published to npm yet.
 - Temporary test files should be written under project-local `./tmp/`, not `/tmp`. The `tmp/` directory is ignored by git.
 - The generated local Chrome extension lives at `~/.pcbridge/extension`. After extension source changes, run `node dist/cli.js install-extension --no-open`, then reload the unpacked extension in Chrome.
 
@@ -216,10 +215,14 @@ Verified against a real open PlayCanvas Editor scene:
     - `entities.delete(...)` can throw inside the current Editor build; `entity delete` now falls back to `entities.remove(...)` after reporting the original failure in `fallback`.
     - `assets.createTemplate(...)` does not return the created asset in the current Editor build; `asset create` now reads the template asset back from the source entity `template_id`.
     - dedicated `template create` uses the same source-entity `template_id` readback path so agents do not need to call generic `asset create` for template workflows.
+- Verified published npm/global update for `0.2.2`:
+  - `npm view playcanvas-agent-bridge-cli version dist-tags.latest --registry=https://registry.npmjs.org/` returned `0.2.2`.
+  - `npm install -g playcanvas-agent-bridge-cli@0.2.2 --registry=https://registry.npmjs.org/` updated the local global install.
+  - `pcbridge version` returned `0.2.2`.
+  - `npx -y playcanvas-agent-bridge-cli@latest version --registry=https://registry.npmjs.org/` returned `0.2.2`.
 
 Known unfinished work:
 
-- Publish local version `0.2.2` to npm after verification.
 - Create a GitHub tag/release for `v0.2.2` if desired.
 - Add `pcbridge daemon install-service` or another durable service installation flow if needed.
 - Consider structured material texture assignment helpers beyond generic `material patch`:
