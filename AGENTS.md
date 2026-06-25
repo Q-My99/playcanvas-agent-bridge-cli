@@ -70,6 +70,8 @@ Completed implementation:
   - `asset upload`
   - `asset instantiate`
   - `asset delete`
+  - `template create`
+  - `template instantiate`
   - `material create`
   - `material patch`
   - `material set-diffuse`
@@ -90,7 +92,7 @@ Completed implementation:
   - `viewport focus` uses dedicated `bridge:focusViewport` RPC and supports named views such as `perspective`, `top`, `front`, and `right`.
 - Progressive CLI help:
   - `pcbridge help`
-  - `pcbridge help entity|asset|material|script|scene|store|viewport|eval`
+  - `pcbridge help entity|asset|material|template|script|scene|store|viewport|eval`
 - Large binary upload hygiene:
   - `asset upload` now uses dedicated `bridge:uploadAsset` RPC rather than returning through eval serialization.
 - Diagnostics:
@@ -199,6 +201,11 @@ Verified against a real open PlayCanvas Editor scene:
   - `entity create-many`, `entity list --tag --component`, `entity patch-many`, `entity duplicate`, `entity reparent`, `entity add-components`, and `entity remove-components` passed against the real Editor scene.
   - `viewport focus` passed.
   - `asset folder ensure`, `asset create` for text/material/template, `asset instantiate`, and dedicated-RPC `asset upload` passed.
+  - dedicated `template create` and `template instantiate` passed against a box entity:
+    - created template asset `PCBridge Template Command Test Template`.
+    - instantiated it into a new render box entity.
+    - cleaned up the source entity, instantiated entity, template asset, and test folders.
+    - post-cleanup checks returned no leftover `PCBridge Template Command Test` entities/assets and no dangling entity child ids.
   - `material patch`, `material set-diffuse`, `material create --diffuse-map`, and `entity set-material` passed.
   - `scene settings get` and `scene settings patch` with the existing gravity value passed without changing scene behavior.
   - `store search` and `store get` passed.
@@ -208,6 +215,7 @@ Verified against a real open PlayCanvas Editor scene:
   - testing found and fixed current Editor compatibility issues:
     - `entities.delete(...)` can throw inside the current Editor build; `entity delete` now falls back to `entities.remove(...)` after reporting the original failure in `fallback`.
     - `assets.createTemplate(...)` does not return the created asset in the current Editor build; `asset create` now reads the template asset back from the source entity `template_id`.
+    - dedicated `template create` uses the same source-entity `template_id` readback path so agents do not need to call generic `asset create` for template workflows.
 
 Known unfinished work:
 

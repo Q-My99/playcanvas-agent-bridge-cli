@@ -49,6 +49,7 @@ import {
   storeDownloadSnippet,
   storeGetSnippet,
   storeSearchSnippet,
+  templateCreateSnippet,
 } from "./snippets.js";
 import { fail, ok, type Envelope, type JsonValue } from "./shared/protocol.js";
 
@@ -815,6 +816,31 @@ async function handleMaterial(args: Args): Promise<Envelope> {
   return fail("UNKNOWN_COMMAND", `Unknown material command: ${subcommand || ""}`);
 }
 
+async function handleTemplate(args: Args): Promise<Envelope> {
+  const subcommand = args._[1];
+  if (subcommand === "create") {
+    const entityId = flagString(args, "entity-id") || flagString(args, "id");
+    if (!entityId) return fail("INVALID_REQUEST", "template create requires --entity-id.");
+    return rpcEval(args, templateCreateSnippet(), {
+      entityId,
+      name: flagString(args, "name") || null,
+      folder: flagString(args, "folder") || null,
+      folderId: flagString(args, "folder-id") || null,
+      preload: !flagBool(args, "no-preload"),
+    }, 60000);
+  }
+  if (subcommand === "instantiate") {
+    const ids = flagList(args, "id");
+    const id = flagString(args, "id");
+    if (!ids.length && !id) return fail("INVALID_REQUEST", "template instantiate requires --id.");
+    return rpcEval(args, assetInstantiateTemplateSnippet(), {
+      ids: ids as unknown as JsonValue,
+      id: id || null,
+    }, 60000);
+  }
+  return fail("UNKNOWN_COMMAND", `Unknown template command: ${subcommand || ""}`);
+}
+
 async function handleScript(args: Args): Promise<Envelope> {
   const subcommand = args._[1];
   if (subcommand === "create") {
@@ -959,6 +985,7 @@ function help(group = "overview"): Envelope {
       "pcbridge help entity",
       "pcbridge help asset",
       "pcbridge help material",
+      "pcbridge help template",
       "pcbridge help script",
       "pcbridge help scene",
       "pcbridge help store",
@@ -1004,6 +1031,10 @@ function help(group = "overview"): Envelope {
       "pcbridge material patch --target current --asset-id <asset_id> --set diffuse='[1,0,0]'",
       "pcbridge material patch --target current --asset-id <asset_id> --json ./material-data.json",
       "pcbridge material set-diffuse --target current --asset-id <asset_id> --color '[1,0,0]'",
+    ],
+    template: [
+      "pcbridge template create --target current --entity-id <resource_id> --name TemplateName --folder \"AI Agent Bridge/Task/Templates\"",
+      "pcbridge template instantiate --target current --id <template_asset_id>",
     ],
     script: [
       "pcbridge script create --target current --filename controller.js --file ./controller.js",
@@ -1076,6 +1107,8 @@ async function main(): Promise<void> {
       print(await handleAsset(args));
     } else if (command === "material") {
       print(await handleMaterial(args));
+    } else if (command === "template") {
+      print(await handleTemplate(args));
     } else if (command === "script") {
       print(await handleScript(args));
     } else if (command === "scene") {

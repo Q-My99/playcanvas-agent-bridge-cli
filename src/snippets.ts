@@ -676,6 +676,68 @@ return {
 `;
 }
 
+export function templateCreateSnippet(): string {
+  return `
+${entityReader}
+${assetReader}
+${assetFolderHelpers}
+const args = command.args || {};
+const assetsApi = editor.api.globals.assets;
+const entitiesApi = editor.api.globals.entities;
+const id = args.entityId || args.id;
+if (!id) {
+  throw new Error("entityId is required.");
+}
+const entity = entitiesApi.get(id);
+if (!entity) {
+  throw new Error("Template source entity not found: " + id);
+}
+const folderResult = await resolveFolder(assetsApi, args);
+const name = args.name || entity.get("name") || "Template";
+const beforeTemplateIds = new Set(
+  assetsApi
+    .list()
+    .filter((asset) => asset.get("type") === "template")
+    .map((asset) => asset.get("id"))
+);
+
+let asset = await assetsApi.createTemplate({
+  name,
+  entity,
+  folder: folderResult.folder || undefined,
+  preload: args.preload !== false
+});
+
+if (!asset) {
+  const templateId = entity.get("template_id");
+  asset = templateId ? assetsApi.get(Number(templateId)) : null;
+}
+
+if (!asset) {
+  const createdTemplates = assetsApi
+    .list()
+    .filter((candidate) =>
+      candidate.get("type") === "template" &&
+      !beforeTemplateIds.has(candidate.get("id")) &&
+      candidate.get("name") === name
+    );
+  asset = createdTemplates[createdTemplates.length - 1] || null;
+}
+
+if (!asset) {
+  throw new Error("Failed to create template asset.");
+}
+
+return {
+  template: readAsset(asset),
+  sourceEntity: readEntity(entity),
+  templateId: entity.get("template_id") || asset.get("id"),
+  templateEntityIds: entity.get("template_ent_ids") || null,
+  createdFolders: folderResult.created.map(readAsset)
+};
+`;
+}
+
 export function assetDeleteSnippet(): string {
   return `
 ${assetReader}

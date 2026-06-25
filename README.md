@@ -77,6 +77,7 @@ pcbridge help
 pcbridge help entity
 pcbridge help asset
 pcbridge help material
+pcbridge help template
 pcbridge help script
 pcbridge help scene
 pcbridge help store
@@ -114,6 +115,9 @@ pcbridge asset delete --target current --id <asset_id>
 
 pcbridge material create --target current --name DemoMaterial --folder "AI Agent Bridge/Demo/Materials" --diffuse-map <texture_asset_id>
 pcbridge material patch --target current --asset-id <asset_id> --set diffuse='[1,0,0]'
+
+pcbridge template create --target current --entity-id <resource_id> --name DemoTemplate --folder "AI Agent Bridge/Demo/Templates"
+pcbridge template instantiate --target current --id <template_asset_id>
 
 pcbridge script create --target current --filename controller.js --file ./controller.js --folder "AI Agent Bridge/Demo/Scripts"
 pcbridge script set-text --target current --asset-id <asset_id> --file ./controller.js

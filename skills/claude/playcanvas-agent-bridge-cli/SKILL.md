@@ -21,6 +21,7 @@ Use layered help to load only the command surface you need:
 pcbridge help
 pcbridge help entity
 pcbridge help asset
+pcbridge help template
 pcbridge help scene
 pcbridge help viewport
 pcbridge help eval
@@ -42,6 +43,8 @@ pcbridge asset create --target current --json ./assets.json
 pcbridge asset folder ensure --target current --path "AI Agent Bridge/My Task/Textures"
 pcbridge asset upload --target current --file ./texture.png --name TaskTexture --folder "AI Agent Bridge/My Task/Textures"
 pcbridge material create --target current --name TaskMaterial --folder "AI Agent Bridge/My Task/Materials" --diffuse-map <texture_asset_id>
+pcbridge template create --target current --entity-id <resource_id> --name TaskTemplate --folder "AI Agent Bridge/My Task/Templates"
+pcbridge template instantiate --target current --id <template_asset_id>
 pcbridge scene settings get --target current
 pcbridge viewport focus --target current --id <resource_id> --view perspective
 pcbridge script create --target current --filename controller.js --file ./script.js --folder "AI Agent Bridge/My Task/Scripts"
