@@ -1,0 +1,47 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>PlayCanvas Agent Bridge</title>
+    <style>
+      body {
+        color: #1f2937;
+        font: 13px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        margin: 0;
+        min-width: 280px;
+        padding: 14px;
+      }
+
+      h1 {
+        font-size: 15px;
+        margin: 0 0 10px;
+      }
+
+      dl {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 6px 10px;
+        margin: 0;
+      }
+
+      dt {
+        color: #6b7280;
+      }
+
+      dd {
+        margin: 0;
+        word-break: break-all;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>PlayCanvas Agent Bridge</h1>
+    <dl>
+      <dt>Daemon</dt>
+      <dd id="daemon">Loading</dd>
+      <dt>Tab</dt>
+      <dd id="tab">Loading</dd>
+    </dl>
+    <script src="popup.js"></script>
+  </body>
+</html>

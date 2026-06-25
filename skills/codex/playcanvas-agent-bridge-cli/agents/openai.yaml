@@ -1,0 +1,4 @@
+interface:
+  display_name: "PlayCanvas Agent Bridge"
+  short_description: "Control open PlayCanvas Editor scenes through pcbridge."
+  default_prompt: "Use pcbridge to inspect or edit the open PlayCanvas Editor scene."

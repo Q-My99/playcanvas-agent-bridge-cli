@@ -1,0 +1,42 @@
+{
+  "name": "playcanvas-agent-bridge-cli",
+  "version": "0.1.0",
+  "description": "CLI-first local bridge for automating open PlayCanvas Editor tabs from AI coding agents.",
+  "type": "module",
+  "bin": {
+    "pcbridge": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "extension",
+    "skills",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "playcanvas",
+    "cli",
+    "chrome-extension",
+    "automation",
+    "agent"
+  ],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.4",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.8.3"
+  }
+}

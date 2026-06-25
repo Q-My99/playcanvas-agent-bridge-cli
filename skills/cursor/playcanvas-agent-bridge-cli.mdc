@@ -1,0 +1,29 @@
+---
+description: Use pcbridge to control open PlayCanvas Editor tabs from Cursor.
+globs:
+alwaysApply: false
+---
+
+Use `pcbridge` for PlayCanvas Editor automation. Do not use DevTools, mouse/keyboard browser automation, or raw console typing.
+
+Setup checks:
+
+```bash
+pcbridge doctor
+pcbridge daemon status
+pcbridge targets
+```
+
+If needed, ask the user to run `pcbridge daemon start`. If no target appears, ask them to run `pcbridge install-extension`, load the printed extension directory in `chrome://extensions`, and refresh PlayCanvas Editor.
+
+Prefer structured commands:
+
+```bash
+pcbridge entity list --target current --limit 50
+pcbridge entity patch --target current --id <resource_id> --set name=Player
+pcbridge asset list --target current --type script
+pcbridge script set-text --target current --asset-id <id> --file ./script.js
+pcbridge viewport capture --target current --out /tmp/playcanvas.webp
+```
+
+Use `pcbridge eval` only for custom Editor API work. Snippets run with `editor`, `pc`, `pcui`, `window`, `document`, `command`, and `serialize`. Return compact JSON; never return raw `editor`, `Entity`, `Asset`, or app objects.
