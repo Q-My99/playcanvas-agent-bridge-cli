@@ -261,11 +261,12 @@ const missing = ids.filter((id) => !entitiesApi.get(id));
 if (!entities.length) {
   return { affected: 0, duplicated: [], missing };
 }
-const duplicated = await entitiesApi.duplicate(entities, {
-  history: true,
-  rename: args.rename !== false,
-  select: args.select !== false
-});
+const duplicatedResult = await entitiesApi.duplicate(entities);
+const duplicated = Array.isArray(duplicatedResult)
+  ? duplicatedResult.filter(Boolean)
+  : duplicatedResult
+    ? [duplicatedResult]
+    : [];
 return {
   affected: duplicated.length,
   duplicated: duplicated.map(readEntity),
@@ -315,16 +316,29 @@ for (const id of ids) {
   else missing.push(id);
 }
 if (!found.length) {
-  return { affected: 0, deleted: [], missing };
+  return { affected: 0, deleted: [], missing, fallback: null };
 }
-await entities.delete(found, { history: true });
+const deleted = found.map((entity) => ({
+  resource_id: entity.get("resource_id"),
+  name: entity.get("name")
+}));
+let fallback = null;
+try {
+  await entities.delete(found);
+} catch (error) {
+  fallback = error instanceof Error ? error.message : String(error);
+  for (const item of deleted) {
+    const entity = entities.get(item.resource_id);
+    if (entity) {
+      entities.remove(entity);
+    }
+  }
+}
 return {
   affected: found.length,
-  deleted: found.map((entity) => ({
-    resource_id: entity.get("resource_id"),
-    name: entity.get("name")
-  })),
-  missing
+  deleted,
+  missing,
+  fallback
 };
 `;
 }
@@ -570,11 +584,13 @@ for (const definition of defs) {
     }
     options.folder = folder;
   }
+  let templateSourceEntity = null;
   if (type === "template") {
     const entity = entitiesApi.get(options.entity);
     if (!entity) {
       throw new Error("Template source entity not found: " + options.entity);
     }
+    templateSourceEntity = entity;
     options.entity = entity;
   }
 
@@ -588,7 +604,13 @@ for (const definition of defs) {
   else if (type === "material") asset = await assetsApi.createMaterial(options);
   else if (type === "script") asset = await assetsApi.createScript(options);
   else if (type === "shader") asset = await assetsApi.createShader(options);
-  else if (type === "template") asset = await assetsApi.createTemplate(options);
+  else if (type === "template") {
+    asset = await assetsApi.createTemplate(options);
+    if (!asset && templateSourceEntity) {
+      const templateId = templateSourceEntity.get("template_id");
+      asset = templateId ? assetsApi.get(Number(templateId)) : null;
+    }
+  }
   else if (type === "text") asset = await assetsApi.createText(options);
   else throw new Error("Unsupported asset type: " + type);
 

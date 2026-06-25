@@ -192,6 +192,22 @@ Verified against a real open PlayCanvas Editor scene:
 - Verified npm-package viewport capture:
   - output path: `./tmp/npm-global-readme-viewport.png`
   - PNG was complete and 1200 x 687.
+- Verified local dist `0.2.2` MCP-alignment command test after Chrome extension reload:
+  - daemon and connected extension both reported `0.2.2`.
+  - layered help worked for `help`, `help entity`, `help asset`, and `help eval`.
+  - `doctor` reported generated and connected extension versions correctly.
+  - `entity create-many`, `entity list --tag --component`, `entity patch-many`, `entity duplicate`, `entity reparent`, `entity add-components`, and `entity remove-components` passed against the real Editor scene.
+  - `viewport focus` passed.
+  - `asset folder ensure`, `asset create` for text/material/template, `asset instantiate`, and dedicated-RPC `asset upload` passed.
+  - `material patch`, `material set-diffuse`, `material create --diffuse-map`, and `entity set-material` passed.
+  - `scene settings get` and `scene settings patch` with the existing gravity value passed without changing scene behavior.
+  - `store search` and `store get` passed.
+  - `viewport capture --format png` produced `./tmp/mcp-align-viewport.png`, a valid 1200 x 687 PNG.
+  - cleanup check returned no leftover `PCBridge MCP Align Test` entities or assets.
+  - `store download` was intentionally not run in this automated pass because it imports external store assets into the project and can be large.
+  - testing found and fixed current Editor compatibility issues:
+    - `entities.delete(...)` can throw inside the current Editor build; `entity delete` now falls back to `entities.remove(...)` after reporting the original failure in `fallback`.
+    - `assets.createTemplate(...)` does not return the created asset in the current Editor build; `asset create` now reads the template asset back from the source entity `template_id`.
 
 Known unfinished work:
 

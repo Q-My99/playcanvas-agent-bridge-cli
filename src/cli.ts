@@ -981,7 +981,7 @@ function help(group = "overview"): Envelope {
       "pcbridge entity create-many --target current --json ./entities.json",
       "pcbridge entity patch --target current --id <resource_id> --set position='[0,1,0]'",
       "pcbridge entity patch-many --target current --json ./edits.json",
-      "pcbridge entity duplicate --target current --id <resource_id> [--no-rename]",
+      "pcbridge entity duplicate --target current --id <resource_id>",
       "pcbridge entity reparent --target current --id <resource_id> --parent <parent_resource_id> [--index 0] [--no-preserve-transform]",
       "pcbridge entity add-component --target current --id <resource_id> --component render --data '{\"type\":\"box\"}'",
       "pcbridge entity add-components --target current --id <resource_id> --json ./components.json",
