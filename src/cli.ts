@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CONFIG_DIR,
@@ -16,12 +16,22 @@ import {
 } from "./config.js";
 import { createDaemonServer } from "./daemon/server.js";
 import {
+  assetDeleteSnippet,
+  assetFolderEnsureSnippet,
   assetGetSnippet,
   assetListSnippet,
+  assetUploadSnippet,
+  entityAddComponentSnippet,
+  entityAddScriptSnippet,
   entityCreateSnippet,
+  entityDeleteSnippet,
   entityGetSnippet,
   entityListSnippet,
   entityPatchSnippet,
+  entityRemoveComponentSnippet,
+  entitySetMaterialSnippet,
+  materialCreateSnippet,
+  scriptCreateSnippet,
   scriptParseSnippet,
   scriptSetTextSnippet,
   viewportCaptureSnippet,
@@ -153,8 +163,9 @@ async function rpcEval(
   args: Args,
   code: string,
   commandArgs: Record<string, JsonValue> = {},
+  defaultTimeoutMs = 15000,
 ): Promise<Envelope> {
-  const timeoutMs = Number(flagString(args, "timeout-ms", "15000"));
+  const timeoutMs = Number(flagString(args, "timeout-ms", String(defaultTimeoutMs)));
   return fetchDaemon("/rpc", {
     method: "POST",
     body: JSON.stringify({
@@ -187,6 +198,59 @@ function listEnvelope(raw: Envelope): Envelope {
     limit: data.limit ?? data.items.length,
     hasMore: data.hasMore ?? false,
   });
+}
+
+function inferAssetType(path: string): string | undefined {
+  const ext = extname(path).toLowerCase();
+  if ([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tga"].includes(ext)) return "texture";
+  if ([".mp3", ".wav", ".ogg", ".m4a"].includes(ext)) return "audio";
+  if (ext === ".json") return "json";
+  if (ext === ".css") return "css";
+  if (ext === ".html" || ext === ".htm") return "html";
+  if (ext === ".txt") return "text";
+  return undefined;
+}
+
+function inferMime(path: string): string {
+  const ext = extname(path).toLowerCase();
+  const mimes: Record<string, string> = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".json": "application/json",
+    ".js": "text/javascript",
+    ".mjs": "text/javascript",
+    ".css": "text/css",
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".txt": "text/plain",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
+  };
+  return mimes[ext] || "application/octet-stream";
+}
+
+function nameFromFile(path: string): string {
+  const file = basename(path);
+  const ext = extname(file);
+  return ext ? file.slice(0, -ext.length) : file;
+}
+
+async function readJsonFlag(args: Args, flagName: string): Promise<JsonValue | undefined> {
+  const file = flagString(args, flagName);
+  if (!file) return undefined;
+  return JSON.parse(await readFile(file, "utf8")) as JsonValue;
+}
+
+function objectJson(value: JsonValue | undefined, label: string): Record<string, JsonValue> {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be a JSON object.`);
+  }
+  return value as Record<string, JsonValue>;
 }
 
 async function doctor(): Promise<Envelope> {
@@ -432,6 +496,62 @@ async function handleEntity(args: Args): Promise<Envelope> {
     if (!id) return fail("INVALID_REQUEST", "entity patch requires --id.");
     return rpcEval(args, entityPatchSnippet(), { id, sets: parseSets(flagList(args, "set")) });
   }
+  if (subcommand === "delete") {
+    const ids = flagList(args, "id");
+    const id = flagString(args, "id");
+    if (!ids.length && !id) return fail("INVALID_REQUEST", "entity delete requires --id.");
+    return rpcEval(args, entityDeleteSnippet(), { ids: ids as unknown as JsonValue, id: id || null });
+  }
+  if (subcommand === "add-component") {
+    const id = flagString(args, "id");
+    const component = flagString(args, "component");
+    if (!id || !component) {
+      return fail("INVALID_REQUEST", "entity add-component requires --id and --component.");
+    }
+    const data =
+      (await readJsonFlag(args, "json")) ??
+      (flagString(args, "data") ? parseJsonValue(flagString(args, "data") || "{}") : {});
+    return rpcEval(args, entityAddComponentSnippet(), {
+      id,
+      component,
+      data: objectJson(data, "component data") as unknown as JsonValue,
+    });
+  }
+  if (subcommand === "remove-component") {
+    const id = flagString(args, "id");
+    const component = flagString(args, "component");
+    if (!id || !component) {
+      return fail("INVALID_REQUEST", "entity remove-component requires --id and --component.");
+    }
+    return rpcEval(args, entityRemoveComponentSnippet(), { id, component });
+  }
+  if (subcommand === "set-material") {
+    const id = flagString(args, "id");
+    const materialId = flagString(args, "material-id");
+    if (!id || !materialId) {
+      return fail("INVALID_REQUEST", "entity set-material requires --id and --material-id.");
+    }
+    return rpcEval(args, entitySetMaterialSnippet(), {
+      id,
+      materialId,
+      slot: Number(flagString(args, "slot", "0")),
+      renderType: flagString(args, "render-type", "box") || "box",
+    });
+  }
+  if (subcommand === "add-script") {
+    const id = flagString(args, "id");
+    if (!id) return fail("INVALID_REQUEST", "entity add-script requires --id.");
+    const attributes =
+      (await readJsonFlag(args, "attributes-json")) ??
+      (flagString(args, "attributes") ? parseJsonValue(flagString(args, "attributes") || "{}") : {});
+    return rpcEval(args, entityAddScriptSnippet(), {
+      id,
+      scriptName: flagString(args, "script-name") || null,
+      assetId: flagString(args, "asset-id") || null,
+      attributes: objectJson(attributes, "script attributes") as unknown as JsonValue,
+      enabled: !flagBool(args, "disabled"),
+    });
+  }
   return fail("UNKNOWN_COMMAND", `Unknown entity command: ${subcommand}`);
 }
 
@@ -453,11 +573,91 @@ async function handleAsset(args: Args): Promise<Envelope> {
     if (!id) return fail("INVALID_REQUEST", "asset get requires --id.");
     return rpcEval(args, assetGetSnippet(), { id, full: flagBool(args, "full") });
   }
+  if (subcommand === "folder" && args._[2] === "ensure") {
+    const path = flagString(args, "path");
+    if (!path) return fail("INVALID_REQUEST", "asset folder ensure requires --path.");
+    return rpcEval(args, assetFolderEnsureSnippet(), { path });
+  }
+  if (subcommand === "upload") {
+    const file = flagString(args, "file");
+    if (!file) return fail("INVALID_REQUEST", "asset upload requires --file.");
+    const fileBuffer = await readFile(file);
+    const type = flagString(args, "type") || inferAssetType(file);
+    if (!type) return fail("INVALID_REQUEST", "asset upload requires --type for this file.");
+    const filename = flagString(args, "filename") || basename(file);
+    return rpcEval(
+      args,
+      assetUploadSnippet(),
+      {
+        base64: fileBuffer.toString("base64"),
+        mime: flagString(args, "mime") || inferMime(file),
+        name: flagString(args, "name") || nameFromFile(file),
+        filename,
+        type,
+        folder: flagString(args, "folder") || null,
+        folderId: flagString(args, "folder-id") || null,
+        preload: !flagBool(args, "no-preload"),
+      },
+      120000,
+    );
+  }
+  if (subcommand === "delete") {
+    const ids = flagList(args, "id");
+    const id = flagString(args, "id");
+    if (!ids.length && !id) return fail("INVALID_REQUEST", "asset delete requires --id.");
+    return rpcEval(args, assetDeleteSnippet(), { ids: ids as unknown as JsonValue, id: id || null }, 30000);
+  }
   return fail("UNKNOWN_COMMAND", `Unknown asset command: ${subcommand}`);
+}
+
+async function handleMaterial(args: Args): Promise<Envelope> {
+  const subcommand = args._[1];
+  if (subcommand === "create") {
+    const name = flagString(args, "name");
+    if (!name) return fail("INVALID_REQUEST", "material create requires --name.");
+    const data =
+      (await readJsonFlag(args, "json")) ??
+      (flagString(args, "data") ? parseJsonValue(flagString(args, "data") || "{}") : {});
+    return rpcEval(
+      args,
+      materialCreateSnippet(),
+      {
+        name,
+        folder: flagString(args, "folder") || null,
+        folderId: flagString(args, "folder-id") || null,
+        diffuseMap: flagString(args, "diffuse-map") || null,
+        emissiveMap: flagString(args, "emissive-map") || null,
+        normalMap: flagString(args, "normal-map") || null,
+        data: objectJson(data, "material data") as unknown as JsonValue,
+        preload: !flagBool(args, "no-preload"),
+      },
+      30000,
+    );
+  }
+  return fail("UNKNOWN_COMMAND", `Unknown material command: ${subcommand || ""}`);
 }
 
 async function handleScript(args: Args): Promise<Envelope> {
   const subcommand = args._[1];
+  if (subcommand === "create") {
+    const filename = flagString(args, "filename") || (flagString(args, "file") ? basename(flagString(args, "file") || "") : undefined);
+    const file = flagString(args, "file");
+    if (!filename || !file) {
+      return fail("INVALID_REQUEST", "script create requires --filename and --file.");
+    }
+    return rpcEval(
+      args,
+      scriptCreateSnippet(),
+      {
+        filename,
+        text: await readFile(file, "utf8"),
+        folder: flagString(args, "folder") || null,
+        folderId: flagString(args, "folder-id") || null,
+        preload: !flagBool(args, "no-preload"),
+      },
+      60000,
+    );
+  }
   if (subcommand === "set-text") {
     const assetId = flagString(args, "asset-id");
     const file = flagString(args, "file");
@@ -484,7 +684,7 @@ async function handleViewport(args: Args): Promise<Envelope> {
   }
 
   const raw = await rpcEval(args, viewportCaptureSnippet(), {
-    format: flagString(args, "format") || "webp",
+    format: flagString(args, "format") || "png",
     quality: Number(flagString(args, "quality", "0.85")),
     maxWidth: Number(flagString(args, "max-width", "1200")),
   });
@@ -520,7 +720,12 @@ function usage(): Envelope {
       "pcbridge eval --target current --code \"return location.href\"",
       "pcbridge entity list --target current",
       "pcbridge asset list --target current --type script",
-      "pcbridge viewport capture --target current --out /tmp/viewport.webp",
+      "pcbridge asset upload --target current --file ./texture.png --folder \"AI Agent Bridge/Textures\"",
+      "pcbridge material create --target current --name Mat --diffuse-map <asset_id>",
+      "pcbridge script create --target current --filename controller.js --file ./controller.js",
+      "pcbridge entity set-material --target current --id <resource_id> --material-id <asset_id>",
+      "pcbridge entity add-script --target current --id <resource_id> --script-name controller",
+      "pcbridge viewport capture --target current --out /tmp/viewport.png",
     ],
   });
 }
@@ -551,6 +756,8 @@ async function main(): Promise<void> {
       print(await handleEntity(args));
     } else if (command === "asset") {
       print(await handleAsset(args));
+    } else if (command === "material") {
+      print(await handleMaterial(args));
     } else if (command === "script") {
       print(await handleScript(args));
     } else if (command === "viewport") {

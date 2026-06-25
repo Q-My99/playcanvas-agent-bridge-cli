@@ -28,7 +28,7 @@ If no target appears, tell the user to run `pcbridge install-extension`, load th
 ## Workflow
 
 1. Run `pcbridge targets` and choose an explicit target when possible.
-2. Prefer structured commands for common tasks: `entity`, `asset`, `script`, and `viewport`.
+2. Prefer structured commands for common tasks: `entity`, `asset`, `material`, `script`, and `viewport`.
 3. Use `pcbridge eval` only for custom Editor API work.
 4. Return compact JSON from snippets. Never return raw `editor`, `Entity`, `Asset`, `entities.root`, or app objects.
 5. Use PlayCanvas history options for writes when available.
@@ -61,10 +61,23 @@ Patch an entity:
 pcbridge entity patch --target current --id <resource_id> --set name=Player --set position='[0,1,0]'
 ```
 
+Modify components and materials:
+
+```bash
+pcbridge entity add-component --target current --id <resource_id> --component render --data '{"type":"box"}'
+pcbridge entity set-material --target current --id <resource_id> --material-id <material_asset_id>
+pcbridge entity add-script --target current --id <resource_id> --asset-id <script_asset_id> --attributes '{"speed":2.4}'
+pcbridge entity delete --target current --id <resource_id>
+```
+
 Work with assets and scripts:
 
 ```bash
 pcbridge asset list --target current --type script --limit 50
+pcbridge asset folder ensure --target current --path "AI Agent Bridge/My Task/Textures"
+pcbridge asset upload --target current --file ./texture.png --name TaskTexture --folder "AI Agent Bridge/My Task/Textures"
+pcbridge material create --target current --name TaskMaterial --folder "AI Agent Bridge/My Task/Materials" --diffuse-map <texture_asset_id>
+pcbridge script create --target current --filename controller.js --file ./controller.js --folder "AI Agent Bridge/My Task/Scripts"
 pcbridge script set-text --target current --asset-id <id> --file ./controller.js
 pcbridge script parse --target current --asset-id <id>
 ```
@@ -72,7 +85,33 @@ pcbridge script parse --target current --asset-id <id>
 Capture the viewport:
 
 ```bash
-pcbridge viewport capture --target current --out /tmp/playcanvas-viewport.webp
+pcbridge viewport capture --target current --out /tmp/playcanvas-viewport.png
+```
+
+## Asset Organization
+
+Create task-scoped folders before uploading generated assets:
+
+```text
+AI Agent Bridge/<task name>/Textures
+AI Agent Bridge/<task name>/Materials
+AI Agent Bridge/<task name>/Scripts
+```
+
+Use stable names that describe the asset purpose. Avoid dumping generated files at the project root.
+
+## Texture Box Pattern
+
+For a textured scripted box, compose structured commands instead of writing one large eval:
+
+```bash
+pcbridge asset folder ensure --target current --path "AI Agent Bridge/Texture Box/Textures"
+pcbridge asset upload --target current --file ./image.png --name TextureBoxImage --folder "AI Agent Bridge/Texture Box/Textures"
+pcbridge material create --target current --name TextureBoxMaterial --folder "AI Agent Bridge/Texture Box/Materials" --diffuse-map <texture_asset_id>
+pcbridge script create --target current --filename jumpingBox.js --file ./jumpingBox.js --folder "AI Agent Bridge/Texture Box/Scripts"
+pcbridge entity create --target current --json ./box.json
+pcbridge entity set-material --target current --id <box_resource_id> --material-id <material_asset_id>
+pcbridge entity add-script --target current --id <box_resource_id> --asset-id <script_asset_id> --attributes '{"height":0.5,"speed":2.4}'
 ```
 
 ## Eval Snippet Rules

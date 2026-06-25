@@ -230,7 +230,7 @@
     dstCanvas.height = outHeight;
     dstCanvas.getContext("2d").drawImage(srcCanvas, 0, 0, outWidth, outHeight);
 
-    const mime = params.format === "png" ? "image/png" : "image/webp";
+    const mime = params.format === "webp" ? "image/webp" : "image/png";
     const dataUrl = dstCanvas.toDataURL(mime, Number(params.quality || 0.85));
     return {
       mime,
