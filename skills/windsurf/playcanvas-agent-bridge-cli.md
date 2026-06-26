@@ -12,7 +12,7 @@ pcbridge targets
 
 If the daemon is offline, ask the user to run `pcbridge daemon start`. If no target is connected, ask the user to run `pcbridge install-extension`, load the printed unpacked extension path in `chrome://extensions`, and refresh the Editor or Launch tab.
 
-Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help entity|asset|material|template|script|scene|store|viewport|logs|eval`.
+Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
 
 Use structured commands for small, known Editor operations:
 

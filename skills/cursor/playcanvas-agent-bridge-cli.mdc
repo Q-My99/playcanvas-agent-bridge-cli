@@ -16,7 +16,7 @@ pcbridge targets
 
 If needed, ask the user to run `pcbridge daemon start`. If no target appears, ask them to run `pcbridge install-extension`, load the printed extension directory in `chrome://extensions`, and refresh PlayCanvas Editor or Launch.
 
-Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help entity|asset|material|template|script|scene|store|viewport|logs|eval`.
+Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
 
 Use structured commands for small, known Editor operations:
 

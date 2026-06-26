@@ -24,6 +24,7 @@ pcbridge help asset
 pcbridge help template
 pcbridge help scene
 pcbridge help viewport
+pcbridge help launch
 pcbridge help logs
 pcbridge help eval
 ```

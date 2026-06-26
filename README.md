@@ -83,6 +83,7 @@ pcbridge help script
 pcbridge help scene
 pcbridge help store
 pcbridge help viewport
+pcbridge help launch
 pcbridge help logs
 pcbridge help eval
 ```

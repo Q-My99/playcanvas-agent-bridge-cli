@@ -28,7 +28,7 @@ If no target appears, tell the user to run `pcbridge install-extension`, load th
 ## Workflow
 
 1. Run `pcbridge targets` and choose an explicit target when possible.
-2. Use layered help to load only the command group you need: `pcbridge help`, then `pcbridge help entity|asset|material|template|script|scene|store|viewport|logs|eval`.
+2. Use layered help to load only the command group you need: `pcbridge help`, then `pcbridge help entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
 3. Use structured commands for small, known operations that map cleanly to one Editor action.
 4. Use `pcbridge eval` for exploratory API inspection, custom Editor/Engine workflows, Launch runtime debugging, and large multi-step scene edits where one script is clearer than many CLI calls.
 5. Return compact JSON from snippets. Never return raw `editor`, `Entity`, `Asset`, `entities.root`, or app objects.

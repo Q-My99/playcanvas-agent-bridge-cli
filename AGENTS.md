@@ -99,7 +99,7 @@ Completed implementation:
   - `viewport focus` uses dedicated `bridge:focusViewport` RPC and supports named views such as `perspective`, `top`, `front`, and `right`.
 - Progressive CLI help:
   - `pcbridge help`
-  - `pcbridge help entity|asset|material|template|script|scene|store|viewport|logs|eval`
+  - `pcbridge help entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`
 - Large binary upload hygiene:
   - `asset upload` now uses dedicated `bridge:uploadAsset` RPC rather than returning through eval serialization.
 - Diagnostics:
