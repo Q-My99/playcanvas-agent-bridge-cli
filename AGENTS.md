@@ -236,15 +236,20 @@ Verified against a real open PlayCanvas Editor scene:
   - `node dist/cli.js help logs` returned `logs get` and `logs clear`.
   - `node dist/cli.js install-extension --no-open` generated `~/.pcbridge/extension` with manifest version `0.2.4`.
   - `doctor` correctly detected a connected old `0.2.2` extension and asked for unpacked extension reload.
-  - Live Launch-page verification still requires manually reloading the unpacked Chrome extension, because Chrome automation is not allowed to operate `chrome://extensions`.
+  - Live Launch-page verification passed after manually reloading the unpacked Chrome extension:
+    - opened `https://launch.playcanvas.com/2533764?debug=true`.
+    - `pcbridge targets` listed Launch targets with `kind: launch`, `sceneId: 2533764`, `extensionVersion: 0.2.4`, `hasPc: true`, `hasRuntimeApp: true`, and `ready: true`.
+    - `pcbridge eval --target tab:742400288` executed JavaScript in the Launch page, inspected the runtime app/canvas, added a temporary DOM marker, and wrote test console logs.
+    - `pcbridge logs get` returned the test `info` and `warn` entries, `--level warn` filtered correctly, and `--level error` returned an empty list instead of an error.
+    - `pcbridge viewport capture --target tab:742400288 --out ./tmp/launch-runtime-capture.png --format png --max-width 1200` produced a valid 1200 x 621 PNG showing the running Launch canvas.
+    - the temporary DOM marker was removed after capture.
 - Fixed extension reload noise:
   - `isolated.js` now detects `Extension context invalidated`, closes its WebSocket, clears reconnect/heartbeat timers, rejects pending page calls, and stops quietly.
   - When upgrading from an older injected content script, Chrome may still show the old script's one-time context invalidation error until the Editor or Launch page is refreshed.
 
 Known unfinished work:
 
-- Publish local version `0.2.4` to npm after Launch verification.
-- Verify `launch:<sceneId>` target registration, `eval`, `viewport capture`, and `logs get` after reloading the unpacked extension in Chrome.
+- Publish local version `0.2.4` to npm.
 - Create a GitHub tag/release for `v0.2.2` if desired.
 - Add `pcbridge daemon install-service` or another durable service installation flow if needed.
 - Consider structured material texture assignment helpers beyond generic `material patch`:
