@@ -13,12 +13,12 @@ Status as of 2026-06-26:
 - Git repository initialized and pushed to GitHub:
   - `https://github.com/Q-My99/playcanvas-agent-bridge-cli`
   - default branch: `main`
-- Package version is currently `0.2.3`.
+- Package version is currently `0.2.4`.
 - The npm package has been published:
   - package: `playcanvas-agent-bridge-cli`
   - npm latest: `0.2.2`
   - registry: `https://registry.npmjs.org/`
-  - local `0.2.3` Launch-debugging changes have not been published to npm yet.
+  - local `0.2.4` Launch-debugging/context-invalidation changes have not been published to npm yet.
 - Temporary test files should be written under project-local `./tmp/`, not `/tmp`. The `tmp/` directory is ignored by git.
 - The generated local Chrome extension lives at `~/.pcbridge/extension`. After extension source changes, run `node dist/cli.js install-extension --no-open`, then reload the unpacked extension in Chrome.
 
@@ -37,7 +37,7 @@ Completed implementation:
   - isolated content script for WebSocket connection and postMessage bridge.
   - service worker for tab metadata and generated config loading.
   - auto-connect and reconnect to local daemon.
-  - extension manifest version is synced to package version `0.2.3`.
+  - extension manifest version is synced to package version `0.2.4`.
   - matches both PlayCanvas Editor pages and PlayCanvas Launch pages.
   - captures page console logs, window errors, and unhandled promise rejections in a bounded in-page ring buffer.
 - Core CLI commands:
@@ -228,19 +228,22 @@ Verified against a real open PlayCanvas Editor scene:
   - `npm install -g playcanvas-agent-bridge-cli@0.2.2 --registry=https://registry.npmjs.org/` updated the local global install.
   - `pcbridge version` returned `0.2.2`.
   - `npx -y playcanvas-agent-bridge-cli@latest version --registry=https://registry.npmjs.org/` returned `0.2.2`.
-- Verified local dist `0.2.3` checks:
+- Verified local dist `0.2.4` checks:
   - `node --check extension/main.js`, `extension/isolated.js`, and `extension/popup.js`.
   - `pnpm check`.
   - `pnpm build`.
-  - `node dist/cli.js version` returned `0.2.3`.
+  - `node dist/cli.js version` returned `0.2.4`.
   - `node dist/cli.js help logs` returned `logs get` and `logs clear`.
-  - `node dist/cli.js install-extension --no-open` generated `~/.pcbridge/extension` with manifest version `0.2.3`.
+  - `node dist/cli.js install-extension --no-open` generated `~/.pcbridge/extension` with manifest version `0.2.4`.
   - `doctor` correctly detected a connected old `0.2.2` extension and asked for unpacked extension reload.
   - Live Launch-page verification still requires manually reloading the unpacked Chrome extension, because Chrome automation is not allowed to operate `chrome://extensions`.
+- Fixed extension reload noise:
+  - `isolated.js` now detects `Extension context invalidated`, closes its WebSocket, clears reconnect/heartbeat timers, rejects pending page calls, and stops quietly.
+  - When upgrading from an older injected content script, Chrome may still show the old script's one-time context invalidation error until the Editor or Launch page is refreshed.
 
 Known unfinished work:
 
-- Publish local version `0.2.3` to npm after Launch verification.
+- Publish local version `0.2.4` to npm after Launch verification.
 - Verify `launch:<sceneId>` target registration, `eval`, `viewport capture`, and `logs get` after reloading the unpacked extension in Chrome.
 - Create a GitHub tag/release for `v0.2.2` if desired.
 - Add `pcbridge daemon install-service` or another durable service installation flow if needed.

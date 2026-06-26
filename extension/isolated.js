@@ -15,9 +15,55 @@
 
   let ws = null;
   let reconnectTimer = null;
+  let heartbeatTimer = null;
+  let stopped = false;
   let config = DEFAULT_CONFIG;
   let tabInfo = {};
+  let extensionVersion = null;
   const pending = new Map();
+
+  function isExtensionContextInvalidated(error) {
+    return String((error && error.message) || error)
+      .toLowerCase()
+      .includes("extension context invalidated");
+  }
+
+  function stopBridge() {
+    if (stopped) return;
+    stopped = true;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    for (const waiter of pending.values()) {
+      clearTimeout(waiter.timer);
+      waiter.reject(new Error("Extension context invalidated."));
+    }
+    pending.clear();
+    if (ws) {
+      try {
+        ws.close();
+      } catch {
+        // The extension context is already gone.
+      }
+      ws = null;
+    }
+  }
+
+  function getExtensionVersion() {
+    if (extensionVersion) return extensionVersion;
+    try {
+      extensionVersion = chrome.runtime.getManifest().version;
+      return extensionVersion;
+    } catch (error) {
+      if (isExtensionContextInvalidated(error)) stopBridge();
+      return null;
+    }
+  }
 
   function requestId() {
     if (crypto && crypto.randomUUID) return crypto.randomUUID();
@@ -36,11 +82,28 @@
 
   function requestRuntime(message) {
     return new Promise((resolve) => {
+      if (stopped) {
+        resolve(null);
+        return;
+      }
       try {
         chrome.runtime.sendMessage(message, (response) => {
+          try {
+            const lastError = chrome.runtime.lastError;
+            if (lastError) {
+              if (isExtensionContextInvalidated(lastError)) stopBridge();
+              resolve(null);
+              return;
+            }
+          } catch (error) {
+            if (isExtensionContextInvalidated(error)) stopBridge();
+            resolve(null);
+            return;
+          }
           resolve(response || null);
         });
-      } catch {
+      } catch (error) {
+        if (isExtensionContextInvalidated(error)) stopBridge();
         resolve(null);
       }
     });
@@ -77,7 +140,9 @@
     if (!message || message.channel !== CHANNEL || message.side !== "main") return;
 
     if (message.type === "ready") {
-      sendTargetUpdate();
+      sendTargetUpdate().catch((error) => {
+        if (isExtensionContextInvalidated(error)) stopBridge();
+      });
       return;
     }
 
@@ -116,7 +181,7 @@
         clientId,
         tabId: tabInfo.tabId,
         windowId: tabInfo.windowId,
-        extensionVersion: chrome.runtime.getManifest().version,
+        extensionVersion: getExtensionVersion(),
         ...(response.data || {}),
         url: (response.data && response.data.url) || location.href,
         title: (response.data && response.data.title) || document.title || "",
@@ -127,7 +192,7 @@
         clientId,
         tabId: tabInfo.tabId,
         windowId: tabInfo.windowId,
-        extensionVersion: chrome.runtime.getManifest().version,
+        extensionVersion: getExtensionVersion(),
         url: location.href,
         title: document.title || "",
         ready: false
@@ -136,16 +201,21 @@
   }
 
   async function sendTargetUpdate() {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    ws.send(
-      JSON.stringify({
-        type: "target:update",
-        target: await describeTarget()
-      })
-    );
+    if (stopped || !ws || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      ws.send(
+        JSON.stringify({
+          type: "target:update",
+          target: await describeTarget()
+        })
+      );
+    } catch (error) {
+      if (isExtensionContextInvalidated(error)) stopBridge();
+    }
   }
 
   function scheduleReconnect() {
+    if (stopped) return;
     if (reconnectTimer) return;
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
@@ -154,6 +224,7 @@
   }
 
   function connect() {
+    if (stopped) return;
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
@@ -171,7 +242,9 @@
 
     ws.addEventListener("open", () => {
       console.info("[pcbridge] connected to local daemon");
-      sendTargetUpdate();
+      sendTargetUpdate().catch((error) => {
+        if (isExtensionContextInvalidated(error)) stopBridge();
+      });
     });
 
     ws.addEventListener("message", async (event) => {
@@ -186,24 +259,32 @@
 
       try {
         const response = await callMain(message.method, message.params || {}, message.timeoutMs);
-        ws.send(
-          JSON.stringify({
-            type: "response",
-            id: message.id,
-            ok: true,
-            data: response.data,
-            meta: response.meta || {}
-          })
-        );
+        if (!stopped && ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: "response",
+              id: message.id,
+              ok: true,
+              data: response.data,
+              meta: response.meta || {}
+            })
+          );
+        }
       } catch (error) {
-        ws.send(
-          JSON.stringify({
-            type: "response",
-            id: message.id,
-            ok: false,
-            error: serializeError(error)
-          })
-        );
+        if (isExtensionContextInvalidated(error)) {
+          stopBridge();
+          return;
+        }
+        if (!stopped && ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: "response",
+              id: message.id,
+              ok: false,
+              error: serializeError(error)
+            })
+          );
+        }
       }
     });
 
@@ -222,10 +303,20 @@
 
   async function start() {
     config = await loadConfig();
+    if (stopped) return;
+    extensionVersion = getExtensionVersion();
+    if (stopped) return;
     tabInfo = await getTabInfo();
+    if (stopped) return;
     connect();
-    setInterval(sendTargetUpdate, 2000);
+    heartbeatTimer = setInterval(() => {
+      sendTargetUpdate().catch((error) => {
+        if (isExtensionContextInvalidated(error)) stopBridge();
+      });
+    }, 2000);
   }
 
-  start();
+  start().catch((error) => {
+    if (isExtensionContextInvalidated(error)) stopBridge();
+  });
 })();
