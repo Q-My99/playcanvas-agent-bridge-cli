@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, extname, join } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CONFIG_DIR,
@@ -46,6 +46,7 @@ import {
   scriptCreateSnippet,
   scriptParseSnippet,
   scriptSetTextSnippet,
+  scriptUpsertSnippet,
   storeDownloadSnippet,
   storeGetSnippet,
   storeSearchSnippet,
@@ -277,6 +278,65 @@ function objectJson(value: JsonValue | undefined, label: string): Record<string,
     throw new Error(`${label} must be a JSON object.`);
   }
   return value as Record<string, JsonValue>;
+}
+
+type UploadSpec = {
+  key?: string;
+  file: string;
+  name?: string;
+  filename?: string;
+  type?: string;
+  mime?: string;
+  folder?: string;
+  folderId?: string;
+  preload?: boolean;
+};
+
+function uploadSpecFromJson(value: JsonValue, label: string): UploadSpec {
+  const data = objectJson(value, label);
+  const file = typeof data.file === "string" ? data.file : "";
+  if (!file) {
+    throw new Error(`${label}.file is required.`);
+  }
+  return {
+    key: typeof data.key === "string" ? data.key : undefined,
+    file,
+    name: typeof data.name === "string" ? data.name : undefined,
+    filename: typeof data.filename === "string" ? data.filename : undefined,
+    type: typeof data.type === "string" ? data.type : undefined,
+    mime: typeof data.mime === "string" ? data.mime : undefined,
+    folder: typeof data.folder === "string" ? data.folder : undefined,
+    folderId: typeof data.folderId === "string" || typeof data.folderId === "number"
+      ? String(data.folderId)
+      : undefined,
+    preload: typeof data.preload === "boolean" ? data.preload : undefined,
+  };
+}
+
+function resolveManifestFile(manifestPath: string, file: string): string {
+  return isAbsolute(file) ? file : resolve(dirname(manifestPath), file);
+}
+
+async function uploadAsset(args: Args, spec: UploadSpec): Promise<Envelope> {
+  const fileBuffer = await readFile(spec.file);
+  const type = spec.type || inferAssetType(spec.file);
+  if (!type) return fail("INVALID_REQUEST", `asset upload requires --type for ${spec.file}.`);
+  const filename = spec.filename || basename(spec.file);
+  return rpcCall(
+    args,
+    "bridge:uploadAsset",
+    {
+      base64: fileBuffer.toString("base64"),
+      mime: spec.mime || inferMime(spec.file),
+      name: spec.name || nameFromFile(spec.file),
+      filename,
+      type,
+      folder: spec.folder || null,
+      folderId: spec.folderId || null,
+      preload: spec.preload !== false,
+    },
+    120000,
+  );
 }
 
 async function doctor(): Promise<Envelope> {
@@ -738,24 +798,72 @@ async function handleAsset(args: Args): Promise<Envelope> {
   if (subcommand === "upload") {
     const file = flagString(args, "file");
     if (!file) return fail("INVALID_REQUEST", "asset upload requires --file.");
-    const fileBuffer = await readFile(file);
-    const type = flagString(args, "type") || inferAssetType(file);
-    if (!type) return fail("INVALID_REQUEST", "asset upload requires --type for this file.");
-    const filename = flagString(args, "filename") || basename(file);
-    return rpcCall(
-      args,
-      "bridge:uploadAsset",
+    return uploadAsset(args, {
+      file,
+      type: flagString(args, "type"),
+      mime: flagString(args, "mime"),
+      name: flagString(args, "name"),
+      filename: flagString(args, "filename"),
+      folder: flagString(args, "folder"),
+      folderId: flagString(args, "folder-id"),
+      preload: !flagBool(args, "no-preload"),
+    });
+  }
+  if (subcommand === "upload-many") {
+    const manifestPath = flagString(args, "json");
+    if (!manifestPath) return fail("INVALID_REQUEST", "asset upload-many requires --json <file>.");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as JsonValue;
+    const rawItems = Array.isArray(manifest)
+      ? manifest
+      : objectJson(manifest, "asset upload-many manifest").assets;
+    const items = Array.isArray(rawItems) ? rawItems : [];
+    if (!items.length) {
+      return fail("INVALID_REQUEST", "asset upload-many manifest must contain a non-empty assets array.");
+    }
+
+    const uploads: JsonValue[] = [];
+    const errors: JsonValue[] = [];
+    for (let index = 0; index < items.length; index += 1) {
+      const spec = uploadSpecFromJson(items[index] as JsonValue, `assets[${index}]`);
+      spec.file = resolveManifestFile(manifestPath, spec.file);
+      const result = await uploadAsset(args, spec);
+      uploads.push({
+        index,
+        key: spec.key || null,
+        file: spec.file,
+        name: spec.name || nameFromFile(spec.file),
+        result: result as unknown as JsonValue,
+      });
+      if (!result.ok) {
+        errors.push({
+          index,
+          file: spec.file,
+          error: result.error as unknown as JsonValue,
+        });
+      }
+    }
+
+    if (errors.length) {
+      return fail(
+        "UPLOAD_MANY_FAILED",
+        `${errors.length} of ${items.length} uploads failed.`,
+        {
+          affected: items.length - errors.length,
+          failed: errors.length,
+        },
+        { uploads, errors } as unknown as JsonValue,
+      );
+    }
+
+    return ok(
       {
-        base64: fileBuffer.toString("base64"),
-        mime: flagString(args, "mime") || inferMime(file),
-        name: flagString(args, "name") || nameFromFile(file),
-        filename,
-        type,
-        folder: flagString(args, "folder") || null,
-        folderId: flagString(args, "folder-id") || null,
-        preload: !flagBool(args, "no-preload"),
+        affected: uploads.length,
+        uploads,
       },
-      120000,
+      {
+        affected: uploads.length,
+        failed: 0,
+      },
     );
   }
   if (subcommand === "delete") {
@@ -843,6 +951,26 @@ async function handleTemplate(args: Args): Promise<Envelope> {
 
 async function handleScript(args: Args): Promise<Envelope> {
   const subcommand = args._[1];
+  if (subcommand === "upsert") {
+    const filename = flagString(args, "filename") || (flagString(args, "file") ? basename(flagString(args, "file") || "") : undefined);
+    const file = flagString(args, "file");
+    if (!filename || !file) {
+      return fail("INVALID_REQUEST", "script upsert requires --filename and --file.");
+    }
+    return rpcEval(
+      args,
+      scriptUpsertSnippet(),
+      {
+        filename,
+        text: await readFile(file, "utf8"),
+        folder: flagString(args, "folder") || null,
+        folderId: flagString(args, "folder-id") || null,
+        preload: !flagBool(args, "no-preload"),
+        parse: flagBool(args, "parse"),
+      },
+      60000,
+    );
+  }
   if (subcommand === "create") {
     const filename = flagString(args, "filename") || (flagString(args, "file") ? basename(flagString(args, "file") || "") : undefined);
     const file = flagString(args, "file");
@@ -1023,6 +1151,7 @@ function help(group = "overview"): Envelope {
       "pcbridge asset create --target current --json ./assets.json",
       "pcbridge asset folder ensure --target current --path \"AI Agent Bridge/Task/Textures\"",
       "pcbridge asset upload --target current --file ./texture.png --folder \"AI Agent Bridge/Task/Textures\"",
+      "pcbridge asset upload-many --target current --json ./upload-manifest.json",
       "pcbridge asset instantiate --target current --id <template_asset_id>",
       "pcbridge asset delete --target current --id <asset_id>",
     ],
@@ -1037,6 +1166,7 @@ function help(group = "overview"): Envelope {
       "pcbridge template instantiate --target current --id <template_asset_id>",
     ],
     script: [
+      "pcbridge script upsert --target current --filename controller.js --file ./controller.js --folder \"AI Agent Bridge/Task/Scripts\" [--parse]",
       "pcbridge script create --target current --filename controller.js --file ./controller.js",
       "pcbridge script set-text --target current --asset-id <asset_id> --file ./controller.js",
       "pcbridge script parse --target current --asset-id <asset_id>",
@@ -1059,6 +1189,7 @@ function help(group = "overview"): Envelope {
       "Use eval for custom Editor/Engine workflows, large multi-step scene edits, exploratory API inspection, and operations not yet structured.",
       "pcbridge eval --target current --code \"return { href: location.href, hasEditor: !!editor }\"",
       "pcbridge eval --target current --file ./task.js",
+      "pcbridge eval --target current --file ./task.js --args-json ./task-args.json",
       "pcbridge eval --target current --stdin",
     ],
   };
@@ -1100,7 +1231,14 @@ async function main(): Promise<void> {
     } else if (command === "targets") {
       print(await fetchDaemon("/targets"));
     } else if (command === "eval") {
-      print(await rpcEval(args, await readCode(args)));
+      const commandArgs = await readJsonFlag(args, "args-json");
+      print(
+        await rpcEval(
+          args,
+          await readCode(args),
+          objectJson(commandArgs, "eval args") as Record<string, JsonValue>,
+        ),
+      );
     } else if (command === "entity") {
       print(await handleEntity(args));
     } else if (command === "asset") {

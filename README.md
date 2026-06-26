@@ -110,6 +110,7 @@ pcbridge asset get --target current --id <asset_id>
 pcbridge asset create --target current --json ./assets.json
 pcbridge asset folder ensure --target current --path "AI Agent Bridge/Demo/Textures"
 pcbridge asset upload --target current --file ./texture.png --name DemoTexture --folder "AI Agent Bridge/Demo/Textures"
+pcbridge asset upload-many --target current --json ./upload-manifest.json
 pcbridge asset instantiate --target current --id <template_asset_id>
 pcbridge asset delete --target current --id <asset_id>
 
@@ -120,6 +121,7 @@ pcbridge template create --target current --entity-id <resource_id> --name DemoT
 pcbridge template instantiate --target current --id <template_asset_id>
 
 pcbridge script create --target current --filename controller.js --file ./controller.js --folder "AI Agent Bridge/Demo/Scripts"
+pcbridge script upsert --target current --filename controller.js --file ./controller.js --folder "AI Agent Bridge/Demo/Scripts" --parse
 pcbridge script set-text --target current --asset-id <asset_id> --file ./controller.js
 pcbridge script parse --target current --asset-id <asset_id>
 
@@ -132,6 +134,27 @@ pcbridge store download --target current --id <store_asset_id> --name Vehicle --
 
 pcbridge viewport capture --target current --out ./tmp/playcanvas-viewport.png
 pcbridge viewport focus --target current --id <resource_id> --view perspective
+```
+
+For task-sized installs, keep upload manifests next to the generated files. Relative `file` paths are resolved from the manifest location:
+
+```json
+{
+  "assets": [
+    {
+      "key": "player",
+      "file": "final/player.png",
+      "name": "DemoPlayer",
+      "folder": "AI Agent Bridge/Demo/Textures"
+    }
+  ]
+}
+```
+
+Use `eval --args-json` when a large Editor script needs local configuration without embedding JSON into source:
+
+```bash
+pcbridge eval --target current --file ./install-scene.js --args-json ./install-args.json
 ```
 
 ## Texture + material + script workflow

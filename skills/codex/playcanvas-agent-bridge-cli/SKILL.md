@@ -84,11 +84,13 @@ pcbridge asset list --target current --type script --limit 50
 pcbridge asset create --target current --json ./assets.json
 pcbridge asset folder ensure --target current --path "AI Agent Bridge/My Task/Textures"
 pcbridge asset upload --target current --file ./texture.png --name TaskTexture --folder "AI Agent Bridge/My Task/Textures"
+pcbridge asset upload-many --target current --json ./upload-manifest.json
 pcbridge asset instantiate --target current --id <template_asset_id>
 pcbridge material create --target current --name TaskMaterial --folder "AI Agent Bridge/My Task/Materials" --diffuse-map <texture_asset_id>
 pcbridge material patch --target current --asset-id <material_asset_id> --set diffuse='[1,0,0]'
 pcbridge template create --target current --entity-id <resource_id> --name TaskTemplate --folder "AI Agent Bridge/My Task/Templates"
 pcbridge template instantiate --target current --id <template_asset_id>
+pcbridge script upsert --target current --filename controller.js --file ./controller.js --folder "AI Agent Bridge/My Task/Scripts" --parse
 pcbridge script create --target current --filename controller.js --file ./controller.js --folder "AI Agent Bridge/My Task/Scripts"
 pcbridge script set-text --target current --asset-id <id> --file ./controller.js
 pcbridge script parse --target current --asset-id <id>
@@ -121,6 +123,26 @@ AI Agent Bridge/<task name>/Scripts
 ```
 
 Use stable names that describe the asset purpose. Avoid dumping generated files at the project root.
+
+## Large Task Workflow
+
+For multi-asset or game-sized tasks:
+
+1. Choose an explicit target from `pcbridge targets`, preferably `scene:<sceneId>` or `tab:<id>`.
+2. Create a project-local task folder for generated scripts, manifests, captures, and temporary assets.
+3. Put PlayCanvas assets under `AI Agent Bridge/<task name>/{Textures,Materials,Scripts,Templates}`.
+4. Use `pcbridge asset upload-many --json ./upload-manifest.json` for batches. In the manifest, each item needs `file` and may include `key`, `name`, `filename`, `type`, `mime`, `folder`, `folderId`, and `preload`. Relative `file` paths resolve from the manifest file; `key` is returned for later argument mapping but is not sent to PlayCanvas.
+5. Use `pcbridge script upsert --filename <name>.js --file ./script.js --folder "AI Agent Bridge/<task name>/Scripts" --parse` for repeatable script creation or update.
+6. Use `pcbridge eval --file ./install.js --args-json ./args.json --timeout-ms 120000` for large scene installation scripts. The JSON object is available as `command.args`; increase `--timeout-ms` instead of splitting a coherent install script just to avoid the default 15s timeout.
+7. Verify with read-only commands, a small smoke-test eval, and `pcbridge viewport capture --out ./task/captures/preview.png`.
+
+If repeated manual glue is needed across tasks, improve the CLI or this skill rather than continuing to hand-roll brittle shell/script sequences.
+
+## Editor Entity Persistence Notes
+
+Do not pre-place runtime-generated content just to prove a game exists. For roguelike maps, procedural levels, particles, pickups, and enemies that are generated at launch, keep the durable Editor surface small: a root entity, script component, camera/light helpers when useful, and persistent assets/scripts.
+
+When Editor entities do need to be created or replaced, prefer structured commands such as `entity create`, `entity create-many`, `entity add-script`, `entity set-material`, and `entity patch-many`. In current PlayCanvas Editor builds, a large `eval` script that creates many entities in a tight loop can briefly show objects in the viewport and then lose them from the Editor data model. For large static previews, create in small batches, pause between batches when needed, then immediately verify with `entity list` by name/tag before capturing the viewport.
 
 ## Texture Box Pattern
 

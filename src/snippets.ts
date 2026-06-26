@@ -894,6 +894,84 @@ return {
 `;
 }
 
+export function scriptUpsertSnippet(): string {
+  return `
+${assetReader}
+${assetFolderHelpers}
+const args = command.args || {};
+const globals = editor.api.globals;
+const assets = globals.assets;
+if (!args.filename) {
+  throw new Error("filename is required.");
+}
+const folderResult = await resolveFolder(assets, args);
+const folderId = folderResult.folder ? folderResult.folder.get("id") : null;
+function isInTargetFolder(asset) {
+  if (!folderId) return true;
+  const path = asset.get("path") || [];
+  return path[path.length - 1] === folderId;
+}
+let asset = assets.list().find((candidate) =>
+  candidate.get("type") === "script" &&
+  isInTargetFolder(candidate) &&
+  (
+    candidate.get("file.filename") === args.filename ||
+    candidate.get("name") === args.filename
+  )
+);
+let action = "updated";
+if (!asset) {
+  asset = await assets.createScript({
+    filename: args.filename,
+    text: String(args.text || ""),
+    folder: folderResult.folder || undefined,
+    preload: args.preload !== false
+  });
+  action = "created";
+} else {
+  const filename = asset.get("file.filename") || asset.get("name") || args.filename;
+  const form = new FormData();
+  form.append("filename", filename);
+  form.append("file", new Blob([String(args.text || "")], { type: "text/javascript" }), filename);
+  const branchId = window.config?.self?.branch?.id || window.config?.branch?.id;
+  if (branchId) {
+    form.append("branchId", String(branchId));
+  }
+  const headers = {};
+  if (globals.accessToken) {
+    headers.Authorization = "Bearer " + globals.accessToken;
+  }
+  const response = await fetch("/api/assets/" + asset.get("id"), {
+    method: "PUT",
+    headers,
+    body: form
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.error) {
+    throw new Error(body.error || "Failed to update script asset.");
+  }
+}
+
+let scripts = asset.get("data.scripts") || {};
+if (args.parse) {
+  const [error, data] = await new Promise((resolve) => {
+    editor.call("scripts:parse", asset.observer, (...values) => resolve(values));
+  });
+  if (error) {
+    throw new Error(String(error));
+  }
+  scripts = data?.scripts || {};
+}
+
+return {
+  action,
+  asset: readAsset(asset),
+  scripts,
+  createdFolders: folderResult.created.map(readAsset)
+};
+`;
+}
+
 export function scriptParseSnippet(): string {
   return `
 ${assetReader}

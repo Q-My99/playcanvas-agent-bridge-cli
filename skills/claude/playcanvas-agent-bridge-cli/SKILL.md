@@ -42,11 +42,13 @@ pcbridge asset list --target current --type script
 pcbridge asset create --target current --json ./assets.json
 pcbridge asset folder ensure --target current --path "AI Agent Bridge/My Task/Textures"
 pcbridge asset upload --target current --file ./texture.png --name TaskTexture --folder "AI Agent Bridge/My Task/Textures"
+pcbridge asset upload-many --target current --json ./upload-manifest.json
 pcbridge material create --target current --name TaskMaterial --folder "AI Agent Bridge/My Task/Materials" --diffuse-map <texture_asset_id>
 pcbridge template create --target current --entity-id <resource_id> --name TaskTemplate --folder "AI Agent Bridge/My Task/Templates"
 pcbridge template instantiate --target current --id <template_asset_id>
 pcbridge scene settings get --target current
 pcbridge viewport focus --target current --id <resource_id> --view perspective
+pcbridge script upsert --target current --filename controller.js --file ./script.js --folder "AI Agent Bridge/My Task/Scripts" --parse
 pcbridge script create --target current --filename controller.js --file ./script.js --folder "AI Agent Bridge/My Task/Scripts"
 pcbridge script set-text --target current --asset-id <id> --file ./script.js
 pcbridge viewport capture --target current --out ./tmp/playcanvas.png
@@ -56,6 +58,11 @@ Organize generated assets under `AI Agent Bridge/<task name>/Textures`, `Materia
 
 ```bash
 pcbridge eval --target current --code "return { href: location.href, entityCount: editor.api.globals.entities.list().length }"
+pcbridge eval --target current --file ./install.js --args-json ./install-args.json --timeout-ms 120000
 ```
 
 Eval snippets run in an async function with `editor`, `pc`, `pcui`, `window`, `document`, `command`, and `serialize`. Return compact JSON only. Do not return raw PlayCanvas Editor objects. Use `{ history: true }` for Editor mutations when available, and verify changes with a read-only command.
+
+For large PlayCanvas tasks, choose an explicit target from `pcbridge targets`, keep task files in a local folder, upload assets with an upload manifest, use `script upsert` for repeatable script updates, and capture the viewport after smoke tests. If the same manual glue repeats across tasks, improve the CLI or this skill instead of continuing the brittle sequence.
+
+Do not pre-place runtime-generated content just to prove a game exists. Keep procedural maps, pickups, enemies, and VFX in the runtime script, with only a small durable Editor root and helper entities when needed. If Editor entities must be created, use structured commands and small `entity create-many` batches with read-back verification; large eval scripts that create many entities in a tight loop can briefly show objects and then lose them from the Editor data model.
