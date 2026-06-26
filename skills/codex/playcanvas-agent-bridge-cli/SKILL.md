@@ -1,11 +1,11 @@
 ---
 name: playcanvas-agent-bridge-cli
-description: Control an already-open PlayCanvas Editor scene through the pcbridge CLI and Chrome extension. Use when Codex needs to inspect or modify PlayCanvas Editor targets, entities, assets, scripts, scene data, or viewport captures without DevTools, mouse/keyboard automation, MCP, or browser console scripting.
+description: Control an already-open PlayCanvas Editor scene or Launch page through the pcbridge CLI and Chrome extension. Use when Codex needs to inspect or modify PlayCanvas Editor targets, debug Launch runtime pages, read logs, run eval snippets, or capture viewports without DevTools, mouse/keyboard automation, MCP, or browser console scripting.
 ---
 
 # PlayCanvas Agent Bridge CLI
 
-Use `pcbridge` to automate PlayCanvas Editor through a local daemon and Chrome extension. The CLI is the interface; this skill only tells the agent how to use it safely.
+Use `pcbridge` to automate PlayCanvas Editor and PlayCanvas Launch pages through a local daemon and Chrome extension. The CLI is the interface; this skill only tells the agent how to use it safely.
 
 ## Quick Start
 
@@ -23,14 +23,14 @@ If the daemon is offline, tell the user to run this in a separate terminal:
 pcbridge daemon start
 ```
 
-If no target appears, tell the user to run `pcbridge install-extension`, load the printed directory in `chrome://extensions`, then refresh the PlayCanvas Editor tab.
+If no target appears, tell the user to run `pcbridge install-extension`, load the printed directory in `chrome://extensions`, then refresh the PlayCanvas Editor or Launch tab.
 
 ## Workflow
 
 1. Run `pcbridge targets` and choose an explicit target when possible.
-2. Use layered help to load only the command group you need: `pcbridge help`, then `pcbridge help entity|asset|material|template|script|scene|store|viewport|eval`.
+2. Use layered help to load only the command group you need: `pcbridge help`, then `pcbridge help entity|asset|material|template|script|scene|store|viewport|logs|eval`.
 3. Use structured commands for small, known operations that map cleanly to one Editor action.
-4. Use `pcbridge eval` for exploratory API inspection, custom Editor/Engine workflows, and large multi-step scene edits where one script is clearer than many CLI calls.
+4. Use `pcbridge eval` for exploratory API inspection, custom Editor/Engine workflows, Launch runtime debugging, and large multi-step scene edits where one script is clearer than many CLI calls.
 5. Return compact JSON from snippets. Never return raw `editor`, `Entity`, `Asset`, `entities.root`, or app objects.
 6. Use PlayCanvas history options for writes when available.
 7. Verify writes with a read-only command after mutation.
@@ -110,6 +110,15 @@ Capture the viewport:
 
 ```bash
 pcbridge viewport capture --target current --out ./tmp/playcanvas-viewport.png
+```
+
+Launch runtime debugging:
+
+```bash
+pcbridge eval --target launch:<sceneId> --code "return { href: location.href, hasPc: !!pc, canvasCount: document.querySelectorAll('canvas').length }"
+pcbridge viewport capture --target launch:<sceneId> --out ./tmp/launch.png
+pcbridge logs get --target launch:<sceneId> --limit 100
+pcbridge logs get --target launch:<sceneId> --level error
 ```
 
 ## Asset Organization

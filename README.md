@@ -1,6 +1,6 @@
 # playcanvas-agent-bridge-cli
 
-CLI-first local automation for controlling an already-open PlayCanvas Editor scene from AI coding agents such as Codex, Claude Code, Cursor, and Windsurf.
+CLI-first local automation for controlling already-open PlayCanvas Editor scenes and PlayCanvas Launch pages from AI coding agents such as Codex, Claude Code, Cursor, and Windsurf.
 
 The core interface is the `pcbridge` command plus a local daemon and a Chrome Manifest V3 extension. MCP is intentionally not required.
 
@@ -50,7 +50,7 @@ Then in Chrome:
 2. Enable Developer Mode.
 3. Click Load unpacked.
 4. Select the exact directory printed by `pcbridge install-extension`.
-5. Open or refresh a PlayCanvas Editor page.
+5. Open or refresh a PlayCanvas Editor page or a PlayCanvas Launch page.
 
 The generated extension directory contains a local session token in `config.json`, so load that generated directory rather than the raw `extension/` folder from the repo.
 
@@ -66,6 +66,7 @@ In another terminal:
 pcbridge doctor
 pcbridge targets
 pcbridge eval --target current --code "return { href: location.href, hasEditor: !!editor }"
+pcbridge eval --target launch:<sceneId> --code "return { href: location.href, hasPc: !!pc }"
 ```
 
 ## Progressive help
@@ -82,12 +83,13 @@ pcbridge help script
 pcbridge help scene
 pcbridge help store
 pcbridge help viewport
+pcbridge help logs
 pcbridge help eval
 ```
 
 Use structured commands for small, known operations that map cleanly to one Editor action. Use
-`pcbridge eval` for exploratory work, custom Editor/Engine API workflows, and large multi-step
-scene edits where one script is clearer and faster than many CLI calls.
+`pcbridge eval` for exploratory work, custom Editor/Engine API workflows, Launch debugging, and
+large multi-step scene edits where one script is clearer and faster than many CLI calls.
 
 ## Common commands
 
@@ -134,6 +136,10 @@ pcbridge store download --target current --id <store_asset_id> --name Vehicle --
 
 pcbridge viewport capture --target current --out ./tmp/playcanvas-viewport.png
 pcbridge viewport focus --target current --id <resource_id> --view perspective
+
+pcbridge logs get --target current --limit 100
+pcbridge logs get --target launch:<sceneId> --level error
+pcbridge logs clear --target current
 ```
 
 For task-sized installs, keep upload manifests next to the generated files. Relative `file` paths are resolved from the manifest location:
@@ -180,9 +186,15 @@ pcbridge eval --target current --code "return location.href"
 pcbridge eval --target tab:123 --code "return location.href"
 pcbridge eval --target scene:987654 --code "return location.href"
 pcbridge eval --target project:123456 --code "return location.href"
+pcbridge eval --target launch:987654 --code "return { href: location.href, hasPc: !!pc }"
+pcbridge viewport capture --target launch:987654 --out ./tmp/launch.png
+pcbridge logs get --target launch:987654 --limit 100
 ```
 
-`current` means the most recently seen ready PlayCanvas Editor target.
+`current` means the most recently seen ready PlayCanvas target. If both the Editor and Launch page
+are open for the same scene, use `tab:<id>`, `editor:<sceneId>`, or `launch:<sceneId>` to avoid
+ambiguity. Editor-only structured commands require an Editor target; `eval`, `viewport capture`,
+and `logs` also work on Launch targets.
 
 ## Agent skills
 
@@ -205,13 +217,13 @@ Installed locations:
 
 ## Security model
 
-This is a local trusted developer tool. It executes JavaScript inside PlayCanvas Editor pages that you already have open.
+This is a local trusted developer tool. It executes JavaScript inside PlayCanvas Editor and Launch pages that you already have open.
 
 Safeguards:
 
 - daemon binds only to `127.0.0.1`;
 - CLI, daemon, and extension share a local session token;
-- extension matches only PlayCanvas Editor URLs;
+- extension matches only PlayCanvas Editor and Launch URLs;
 - CLI output uses compact JSON envelopes;
 - structured write commands require explicit IDs or JSON files.
 

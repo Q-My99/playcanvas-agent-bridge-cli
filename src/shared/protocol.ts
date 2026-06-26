@@ -29,12 +29,17 @@ export type TargetInfo = {
   clientId: string;
   tabId?: number;
   windowId?: number;
+  kind?: string;
   url: string;
   title?: string;
   projectId?: string;
   sceneId?: string;
   branchId?: string;
   extensionVersion?: string;
+  hasEditor?: boolean;
+  hasPc?: boolean;
+  hasRuntimeApp?: boolean;
+  canvasCount?: number;
   ready: boolean;
   connected: boolean;
   lastSeen: string;

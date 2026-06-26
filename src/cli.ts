@@ -416,11 +416,11 @@ async function doctor(): Promise<Envelope> {
         versions: connectedVersions as unknown as JsonValue,
         expectedVersion: VERSION,
         message: mismatched.length
-          ? "One or more connected Editor tabs are using an older extension version."
+          ? "One or more connected PlayCanvas tabs are using an older extension version."
           : "Connected extension versions match the package version.",
       });
       if (mismatched.length) {
-        nextActions.push("Reload the unpacked extension and refresh the PlayCanvas Editor tab.");
+        nextActions.push("Reload the unpacked extension and refresh the PlayCanvas Editor or Launch tab.");
       }
     }
   } catch {
@@ -529,7 +529,7 @@ async function installExtension(args: Args): Promise<Envelope> {
       "Enable Developer Mode in Chrome.",
       "Click Load unpacked.",
       `Select ${EXTENSION_INSTALL_DIR}.`,
-      "Open or refresh a PlayCanvas Editor tab, then run pcbridge daemon start.",
+      "Open or refresh a PlayCanvas Editor or Launch tab, then run pcbridge daemon start.",
     ],
   });
 }
@@ -1106,6 +1106,27 @@ async function handleViewport(args: Args): Promise<Envelope> {
   return raw;
 }
 
+async function handleLogs(args: Args): Promise<Envelope> {
+  const subcommand = args._[1] || "get";
+
+  if (subcommand === "get" || subcommand === "list") {
+    return listEnvelope(
+      await rpcCall(args, "bridge:getLogs", {
+        level: flagString(args, "level") || null,
+        limit: Number(flagString(args, "limit", "100")),
+        offset: flagString(args, "offset") === undefined ? null : Number(flagString(args, "offset")),
+        since: flagString(args, "since") || null,
+      }),
+    );
+  }
+
+  if (subcommand === "clear") {
+    return rpcCall(args, "bridge:clearLogs");
+  }
+
+  return fail("UNKNOWN_COMMAND", `Unknown logs command: ${subcommand}`);
+}
+
 function help(group = "overview"): Envelope {
   const groups: Record<string, string[]> = {
     overview: [
@@ -1118,6 +1139,7 @@ function help(group = "overview"): Envelope {
       "pcbridge help scene",
       "pcbridge help store",
       "pcbridge help viewport",
+      "pcbridge help logs",
       "pcbridge help eval",
     ],
     core: [
@@ -1185,8 +1207,16 @@ function help(group = "overview"): Envelope {
       "pcbridge viewport capture --target current --out ./tmp/viewport.png [--format png|webp]",
       "pcbridge viewport focus --target current --id <resource_id> [--view perspective|top|bottom|front|back|left|right]",
     ],
+    logs: [
+      "pcbridge logs get --target current [--limit 100] [--level error|warn|info|debug] [--since <seq>]",
+      "pcbridge logs clear --target current",
+    ],
+    log: [
+      "pcbridge logs get --target current [--limit 100] [--level error|warn|info|debug] [--since <seq>]",
+      "pcbridge logs clear --target current",
+    ],
     eval: [
-      "Use eval for custom Editor/Engine workflows, large multi-step scene edits, exploratory API inspection, and operations not yet structured.",
+      "Use eval for custom Editor/Engine workflows, PlayCanvas Launch debugging, large multi-step scene edits, exploratory API inspection, and operations not yet structured.",
       "pcbridge eval --target current --code \"return { href: location.href, hasEditor: !!editor }\"",
       "pcbridge eval --target current --file ./task.js",
       "pcbridge eval --target current --file ./task.js --args-json ./task-args.json",
@@ -1255,6 +1285,8 @@ async function main(): Promise<void> {
       print(await handleStore(args));
     } else if (command === "viewport") {
       print(await handleViewport(args));
+    } else if (command === "logs" || command === "log") {
+      print(await handleLogs(args));
     } else if (command === "version" || command === "--version" || command === "-v") {
       print(ok({ version: VERSION }));
     } else {

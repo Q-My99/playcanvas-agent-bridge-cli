@@ -5,6 +5,80 @@
   if (window.__pcbridgeMainWorld) return;
   window.__pcbridgeMainWorld = true;
 
+  const MAX_LOGS = 500;
+  const capturedLogs = [];
+  let nextLogSeq = 1;
+
+  function formatLogArg(value) {
+    if (typeof value === "string") return value;
+    if (value instanceof Error) return value.stack || value.message;
+    try {
+      return JSON.stringify(serialize(value, {
+        maxDepth: 3,
+        maxArray: 20,
+        maxKeys: 30,
+        maxString: 1000
+      }));
+    } catch {
+      return String(value);
+    }
+  }
+
+  function pushLog(level, args, source) {
+    const list = Array.from(args || []);
+    const entry = {
+      seq: nextLogSeq,
+      time: new Date().toISOString(),
+      level,
+      source,
+      text: list.map(formatLogArg).join(" "),
+      args: list.map((item) => serialize(item, {
+        maxDepth: 3,
+        maxArray: 20,
+        maxKeys: 30,
+        maxString: 1000
+      }))
+    };
+    nextLogSeq += 1;
+    capturedLogs.push(entry);
+    while (capturedLogs.length > MAX_LOGS) capturedLogs.shift();
+  }
+
+  function patchConsoleCapture() {
+    if (window.__pcbridgeConsoleCapture) return;
+    window.__pcbridgeConsoleCapture = true;
+
+    const methods = ["debug", "log", "info", "warn", "error"];
+    for (const method of methods) {
+      const original = window.console && window.console[method];
+      if (typeof original !== "function") continue;
+      window.console[method] = function pcbridgeConsoleProxy(...args) {
+        try {
+          pushLog(method === "log" ? "info" : method, args, "console");
+        } catch {
+          // Preserve page console behavior even if log serialization fails.
+        }
+        return original.apply(this, args);
+      };
+    }
+
+    window.addEventListener("error", (event) => {
+      pushLog("error", [
+        event.message || "Uncaught error",
+        event.filename || "",
+        event.lineno || 0,
+        event.colno || 0,
+        event.error || null
+      ], "window.error");
+    });
+
+    window.addEventListener("unhandledrejection", (event) => {
+      pushLog("error", ["Unhandled promise rejection", event.reason || null], "unhandledrejection");
+    });
+  }
+
+  patchConsoleCapture();
+
   function safeGetEditorValue(value, path) {
     try {
       return value && typeof value.get === "function" ? value.get(path) : undefined;
@@ -108,18 +182,72 @@
     return normalize(value, 0);
   }
 
+  function getTargetKind() {
+    if (location.hostname === "launch.playcanvas.com") return "launch";
+    if (location.pathname.startsWith("/editor")) return "editor";
+    return "playcanvas";
+  }
+
+  function getRuntimeApp() {
+    try {
+      if (
+        window.pc &&
+        window.pc.Application &&
+        typeof window.pc.Application.getApplication === "function"
+      ) {
+        const app = window.pc.Application.getApplication();
+        if (app) return app;
+      }
+    } catch {
+      // Fall through to common global app locations.
+    }
+
+    if (window.app && window.app.graphicsDevice) return window.app;
+    if (window.pc && window.pc.app && window.pc.app.graphicsDevice) return window.pc.app;
+    return null;
+  }
+
+  function getPrimaryCanvas(app) {
+    return (
+      (app && app.graphicsDevice && app.graphicsDevice.canvas) ||
+      (app && app.canvas) ||
+      document.querySelector("canvas")
+    );
+  }
+
+  function getSceneIdFromUrl() {
+    const editorMatch = location.href.match(/\/editor\/scene\/([^/?#]+)/);
+    if (editorMatch) return editorMatch[1];
+
+    if (location.hostname === "launch.playcanvas.com") {
+      const launchMatch = location.pathname.match(/^\/([^/?#]+)/);
+      if (launchMatch) return launchMatch[1];
+    }
+
+    return undefined;
+  }
+
   function describeTarget() {
     const config = window.config || {};
-    const ready = Boolean(window.editor && window.editor.api && window.editor.api.globals);
-    const matchScene = location.href.match(/\/editor\/scene\/([^/?#]+)/);
+    const kind = getTargetKind();
+    const editorReady = Boolean(window.editor && window.editor.api && window.editor.api.globals);
+    const app = getRuntimeApp();
+    const canvasCount = document.querySelectorAll("canvas").length;
+    const launchReady = kind === "launch" && document.readyState !== "loading";
+    const ready = editorReady || launchReady;
     return {
+      kind,
       url: location.href,
       title: document.title || "",
       ready,
+      hasEditor: Boolean(window.editor),
+      hasPc: Boolean(window.pc),
+      hasRuntimeApp: Boolean(app),
+      canvasCount,
       projectId: config.project && config.project.id ? String(config.project.id) : undefined,
       sceneId:
         (config.scene && config.scene.id ? String(config.scene.id) : undefined) ||
-        (matchScene ? matchScene[1] : undefined),
+        getSceneIdFromUrl(),
       branchId:
         (config.self && config.self.branch && config.self.branch.id
           ? String(config.self.branch.id)
@@ -257,18 +385,32 @@
     return serialize(await withTimeout(fn(context), timeoutMs));
   }
 
-  function captureViewport(params) {
-    const app = window.editor.call("viewport:app");
-    if (!app) throw new Error("Viewport app not found.");
-    const device = app.graphicsDevice;
-    const gl = device && device.gl;
-    if (!gl) throw new Error("WebGL context not found.");
+  function encodeCanvas(canvas, params, source) {
+    const maxWidth = Number(params.maxWidth || 1200);
+    let outWidth = canvas.width;
+    let outHeight = canvas.height;
+    if (maxWidth > 0 && canvas.width > maxWidth) {
+      outWidth = maxWidth;
+      outHeight = Math.round(canvas.height * (maxWidth / canvas.width));
+    }
 
-    window.editor.call("viewport:render");
-    app.tick();
+    const dstCanvas = document.createElement("canvas");
+    dstCanvas.width = outWidth;
+    dstCanvas.height = outHeight;
+    dstCanvas.getContext("2d").drawImage(canvas, 0, 0, outWidth, outHeight);
 
-    const width = device.width;
-    const height = device.height;
+    const mime = params.format === "webp" ? "image/webp" : "image/png";
+    const dataUrl = dstCanvas.toDataURL(mime, Number(params.quality || 0.85));
+    return {
+      mime,
+      width: outWidth,
+      height: outHeight,
+      source,
+      base64: dataUrl.split(",")[1]
+    };
+  }
+
+  function canvasFromWebglPixels(gl, width, height) {
     const pixels = new Uint8Array(width * height * 4);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
@@ -288,28 +430,112 @@
     srcCanvas
       .getContext("2d")
       .putImageData(new ImageData(new Uint8ClampedArray(flipped.buffer), width, height), 0, 0);
+    return srcCanvas;
+  }
 
-    const maxWidth = Number(params.maxWidth || 1200);
-    let outWidth = width;
-    let outHeight = height;
-    if (maxWidth > 0 && width > maxWidth) {
-      outWidth = maxWidth;
-      outHeight = Math.round(height * (maxWidth / width));
+  function captureEditorViewport(params) {
+    const app = window.editor.call("viewport:app");
+    if (!app) throw new Error("Viewport app not found.");
+    const device = app.graphicsDevice;
+    const gl = device && device.gl;
+    if (!gl) throw new Error("WebGL context not found.");
+
+    window.editor.call("viewport:render");
+    app.tick();
+
+    const width = device.width;
+    const height = device.height;
+    const srcCanvas = canvasFromWebglPixels(gl, width, height);
+    return encodeCanvas(srcCanvas, params, "editor-viewport");
+  }
+
+  function getCanvasWebglContext(canvas) {
+    const app = getRuntimeApp();
+    const appCanvas = getPrimaryCanvas(app);
+    if (appCanvas === canvas && app && app.graphicsDevice && app.graphicsDevice.gl) {
+      return app.graphicsDevice.gl;
     }
 
-    const dstCanvas = document.createElement("canvas");
-    dstCanvas.width = outWidth;
-    dstCanvas.height = outHeight;
-    dstCanvas.getContext("2d").drawImage(srcCanvas, 0, 0, outWidth, outHeight);
+    return (
+      canvas.getContext("webgl2") ||
+      canvas.getContext("webgl") ||
+      canvas.getContext("experimental-webgl")
+    );
+  }
 
-    const mime = params.format === "webp" ? "image/webp" : "image/png";
-    const dataUrl = dstCanvas.toDataURL(mime, Number(params.quality || 0.85));
+  function captureRuntimeCanvas(params) {
+    const app = getRuntimeApp();
+    const canvas = getPrimaryCanvas(app);
+    if (!canvas) {
+      throw new Error("PlayCanvas launch canvas not found.");
+    }
+
+    try {
+      const gl = getCanvasWebglContext(canvas);
+      if (gl && typeof gl.readPixels === "function") {
+        const width =
+          (app && app.graphicsDevice && app.graphicsDevice.width) ||
+          gl.drawingBufferWidth ||
+          canvas.width;
+        const height =
+          (app && app.graphicsDevice && app.graphicsDevice.height) ||
+          gl.drawingBufferHeight ||
+          canvas.height;
+        const srcCanvas = canvasFromWebglPixels(gl, width, height);
+        return encodeCanvas(srcCanvas, params, "launch-webgl");
+      }
+    } catch (error) {
+      pushLog("warn", ["WebGL capture failed; falling back to canvas capture.", error], "pcbridge");
+    }
+
+    return encodeCanvas(canvas, params, "launch-canvas");
+  }
+
+  function captureViewport(params) {
+    if (window.editor && typeof window.editor.call === "function") {
+      return captureEditorViewport(params);
+    }
+
+    return captureRuntimeCanvas(params);
+  }
+
+  function getLogs(params) {
+    const level = params.level ? String(params.level).toLowerCase() : null;
+    const since = params.since === undefined || params.since === null || params.since === ""
+      ? null
+      : Number(params.since);
+    const limit = Math.max(1, Math.min(Number(params.limit || 100), 500));
+    let items = capturedLogs;
+
+    if (level) {
+      items = items.filter((entry) => entry.level === level);
+    }
+    if (since !== null && Number.isFinite(since)) {
+      items = items.filter((entry) => entry.seq > since);
+    }
+
+    const total = items.length;
+    const hasExplicitOffset =
+      params.offset !== undefined && params.offset !== null && params.offset !== "";
+    const offset = hasExplicitOffset
+      ? Math.max(0, Number(params.offset || 0))
+      : Math.max(0, total - limit);
+    const page = items.slice(offset, offset + limit);
+
     return {
-      mime,
-      width: outWidth,
-      height: outHeight,
-      base64: dataUrl.split(",")[1]
+      items: page,
+      total,
+      offset,
+      limit,
+      hasMore: offset + page.length < total,
+      nextSince: page.length ? page[page.length - 1].seq : since
     };
+  }
+
+  function clearLogs() {
+    const affected = capturedLogs.length;
+    capturedLogs.length = 0;
+    return { affected };
   }
 
   async function uploadAsset(params) {
@@ -399,6 +625,8 @@
     if (method === "bridge:describeTarget") return describeTarget();
     if (method === "bridge:eval") return evalInPage(params || {}, requestId);
     if (method === "bridge:captureViewport") return captureViewport(params || {});
+    if (method === "bridge:getLogs") return getLogs(params || {});
+    if (method === "bridge:clearLogs") return clearLogs();
     if (method === "bridge:uploadAsset") return uploadAsset(params || {});
     if (method === "bridge:focusViewport") return focusViewport(params || {});
     throw new Error(`Unknown bridge method: ${method}`);

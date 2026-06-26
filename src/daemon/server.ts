@@ -226,7 +226,7 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
 
         if (message.type === "target:update" && message.target?.clientId) {
           const info = registry.upsert(message.target, ws);
-          log(`target ${info.id} ready=${info.ready} url=${info.url}`);
+          log(`target ${info.id} kind=${info.kind || "unknown"} ready=${info.ready} url=${info.url}`);
           return;
         }
 

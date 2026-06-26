@@ -1,6 +1,6 @@
 # PlayCanvas Agent Bridge CLI
 
-Use `pcbridge` to automate an already-open PlayCanvas Editor tab through the local daemon and Chrome extension.
+Use `pcbridge` to automate an already-open PlayCanvas Editor tab or debug a PlayCanvas Launch tab through the local daemon and Chrome extension.
 
 Start with:
 
@@ -10,9 +10,9 @@ pcbridge daemon status
 pcbridge targets
 ```
 
-If the daemon is offline, ask the user to run `pcbridge daemon start`. If no target is connected, ask the user to run `pcbridge install-extension`, load the printed unpacked extension path in `chrome://extensions`, and refresh the Editor tab.
+If the daemon is offline, ask the user to run `pcbridge daemon start`. If no target is connected, ask the user to run `pcbridge install-extension`, load the printed unpacked extension path in `chrome://extensions`, and refresh the Editor or Launch tab.
 
-Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help entity|asset|material|template|script|scene|store|viewport|eval`.
+Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help entity|asset|material|template|script|scene|store|viewport|logs|eval`.
 
 Use structured commands for small, known Editor operations:
 
@@ -38,11 +38,15 @@ pcbridge script upsert --target current --filename controller.js --file ./script
 pcbridge script create --target current --filename controller.js --file ./script.js --folder "AI Agent Bridge/My Task/Scripts"
 pcbridge script set-text --target current --asset-id <id> --file ./script.js
 pcbridge viewport capture --target current --out ./tmp/playcanvas.png
+pcbridge logs get --target launch:<sceneId> --limit 100
+pcbridge logs get --target launch:<sceneId> --level error
 ```
 
 Put generated assets under `AI Agent Bridge/<task name>/Textures`, `Materials`, and `Scripts`.
 
-Use `pcbridge eval` for exploratory API inspection, custom Editor/Engine workflows, and large multi-step scene edits. Use `pcbridge eval --file ./install.js --args-json ./args.json --timeout-ms 120000` when local configuration is too large to embed in code or the install can exceed the default 15s timeout. Return compact JSON and never return raw PlayCanvas Editor objects. Use history-enabled mutations when available and verify writes with a read-only command.
+Use `pcbridge eval` for exploratory API inspection, custom Editor/Engine workflows, Launch runtime debugging, and large multi-step scene edits. Use `pcbridge eval --file ./install.js --args-json ./args.json --timeout-ms 120000` when local configuration is too large to embed in code or the install can exceed the default 15s timeout. Return compact JSON and never return raw PlayCanvas Editor objects. Use history-enabled mutations when available and verify writes with a read-only command.
+
+For Launch runtime debugging, target `launch:<sceneId>` or `tab:<id>` and use `pcbridge eval`, `pcbridge viewport capture`, and `pcbridge logs get`. Editor-only structured entity/asset/script commands require an Editor target.
 
 For large tasks, choose an explicit target from `pcbridge targets`, keep generated files and captures in a local task folder, upload batches with `asset upload-many`, update scripts with `script upsert`, and capture the viewport after smoke tests. If repeated manual glue appears, improve the CLI or this rule.
 

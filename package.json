@@ -1,6 +1,6 @@
 {
   "name": "playcanvas-agent-bridge-cli",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "CLI-first local bridge for automating open PlayCanvas Editor tabs from AI coding agents.",
   "type": "module",
   "license": "MIT",

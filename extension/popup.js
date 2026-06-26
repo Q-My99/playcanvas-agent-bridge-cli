@@ -18,9 +18,15 @@ async function main() {
     : "Run pcbridge install-extension";
 
   const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
-  tab.textContent = active && active.url && active.url.includes("playcanvas.com/editor")
+  const url = active && active.url ? new URL(active.url) : null;
+  const isEditor = Boolean(url && url.hostname === "playcanvas.com" && url.pathname.startsWith("/editor"));
+  const isLaunch = Boolean(url && url.hostname === "launch.playcanvas.com");
+
+  tab.textContent = isEditor
     ? "PlayCanvas Editor"
-    : "Open a PlayCanvas Editor tab";
+    : isLaunch
+      ? "PlayCanvas Launch"
+      : "Open a PlayCanvas Editor or Launch tab";
 }
 
 main();

@@ -76,6 +76,11 @@
     const message = event.data;
     if (!message || message.channel !== CHANNEL || message.side !== "main") return;
 
+    if (message.type === "ready") {
+      sendTargetUpdate();
+      return;
+    }
+
     if (message.type === "response" && message.id) {
       const waiter = pending.get(message.id);
       if (!waiter) return;

@@ -1,6 +1,6 @@
 # playcanvas-agent-bridge-cli
 
-这是一个 CLI 优先的本地自动化桥，用来让 Codex、Claude Code、Cursor、Windsurf 等 AI 编程 agent 控制已经打开的 PlayCanvas Editor 场景。
+这是一个 CLI 优先的本地自动化桥，用来让 Codex、Claude Code、Cursor、Windsurf 等 AI 编程 agent 控制已经打开的 PlayCanvas Editor 场景和 PlayCanvas Launch 页面。
 
 核心接口是 `pcbridge` 命令、本地 daemon 和 Chrome Manifest V3 插件。MCP 不是核心依赖，之后可以作为薄适配层再加。
 
@@ -50,7 +50,7 @@ pcbridge install-extension
 2. 开启 Developer Mode。
 3. 点击 Load unpacked。
 4. 选择 `pcbridge install-extension` 打印出来的那个目录。
-5. 打开或刷新 PlayCanvas Editor 页面。
+5. 打开或刷新 PlayCanvas Editor 页面或 PlayCanvas Launch 页面。
 
 注意：生成目录里的 `config.json` 包含本地 session token。请加载 `~/.pcbridge/extension`，不要直接加载仓库里的原始 `extension/` 目录。
 
@@ -66,6 +66,7 @@ pcbridge daemon start
 pcbridge doctor
 pcbridge targets
 pcbridge eval --target current --code "return { href: location.href, hasEditor: !!editor }"
+pcbridge eval --target launch:<sceneId> --code "return { href: location.href, hasPc: !!pc }"
 ```
 
 ## 渐进式 help
@@ -82,11 +83,12 @@ pcbridge help script
 pcbridge help scene
 pcbridge help store
 pcbridge help viewport
+pcbridge help logs
 pcbridge help eval
 ```
 
 小而明确、能对应到单个 Editor 操作的任务优先用结构化命令。探索 API、自定义
-Editor/Engine 工作流、大量多步骤场景修改，则优先用 `pcbridge eval`，一段脚本通常更清楚也更快。
+Editor/Engine 工作流、Launch 调试、大量多步骤场景修改，则优先用 `pcbridge eval`，一段脚本通常更清楚也更快。
 
 ## 常用命令
 
@@ -133,6 +135,10 @@ pcbridge store download --target current --id <store_asset_id> --name Vehicle --
 
 pcbridge viewport capture --target current --out ./tmp/playcanvas-viewport.png
 pcbridge viewport focus --target current --id <resource_id> --view perspective
+
+pcbridge logs get --target current --limit 100
+pcbridge logs get --target launch:<sceneId> --level error
+pcbridge logs clear --target current
 ```
 
 大型任务可以把上传清单放在生成文件旁边。`file` 的相对路径会按清单文件所在目录解析：
@@ -179,9 +185,14 @@ pcbridge eval --target current --code "return location.href"
 pcbridge eval --target tab:123 --code "return location.href"
 pcbridge eval --target scene:987654 --code "return location.href"
 pcbridge eval --target project:123456 --code "return location.href"
+pcbridge eval --target launch:987654 --code "return { href: location.href, hasPc: !!pc }"
+pcbridge viewport capture --target launch:987654 --out ./tmp/launch.png
+pcbridge logs get --target launch:987654 --limit 100
 ```
 
-`current` 表示最近可用的 PlayCanvas Editor 目标页。
+`current` 表示最近可用的 PlayCanvas 目标页。如果同一个 scene 同时打开了 Editor 和 Launch
+页面，请使用 `tab:<id>`、`editor:<sceneId>` 或 `launch:<sceneId>` 避免歧义。结构化编辑命令需要
+Editor 目标；`eval`、`viewport capture` 和 `logs` 也可以用于 Launch 目标。
 
 ## Agent skill / rules
 
@@ -204,13 +215,13 @@ pcbridge install-skill --agent all
 
 ## 安全模型
 
-这是一个本地可信开发工具，会在你已经打开的 PlayCanvas Editor 页面内执行 JavaScript。
+这是一个本地可信开发工具，会在你已经打开的 PlayCanvas Editor 和 Launch 页面内执行 JavaScript。
 
 基础防护：
 
 - daemon 只绑定 `127.0.0.1`；
 - CLI、daemon、插件共享本地 session token；
-- 插件只匹配 PlayCanvas Editor URL；
+- 插件只匹配 PlayCanvas Editor 和 Launch URL；
 - CLI 输出统一使用紧凑 JSON envelope；
 - 结构化写命令要求明确 ID 或 JSON 文件。
 

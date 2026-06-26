@@ -23,12 +23,17 @@ export class TargetRegistry {
       clientId: info.clientId,
       tabId: info.tabId,
       windowId: info.windowId,
+      kind: info.kind || existing?.kind || "unknown",
       url: info.url || existing?.url || "",
       title: info.title || existing?.title,
       projectId: info.projectId || existing?.projectId,
       sceneId: info.sceneId || existing?.sceneId,
       branchId: info.branchId || existing?.branchId,
       extensionVersion: info.extensionVersion || existing?.extensionVersion,
+      hasEditor: info.hasEditor ?? existing?.hasEditor,
+      hasPc: info.hasPc ?? existing?.hasPc,
+      hasRuntimeApp: info.hasRuntimeApp ?? existing?.hasRuntimeApp,
+      canvasCount: info.canvasCount ?? existing?.canvasCount,
       ready: Boolean(info.ready),
       connected: true,
       lastSeen: now,
@@ -70,7 +75,7 @@ export class TargetRegistry {
         return {
           ok: false,
           code: "NO_READY_TARGET",
-          message: "No ready PlayCanvas Editor target is connected.",
+          message: "No ready PlayCanvas target is connected.",
           candidates: this.list(),
         };
       }
@@ -106,6 +111,22 @@ export class TargetRegistry {
         kind === "scene"
           ? target.info.sceneId === value
           : target.info.projectId === value,
+      );
+
+      if (matches.length === 1) return { ok: true, target: matches[0] };
+      if (matches.length > 1) {
+        return {
+          ok: false,
+          code: "AMBIGUOUS_TARGET",
+          message: `${selector} matches multiple connected targets.`,
+          candidates: matches.map((target) => target.info),
+        };
+      }
+    }
+
+    if ((kind === "editor" || kind === "launch") && value) {
+      const matches = targets.filter(
+        (target) => target.info.kind === kind && target.info.sceneId === value,
       );
 
       if (matches.length === 1) return { ok: true, target: matches[0] };

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "PlayCanvas Agent Bridge",
-  "description": "Connects open PlayCanvas Editor tabs to the local pcbridge daemon.",
-  "version": "0.2.2",
+  "description": "Connects open PlayCanvas Editor and Launch tabs to the local pcbridge daemon.",
+  "version": "0.2.3",
   "permissions": ["activeTab", "storage"],
   "host_permissions": [
     "http://playcanvas.com/*",
@@ -21,16 +21,26 @@
   },
   "content_scripts": [
     {
-      "matches": ["http://playcanvas.com/editor*", "https://playcanvas.com/editor*"],
+      "matches": [
+        "http://playcanvas.com/editor*",
+        "https://playcanvas.com/editor*",
+        "http://launch.playcanvas.com/*",
+        "https://launch.playcanvas.com/*"
+      ],
       "js": ["main.js"],
       "world": "MAIN",
-      "run_at": "document_idle"
+      "run_at": "document_start"
     },
     {
-      "matches": ["http://playcanvas.com/editor*", "https://playcanvas.com/editor*"],
+      "matches": [
+        "http://playcanvas.com/editor*",
+        "https://playcanvas.com/editor*",
+        "http://launch.playcanvas.com/*",
+        "https://launch.playcanvas.com/*"
+      ],
       "js": ["isolated.js"],
       "world": "ISOLATED",
-      "run_at": "document_idle"
+      "run_at": "document_start"
     }
   ],
   "content_security_policy": {
