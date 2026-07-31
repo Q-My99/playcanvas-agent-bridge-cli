@@ -1,6 +1,6 @@
 {
   "name": "playcanvas-agent-bridge-cli",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "CLI-first local bridge for automating open PlayCanvas Editor tabs from AI coding agents.",
   "type": "module",
   "license": "MIT",
@@ -27,6 +27,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && node -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
     "check": "tsc -p tsconfig.json --noEmit",
+    "check:version": "node scripts/check-version.mjs",
+    "test": "pnpm check:version && pnpm build && node --test",
     "prepare": "npm run build"
   },
   "keywords": [
@@ -44,6 +46,7 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
+    "tar": "^7.5.22",
     "ws": "^8.18.3"
   },
   "devDependencies": {

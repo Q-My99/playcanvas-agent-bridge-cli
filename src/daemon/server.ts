@@ -2,7 +2,17 @@ import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer } from "ws";
 import type { WebSocket } from "ws";
-import { DEFAULT_HOST, DEFAULT_PORT, VERSION } from "../config.js";
+import {
+  CONFIG_DIR,
+  DEFAULT_FRONTEND_PORT,
+  DEFAULT_HOST,
+  DEFAULT_PORT,
+  VERSION,
+} from "../config.js";
+import {
+  createFrontendServer,
+  type FrontendServer,
+} from "../frontend/server.js";
 import { TargetRegistry } from "./target-registry.js";
 import {
   fail,
@@ -21,6 +31,8 @@ type DaemonOptions = {
   port?: number;
   token: string;
   log?: (message: string) => void;
+  frontendPort?: number;
+  frontendRootDir?: string;
 };
 
 type PendingRequest = {
@@ -41,6 +53,7 @@ export type DaemonServer = {
   host: string;
   port: number;
   registry: TargetRegistry;
+  frontend: FrontendServer;
   close: () => Promise<void>;
   listen: () => Promise<void>;
 };
@@ -85,10 +98,17 @@ function isJsonObject(value: unknown): value is Record<string, JsonValue> {
 
 export function createDaemonServer(options: DaemonOptions): DaemonServer {
   const host = options.host || DEFAULT_HOST;
-  const port = Number(options.port || DEFAULT_PORT);
+  const port = Number(options.port ?? DEFAULT_PORT);
+  let actualPort = port;
   const registry = new TargetRegistry();
   const pending = new Map<string, PendingRequest>();
   const log = options.log || (() => undefined);
+  const frontend = createFrontendServer({
+    host,
+    port: options.frontendPort ?? DEFAULT_FRONTEND_PORT,
+    rootDir: options.frontendRootDir || CONFIG_DIR,
+    log,
+  });
 
   function requireToken(req: http.IncomingMessage): boolean {
     return req.headers["x-pcbridge-token"] === options.token;
@@ -159,16 +179,27 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
           writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
           return;
         }
+        const frontendStatus = await frontend.status();
         writeJson(
           res,
           200,
           ok({
             version: VERSION,
             host,
-            port,
+            port: actualPort,
             targetCount: registry.list().filter((target) => target.connected).length,
+            frontend: frontendStatus as unknown as JsonValue,
           }),
         );
+        return;
+      }
+
+      if (url.pathname === "/frontend/status" && req.method === "GET") {
+        if (!requireToken(req)) {
+          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
+          return;
+        }
+        writeJson(res, 200, ok(await frontend.status() as unknown as JsonValue));
         return;
       }
 
@@ -270,20 +301,33 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
 
   return {
     host,
-    port,
+    get port() {
+      return actualPort;
+    },
     registry,
-    listen: () =>
-      new Promise((resolve, reject) => {
+    frontend,
+    listen: async () => {
+      await new Promise<void>((resolveListen, reject) => {
         server.once("error", reject);
         server.listen(port, host, () => {
           server.off("error", reject);
-          resolve();
+          const address = server.address();
+          if (address && typeof address !== "string") actualPort = address.port;
+          resolveListen();
         });
-      }),
-    close: () =>
-      new Promise((resolve) => {
+      });
+      try {
+        await frontend.listen();
+      } catch (error) {
+        log(`frontend server unavailable: ${String(error)}`);
+      }
+    },
+    close: async () => {
+      await frontend.close();
+      await new Promise<void>((resolveClose) => {
         wss.close();
-        server.close(() => resolve());
-      }),
+        server.close(() => resolveClose());
+      });
+    },
   };
 }

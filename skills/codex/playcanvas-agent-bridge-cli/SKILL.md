@@ -1,6 +1,6 @@
 ---
 name: playcanvas-agent-bridge-cli
-description: Control an already-open PlayCanvas Editor scene or Launch page through the pcbridge CLI and Chrome extension. Use when Codex needs to inspect or modify PlayCanvas Editor targets, debug Launch runtime pages, read logs, run eval snippets, or capture viewports without DevTools, mouse/keyboard automation, MCP, or browser console scripting.
+description: Control an already-open PlayCanvas Editor scene or Launch page and manage the optional custom Editor frontend through the pcbridge CLI and Chrome extension. Use when Codex needs to inspect or modify PlayCanvas Editor targets, debug Launch runtime pages, read logs, run eval snippets, capture viewports, or install and select a published Editor frontend without DevTools, mouse/keyboard automation, MCP, or browser console scripting.
 ---
 
 # PlayCanvas Agent Bridge CLI
@@ -25,10 +25,14 @@ pcbridge daemon start
 
 If no target appears, tell the user to run `pcbridge install-extension`, load the printed directory in `chrome://extensions`, then refresh the PlayCanvas Editor or Launch tab.
 
+For the optional custom Editor frontend, use `pcbridge frontend install latest`, confirm
+`pcbridge frontend status`, then use the extension popup to switch between custom and official
+frontend modes. Load focused help with `pcbridge help frontend`.
+
 ## Workflow
 
 1. Run `pcbridge targets` and choose an explicit target when possible.
-2. Use layered help to load only the command group you need: `pcbridge help`, then `pcbridge help entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
+2. Use layered help to load only the command group you need: `pcbridge help`, then `pcbridge help frontend|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
 3. Use structured commands for small, known operations that map cleanly to one Editor action.
 4. Use `pcbridge eval` for exploratory API inspection, custom Editor/Engine workflows, Launch runtime debugging, and large multi-step scene edits where one script is clearer than many CLI calls.
 5. Return compact JSON from snippets. Never return raw `editor`, `Entity`, `Asset`, `entities.root`, or app objects.

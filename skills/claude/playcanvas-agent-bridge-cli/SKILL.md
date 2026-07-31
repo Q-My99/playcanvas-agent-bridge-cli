@@ -1,6 +1,6 @@
 ---
 name: playcanvas-agent-bridge-cli
-description: Control an already-open PlayCanvas Editor scene or Launch page through pcbridge CLI commands and the bundled Chrome extension. Use for PlayCanvas Editor inspection, entity/asset/script edits, Launch runtime debugging, eval snippets, logs, and viewport captures without DevTools or browser automation.
+description: Control an already-open PlayCanvas Editor scene or Launch page and manage the optional custom Editor frontend through pcbridge CLI commands and the bundled Chrome extension. Use for PlayCanvas Editor inspection, entity/asset/script edits, Launch runtime debugging, eval snippets, logs, viewport captures, and published Editor frontend selection without DevTools or browser automation.
 ---
 
 # PlayCanvas Agent Bridge CLI
@@ -15,10 +15,14 @@ pcbridge targets
 
 If the daemon is offline, ask the user to run `pcbridge daemon start` in another terminal. If no PlayCanvas target appears, ask the user to run `pcbridge install-extension`, load the printed directory in `chrome://extensions`, and refresh the Editor or Launch tab.
 
+Use `pcbridge frontend install latest` and `pcbridge frontend status` when the user wants the
+published custom Editor build. The extension popup switches between custom and official modes.
+
 Use layered help to load only the command surface you need:
 
 ```bash
 pcbridge help
+pcbridge help frontend
 pcbridge help entity
 pcbridge help asset
 pcbridge help template

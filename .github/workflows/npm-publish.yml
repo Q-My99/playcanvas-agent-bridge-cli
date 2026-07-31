@@ -1,0 +1,61 @@
+name: Publish npm package
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Test and publish to npm
+    if: github.repository == 'Q-My99/playcanvas-agent-bridge-cli'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Verify tag, versions, and main ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          tag_commit="$(git rev-list -n 1 "${GITHUB_REF_NAME}")"
+
+          if ! git merge-base --is-ancestor "${tag_commit}" origin/main; then
+            echo "Tag ${GITHUB_REF_NAME} does not point to a commit on main." >&2
+            exit 1
+          fi
+
+          PCBRIDGE_RELEASE_TAG="${GITHUB_REF_NAME}" pnpm check:version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Publish package
+        run: npm publish --access public

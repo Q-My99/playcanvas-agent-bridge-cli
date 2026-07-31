@@ -8,17 +8,19 @@ The important product decision: **do not make MCP the core interface**. The core
 
 ## Current Project Progress
 
-Status as of 2026-06-26:
+Status as of 2026-07-31:
 
 - Git repository initialized and pushed to GitHub:
   - `https://github.com/Q-My99/playcanvas-agent-bridge-cli`
   - default branch: `main`
-- Package version is currently `0.2.4`.
+- Package version is currently `0.3.0`.
 - The npm package has been published:
   - package: `playcanvas-agent-bridge-cli`
   - npm latest: `0.2.2`
   - registry: `https://registry.npmjs.org/`
-  - local `0.2.4` Launch-debugging/context-invalidation changes have not been published to npm yet.
+  - local `0.3.0` custom Editor frontend distribution changes have not been published to npm yet.
+- npm releases are published by `.github/workflows/npm-publish.yml` using npm Trusted Publishing (OIDC); no long-lived npm token is stored in GitHub.
+- A publish runs only for a stable tag matching `v<major>.<minor>.<patch>` whose commit is on `main`, and the tag must match the synchronized versions in `package.json`, `src/config.ts`, and `extension/manifest.json`.
 - Temporary test files should be written under project-local `./tmp/`, not `/tmp`. The `tmp/` directory is ignored by git.
 - The generated local Chrome extension lives at `~/.pcbridge/extension`. After extension source changes, run `node dist/cli.js install-extension --no-open`, then reload the unpacked extension in Chrome.
 
@@ -37,7 +39,7 @@ Completed implementation:
   - isolated content script for WebSocket connection and postMessage bridge.
   - service worker for tab metadata and generated config loading.
   - auto-connect and reconnect to local daemon.
-  - extension manifest version is synced to package version `0.2.4`.
+  - extension manifest version is synced to package version `0.3.0`.
   - matches both PlayCanvas Editor pages and PlayCanvas Launch pages.
   - captures page console logs, window errors, and unhandled promise rejections in a bounded in-page ring buffer.
 - Core CLI commands:
@@ -99,7 +101,14 @@ Completed implementation:
   - `viewport focus` uses dedicated `bridge:focusViewport` RPC and supports named views such as `perspective`, `top`, `front`, and `right`.
 - Progressive CLI help:
   - `pcbridge help`
-  - `pcbridge help entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`
+  - `pcbridge help frontend|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`
+- Custom Editor frontend distribution:
+  - downloads published builds from `Q-My99/playcanvas-editor` GitHub Releases instead of bundling them in the npm package.
+  - validates the release manifest, source repository, archive URL, size, SHA-256, required bundles, Monaco assets, and WASM assets before activation.
+  - stores installed builds under `~/.pcbridge/frontends/` and tracks one active release.
+  - serves the active `dist/` from `127.0.0.1:3487` while the daemon runs.
+  - exposes `frontend install|update|status|list|use|remove`.
+  - extension popup switches an Editor tab between custom `use_local_frontend` mode and the official frontend.
 - Large binary upload hygiene:
   - `asset upload` now uses dedicated `bridge:uploadAsset` RPC rather than returning through eval serialization.
 - Diagnostics:
@@ -114,6 +123,10 @@ Completed implementation:
   - Chinese README: `README.zh-CN.md`.
   - READMEs include npm-first install instructions, Chrome extension install instructions, CLI usage, structured commands, and texture/material/script workflow examples.
   - GitHub install instructions remain as an unreleased-change fallback.
+- npm release automation:
+  - `pnpm check:version` verifies the package, CLI, extension, and optional release-tag versions.
+  - a valid `vX.Y.Z` tag on `main` runs install, tests, and `npm publish --access public` on a GitHub-hosted runner.
+  - npm must trust GitHub user `Q-My99`, repository `playcanvas-agent-bridge-cli`, and workflow filename `npm-publish.yml` with `npm publish` permission.
 
 Verified against a real open PlayCanvas Editor scene:
 
@@ -249,17 +262,13 @@ Verified against a real open PlayCanvas Editor scene:
 
 Known unfinished work:
 
-- Publish local version `0.2.4` to npm.
+- Publish local version `0.3.0` to npm after frontend integration verification.
 - Create a GitHub tag/release for `v0.2.2` if desired.
 - Add `pcbridge daemon install-service` or another durable service installation flow if needed.
 - Consider structured material texture assignment helpers beyond generic `material patch`:
   - `material assign-texture`
 - Consider asset folder deletion safeguards:
   - recursive delete should require explicit confirmation or a separate dangerous flag.
-- Consider npm release automation and version sync for:
-  - `package.json`
-  - `src/config.ts`
-  - `extension/manifest.json`
 
 Important lessons from testing:
 

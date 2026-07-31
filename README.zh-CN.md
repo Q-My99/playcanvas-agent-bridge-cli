@@ -54,6 +54,34 @@ pcbridge install-extension
 
 注意：生成目录里的 `config.json` 包含本地 session token。请加载 `~/.pcbridge/extension`，不要直接加载仓库里的原始 `extension/` 目录。
 
+## 使用自构建 Editor 前端
+
+Editor 构建产物不会打进 npm 包。下面的命令会从 `Q-My99/playcanvas-editor` 下载最新
+Release，校验发布清单、文件大小和 SHA-256，然后在本地激活：
+
+```bash
+pcbridge frontend install latest
+pcbridge frontend status
+pcbridge daemon start
+```
+
+daemon 会在 `http://localhost:3487` 提供当前激活的构建。打开
+`https://playcanvas.com/editor/...` 页面后，在插件 popup 中点击 **Use custom frontend**。
+点击 **Use official frontend** 会删除 `use_local_frontend` 参数，并用官方前端重新加载同一个
+Editor URL。
+
+需要时可以显式管理本地版本：
+
+```bash
+pcbridge frontend list
+pcbridge frontend update
+pcbridge frontend use playcanvas-editor-v2.28.1-r1
+pcbridge frontend remove playcanvas-editor-v2.28.1-r1
+```
+
+下载的构建保存在 `~/.pcbridge/frontends/`。当前激活的版本不能直接删除，需要先切换到
+另一个已安装版本。
+
 ## 启动桥接
 
 ```bash
@@ -75,6 +103,7 @@ CLI 提供分层 help，方便 agent 只加载当前需要的命令面：
 
 ```bash
 pcbridge help
+pcbridge help frontend
 pcbridge help entity
 pcbridge help asset
 pcbridge help material
@@ -221,6 +250,7 @@ pcbridge install-skill --agent all
 基础防护：
 
 - daemon 只绑定 `127.0.0.1`；
+- frontend 服务只绑定 `127.0.0.1`，会校验 Host，并且只提供当前已校验 Release 目录内的文件；
 - CLI、daemon、插件共享本地 session token；
 - 插件只匹配 PlayCanvas Editor 和 Launch URL；
 - CLI 输出统一使用紧凑 JSON envelope；
@@ -235,3 +265,21 @@ node dist/cli.js doctor
 ```
 
 如果以后添加一次性 TypeScript 脚本，优先用 `bun` 执行。
+
+## 发布到 npm（维护者）
+
+发布流程通过 `.github/workflows/npm-publish.yml` 使用 npm Trusted Publishing，GitHub
+仓库不需要保存 `NPM_TOKEN`。
+
+1. 在 `package.json`、`src/config.ts` 和 `extension/manifest.json` 中同步更新同一个稳定版本号。
+2. 运行 `pnpm test`，把发布提交合并并推送到 `main`。
+3. 创建并推送匹配的 tag，例如：
+
+```bash
+git tag v0.3.0
+git push origin v0.3.0
+```
+
+如果 tag 与包版本不一致，或者 tag 对应的提交不属于 `main`，workflow 会拒绝发布。
+推送 tag 前，需要在 npm 包设置中把 GitHub 用户设为 `Q-My99`、仓库设为
+`playcanvas-agent-bridge-cli`、workflow 文件名设为 `npm-publish.yml`。

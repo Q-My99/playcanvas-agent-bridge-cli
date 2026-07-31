@@ -54,6 +54,34 @@ Then in Chrome:
 
 The generated extension directory contains a local session token in `config.json`, so load that generated directory rather than the raw `extension/` folder from the repo.
 
+## Use the custom Editor frontend
+
+The Editor build is not bundled in the npm package. Download the latest published build from
+`Q-My99/playcanvas-editor`, verify its release metadata and SHA-256, then activate it locally:
+
+```bash
+pcbridge frontend install latest
+pcbridge frontend status
+pcbridge daemon start
+```
+
+The daemon serves the active build from `http://localhost:3487`. On a
+`https://playcanvas.com/editor/...` tab, open the extension popup and choose **Use custom
+frontend**. Choose **Use official frontend** to remove `use_local_frontend` and reload the same
+Editor URL with the official frontend.
+
+Manage installed releases explicitly when needed:
+
+```bash
+pcbridge frontend list
+pcbridge frontend update
+pcbridge frontend use playcanvas-editor-v2.28.1-r1
+pcbridge frontend remove playcanvas-editor-v2.28.1-r1
+```
+
+Downloaded builds live under `~/.pcbridge/frontends/`. Removing the active release is refused
+until another installed release is selected.
+
 ## Start the bridge
 
 ```bash
@@ -75,6 +103,7 @@ The CLI exposes layered help so agents can load only the command surface they ne
 
 ```bash
 pcbridge help
+pcbridge help frontend
 pcbridge help entity
 pcbridge help asset
 pcbridge help material
@@ -223,6 +252,8 @@ This is a local trusted developer tool. It executes JavaScript inside PlayCanvas
 Safeguards:
 
 - daemon binds only to `127.0.0.1`;
+- the frontend server binds only to `127.0.0.1`, validates the Host header, and serves only files
+  under the active verified release;
 - CLI, daemon, and extension share a local session token;
 - extension matches only PlayCanvas Editor and Launch URLs;
 - CLI output uses compact JSON envelopes;
@@ -237,3 +268,22 @@ node dist/cli.js doctor
 ```
 
 Use `bun` for one-off TypeScript scripts if you add them.
+
+## Publishing to npm (maintainers)
+
+Publishing uses npm Trusted Publishing through `.github/workflows/npm-publish.yml`; the GitHub
+repository does not need an `NPM_TOKEN` secret.
+
+1. Update the same stable version in `package.json`, `src/config.ts`, and
+   `extension/manifest.json`.
+2. Run `pnpm test`, commit the release to `main`, and push `main`.
+3. Create and push the matching tag, for example:
+
+```bash
+git tag v0.3.0
+git push origin v0.3.0
+```
+
+The workflow rejects tags that do not match the package version or whose commit is not on `main`.
+Configure the npm package's Trusted Publisher with GitHub user `Q-My99`, repository
+`playcanvas-agent-bridge-cli`, and workflow filename `npm-publish.yml` before pushing the tag.
