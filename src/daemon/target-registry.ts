@@ -24,12 +24,15 @@ export class TargetRegistry {
     const targetId = info.tabId !== undefined ? `tab:${info.tabId}` : `client:${info.clientId}`;
     const now = new Date().toISOString();
     const existing = this.#targets.get(targetId)?.info;
+    const kind = info.kind || existing?.kind || "unknown";
+    const launchValue = <T>(value: T | undefined, previous: T | undefined): T | undefined =>
+      kind === "launch" ? value ?? previous : undefined;
     const next: TargetInfo = {
       id: targetId,
       clientId: info.clientId,
       tabId: info.tabId,
       windowId: info.windowId,
-      kind: info.kind || existing?.kind || "unknown",
+      kind,
       url: info.url || existing?.url || "",
       title: info.title || existing?.title,
       projectId: info.projectId || existing?.projectId,
@@ -42,6 +45,29 @@ export class TargetRegistry {
       hasEditor: info.hasEditor ?? existing?.hasEditor,
       hasPc: info.hasPc ?? existing?.hasPc,
       hasRuntimeApp: info.hasRuntimeApp ?? existing?.hasRuntimeApp,
+      runtimeAppSource: launchValue(info.runtimeAppSource, existing?.runtimeAppSource),
+      runtimeAppAmbiguous: launchValue(info.runtimeAppAmbiguous, existing?.runtimeAppAmbiguous),
+      runtimeAppCandidateSources: launchValue(
+        info.runtimeAppCandidateSources,
+        existing?.runtimeAppCandidateSources,
+      ),
+      runtimeCanvasId: launchValue(info.runtimeCanvasId, existing?.runtimeCanvasId),
+      engineVersion: launchValue(info.engineVersion, existing?.engineVersion),
+      readinessMode: launchValue(info.readinessMode, existing?.readinessMode),
+      pageReady: launchValue(info.pageReady, existing?.pageReady),
+      visibilityState: launchValue(info.visibilityState, existing?.visibilityState),
+      lifecycleReady: launchValue(info.lifecycleReady, existing?.lifecycleReady),
+      runtimeCreated: launchValue(info.runtimeCreated, existing?.runtimeCreated),
+      graphicsReady: launchValue(info.graphicsReady, existing?.graphicsReady),
+      graphicsContextLost: launchValue(info.graphicsContextLost, existing?.graphicsContextLost),
+      runtimeStarted: launchValue(info.runtimeStarted, existing?.runtimeStarted),
+      runtimeFrame: launchValue(info.runtimeFrame, existing?.runtimeFrame),
+      sceneLoaded: launchValue(info.sceneLoaded, existing?.sceneLoaded),
+      scriptsReady: launchValue(info.scriptsReady, existing?.scriptsReady),
+      scriptTypeCount: launchValue(info.scriptTypeCount, existing?.scriptTypeCount),
+      splashVisible: launchValue(info.splashVisible, existing?.splashVisible),
+      rootChildCount: launchValue(info.rootChildCount, existing?.rootChildCount),
+      readinessBlockers: launchValue(info.readinessBlockers, existing?.readinessBlockers),
       canvasCount: info.canvasCount ?? existing?.canvasCount,
       ready: Boolean(info.ready),
       connected: true,

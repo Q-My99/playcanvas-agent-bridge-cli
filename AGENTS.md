@@ -13,12 +13,12 @@ Status as of 2026-08-03:
 - Git repository initialized and pushed to GitHub:
   - `https://github.com/Q-My99/playcanvas-agent-bridge-cli`
   - default branch: `main`
-- Package version is currently `0.4.1`.
+- Package version is currently `0.4.2`.
 - The npm package has been published:
   - package: `playcanvas-agent-bridge-cli`
-  - npm latest: `0.2.2`
+  - npm latest: `0.3.0`
   - registry: `https://registry.npmjs.org/`
-  - local `0.4.1` workspace/sync and custom Editor frontend changes have not been published to npm yet.
+  - local `0.4.2` workspace/sync and custom Editor frontend changes have not been published to npm yet.
 - npm releases are published by `.github/workflows/npm-publish.yml` using npm Trusted Publishing (OIDC); no long-lived npm token is stored in GitHub.
 - A publish runs only for a stable tag matching `v<major>.<minor>.<patch>` whose commit is on `main`, and the tag must match the synchronized versions in `package.json`, `src/config.ts`, and `extension/manifest.json`.
 - Temporary test files should be written under project-local `./tmp/`, not `/tmp`. The `tmp/` directory is ignored by git.
@@ -39,7 +39,7 @@ Completed implementation:
   - isolated content script for WebSocket connection and postMessage bridge.
   - service worker for tab metadata and generated config loading.
   - auto-connect and reconnect to local daemon.
-  - extension manifest version is synced to package version `0.3.0`.
+  - extension manifest version is synchronized with package version `0.4.2`.
   - matches both PlayCanvas Editor pages and PlayCanvas Launch pages.
   - captures page console logs, window errors, and unhandled promise rejections in a bounded in-page ring buffer.
   - probes daemon health before reconnecting WebSockets, uses backoff while offline, and sends target updates only when metadata changes.
@@ -58,6 +58,7 @@ Completed implementation:
   - `pcbridge daemon start`
   - `pcbridge daemon status`
   - `pcbridge targets`
+  - `pcbridge target focus`
   - `pcbridge eval --code/--file/--stdin`
   - `pcbridge install-extension`
   - `pcbridge install-skill --agent codex|claude|cursor|windsurf|all`
@@ -88,12 +89,17 @@ Completed implementation:
   - `asset delete`
   - `template create`
   - `template instantiate`
+  - `template overrides`
+  - `template apply`
+  - `template apply-many`
   - `material create`
   - `material patch`
   - `material set-diffuse`
   - `script create`
   - `script set-text`
   - `script parse`
+  - `script set-text|upsert --parse --wait` verifies remote content, stable file metadata, and
+    parsed script metadata before returning.
 - Structured scene/store commands:
   - `scene settings get`
   - `scene settings patch`
@@ -106,6 +112,12 @@ Completed implementation:
   - PNG is now the default output format.
   - WebP is still available with `--format webp`.
 - Launch/runtime debugging:
+  - target metadata distinguishes page readiness, visibility, runtime/graphics creation, scene
+    attachment, first-frame completion, diagnostic ScriptType count, splash visibility, canvas id,
+    and Engine version.
+  - Engine V1/V2 app resolution is exposed to eval as `runtimeApp`.
+  - `pcbridge launch diagnose` and `pcbridge launch wait-ready [--focus]` provide explicit
+    heuristic lifecycle readiness diagnostics.
   - `pcbridge eval` works against Launch targets such as `launch:<sceneId>`.
   - `pcbridge logs get` fetches captured console/error logs from Editor or Launch pages.
   - `pcbridge logs clear` clears the captured page log buffer.
@@ -274,7 +286,7 @@ Verified against a real open PlayCanvas Editor scene:
 
 Known unfinished work:
 
-- Publish local version `0.4.1` to npm only after the user explicitly requests a release.
+- Publish local version `0.4.2` to npm only after the user explicitly requests a release.
 - Create a GitHub tag/release for `v0.2.2` if desired.
 - Add `pcbridge daemon install-service` or another durable service installation flow if needed.
 - Consider structured material texture assignment helpers beyond generic `material patch`:
@@ -303,13 +315,13 @@ pcbridge daemon start
 pcbridge daemon status
 pcbridge targets
 pcbridge eval --target current --code "return location.href"
-pcbridge eval --target scene:<sceneId> --file /tmp/task.js
-pcbridge entity list --target current
-pcbridge entity create --target current --json ./entity.json
-pcbridge entity patch --target current --id <resource_id> --set position=[0,1,0]
-pcbridge asset list --target current --type script
-pcbridge script set-text --target current --asset-id <id> --file ./pc_script/foo.js
-pcbridge viewport capture --target current --out /tmp/viewport.webp
+pcbridge eval --target editor:<sceneId> --file ./tmp/task.js
+pcbridge entity list --target editor:<sceneId>
+pcbridge entity create --target editor:<sceneId> --json ./entity.json
+pcbridge entity patch --target editor:<sceneId> --id <resource_id> --set position=[0,1,0]
+pcbridge asset list --target editor:<sceneId> --type script
+pcbridge script set-text --target editor:<sceneId> --asset-id <id> --file ./pc_script/foo.js
+pcbridge viewport capture --target editor:<sceneId> --out ./tmp/viewport.webp
 ```
 
 The package should include a Chrome Manifest V3 extension. The extension connects PlayCanvas Editor pages to the local daemon and gives the daemon access to the real page context where `window.editor`, `pc`, and `pcui` exist.
@@ -557,43 +569,6 @@ serialize;
    - opens or prints `chrome://extensions`;
    - prints the exact unpacked extension path the user should load.
 
-## Later Structured Commands
-
-After generic transport works, add LLM-friendly structured commands.
-
-Entity commands:
-
-```bash
-pcbridge entity list --name Player --component render --limit 50
-pcbridge entity get --id <resource_id>
-pcbridge entity create --json ./entity.json
-pcbridge entity patch --id <resource_id> --set name=Player --set position=[0,1,0]
-pcbridge entity delete --id <resource_id>
-pcbridge entity duplicate --id <resource_id>
-pcbridge entity reparent --id <resource_id> --parent <resource_id> --preserve-transform
-pcbridge entity add-component --id <resource_id> --component render --json ./render.json
-pcbridge entity remove-component --id <resource_id> --component render
-```
-
-Asset and script commands:
-
-```bash
-pcbridge asset list --type script --name controller
-pcbridge asset get --id <asset_id>
-pcbridge asset create-script --name foo.js --file ./foo.js
-pcbridge script set-text --asset-id <asset_id> --file ./foo.js
-pcbridge script parse --asset-id <asset_id>
-```
-
-Scene and viewport commands:
-
-```bash
-pcbridge scene settings get
-pcbridge scene settings patch --json ./settings.json
-pcbridge viewport capture --out /tmp/playcanvas-viewport.webp
-pcbridge viewport focus --id <resource_id>
-```
-
 ## Result Hygiene For LLMs
 
 This is critical. LLM tools fail when payloads are huge or ambiguous.
@@ -832,11 +807,12 @@ The first usable version is done when:
 
 - `pcbridge daemon start` runs without PlayCanvas open.
 - Opening a PlayCanvas Editor tab causes it to appear in `pcbridge targets`.
-- `pcbridge eval --code "return { href: location.href, hasEditor: !!editor }"` returns `hasEditor: true`.
-- `pcbridge eval --file /tmp/task.js` can create a test box entity using PlayCanvas Editor API.
-- `pcbridge entity list` returns compact summaries.
+- `pcbridge eval --target editor:<sceneId> --code "return { href: location.href, hasEditor: !!editor }"` returns `hasEditor: true`.
+- `pcbridge eval --target editor:<sceneId> --file ./tmp/task.js` can create a test box entity using PlayCanvas Editor API.
+- `pcbridge entity list --target editor:<sceneId>` returns compact summaries.
 - Browser does not need DevTools open.
-- Browser tab does not need to be foreground after the extension has connected, unless Chrome has discarded the page.
+- Editor RPC may continue while its tab is hidden; Launch `ready` additionally requires a visible tab, and
+  `launch wait-ready --focus` can focus it before polling.
 - Errors are explicit when no target is connected or the target is not ready.
 
 ## Example Eval Snippets

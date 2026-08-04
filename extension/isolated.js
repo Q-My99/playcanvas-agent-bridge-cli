@@ -76,10 +76,12 @@
 
   function serializeError(error) {
     if (error && typeof error === "object" && error.message) {
-      return {
+      const serialized = {
         code: error.code || "EXTENSION_ERROR",
         message: String(error.message)
       };
+      if (error.details !== undefined) serialized.details = error.details;
+      return serialized;
     }
     return { code: "EXTENSION_ERROR", message: String(error) };
   }
@@ -311,7 +313,16 @@
       if (!message || message.type !== "request" || !message.id) return;
 
       try {
-        const response = await callMain(message.method, message.params || {}, message.timeoutMs);
+        let response;
+        if (message.method === "bridge:focusTarget") {
+          const data = await requestRuntime({ type: "pcbridge:focusCurrentTab" });
+          if (!data || !data.ok) {
+            throw new Error((data && data.error) || "Could not focus the PlayCanvas tab.");
+          }
+          response = { data, meta: {} };
+        } else {
+          response = await callMain(message.method, message.params || {}, message.timeoutMs);
+        }
         if (!stopped && ws && ws.readyState === WebSocket.OPEN) {
           ws.send(
             JSON.stringify({

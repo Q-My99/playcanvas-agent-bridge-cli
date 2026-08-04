@@ -36,6 +36,127 @@ async function settleExtensionTasks() {
   }
 }
 
+async function waitFor(predicate, message) {
+  for (let index = 0; index < 20; index += 1) {
+    const value = predicate();
+    if (value) return value;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail(message);
+}
+
+async function loadBridgeWorlds() {
+  const listeners = new Map();
+  const sockets = [];
+  const window = {
+    console: { debug() {}, log() {}, info() {}, warn() {}, error() {} },
+    document: {
+      readyState: "complete",
+      visibilityState: "visible",
+      title: "Editor test",
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    },
+    location: {
+      hostname: "playcanvas.com",
+      pathname: "/editor/scene/1",
+      href: "https://playcanvas.com/editor/scene/1",
+    },
+    editor: { api: { globals: {} }, call: () => null },
+    addEventListener(type, listener) {
+      const values = listeners.get(type) || [];
+      values.push(listener);
+      listeners.set(type, values);
+    },
+    postMessage(message) {
+      const event = { source: window, data: message };
+      for (const listener of listeners.get("message") || []) void listener(event);
+    },
+  };
+  window.window = window;
+
+  class FakeWebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+
+    constructor() {
+      this.readyState = FakeWebSocket.CONNECTING;
+      this.listeners = new Map();
+      this.sent = [];
+      sockets.push(this);
+    }
+
+    addEventListener(type, listener) {
+      const values = this.listeners.get(type) || [];
+      values.push(listener);
+      this.listeners.set(type, values);
+    }
+
+    send(value) {
+      this.sent.push(JSON.parse(value));
+    }
+
+    dispatch(type, value = {}) {
+      for (const listener of this.listeners.get(type) || []) void listener(value);
+    }
+
+    close() {
+      this.readyState = 3;
+    }
+  }
+
+  const chrome = {
+    runtime: {
+      lastError: null,
+      getManifest: () => ({ version: "test" }),
+      sendMessage(message, callback) {
+        const responses = {
+          "pcbridge:applyFrontendPreference": {},
+          "pcbridge:getConfig": { host: "127.0.0.1", port: 17329, token: "test" },
+          "pcbridge:getTabInfo": { tabId: 1, windowId: 1 },
+          "pcbridge:probeDaemon": { reachable: true },
+          "pcbridge:rememberProjectContext": { ok: true },
+        };
+        callback(responses[message.type] || null);
+      },
+    },
+  };
+  const context = vm.createContext({
+    window,
+    document: window.document,
+    location: window.location,
+    console: window.console,
+    chrome,
+    WebSocket: FakeWebSocket,
+    crypto: { randomUUID: () => "request-id" },
+    performance,
+    setTimeout,
+    clearTimeout,
+    setInterval: () => 1,
+    clearInterval() {},
+    URLSearchParams,
+    Blob,
+    FormData,
+    Uint8Array,
+    Uint8ClampedArray,
+    WeakSet,
+    Set,
+    Map,
+  });
+  window.Function = vm.runInContext("Function", context);
+  const mainSource = await readFile(join(process.cwd(), "extension/main.js"), "utf8");
+  const isolatedSource = await readFile(join(process.cwd(), "extension/isolated.js"), "utf8");
+  vm.runInContext(mainSource, context);
+  vm.runInContext(isolatedSource, context);
+
+  const socket = await waitFor(() => sockets[0], "isolated bridge did not create a WebSocket");
+  socket.readyState = FakeWebSocket.OPEN;
+  socket.dispatch("open");
+  await settleExtensionTasks();
+  socket.sent.length = 0;
+  return socket;
+}
+
 async function loadServiceWorker() {
   const runtimeMessages = createEvent();
   const tabUpdates = createEvent();
@@ -43,12 +164,18 @@ async function loadServiceWorker() {
   const local = createStorageArea();
   const session = createStorageArea();
   const updatedTabs = [];
+  const updatedWindows = [];
   const chrome = {
     runtime: {
       getURL: (path) => `chrome-extension://test/${path}`,
       onMessage: runtimeMessages,
     },
     storage: { local, session },
+    windows: {
+      async update(windowId, update) {
+        updatedWindows.push({ windowId, ...update });
+      },
+    },
     tabs: {
       onRemoved: tabRemovals,
       onUpdated: tabUpdates,
@@ -74,8 +201,54 @@ async function loadServiceWorker() {
     tabRemovals,
     tabUpdates,
     updatedTabs,
+    updatedWindows,
   };
 }
+
+test("extension can focus the PlayCanvas tab that requested it", async () => {
+  const extension = await loadServiceWorker();
+  const response = await extension.sendMessage(
+    { type: "pcbridge:focusCurrentTab" },
+    { tab: { id: 41, windowId: 7 } },
+  );
+  assert.equal(response.ok, true);
+  assert.equal(response.tabId, 41);
+  assert.equal(response.windowId, 7);
+  assert.deepEqual(extension.updatedWindows, [{ windowId: 7, focused: true }]);
+  assert.deepEqual(extension.updatedTabs, [{ tabId: 41, active: true }]);
+});
+
+test("structured main-world errors keep details through isolated WebSocket forwarding", async () => {
+  const socket = await loadBridgeWorlds();
+  socket.dispatch("message", {
+    data: JSON.stringify({
+      type: "request",
+      id: "rpc-1",
+      method: "bridge:eval",
+      timeoutMs: 2000,
+      params: {
+        timeoutMs: 2000,
+        code: `
+          const error = new Error("template state is unknown");
+          error.code = "TEMPLATE_CALLBACK_TIMEOUT";
+          error.details = { stateUnknown: true, completedEntityIds: ["one"] };
+          throw error;
+        `,
+      },
+    }),
+  });
+
+  const response = await waitFor(
+    () => socket.sent.find((message) => message.id === "rpc-1"),
+    "isolated bridge did not forward the main-world error",
+  );
+  assert.equal(response.ok, false);
+  assert.deepEqual(response.error, {
+    code: "TEMPLATE_CALLBACK_TIMEOUT",
+    message: "template state is unknown",
+    details: { stateUnknown: true, completedEntityIds: ["one"] },
+  });
+});
 
 test("extension remembers frontend mode per project and applies it to project and scene URLs", async () => {
   const extension = await loadServiceWorker();

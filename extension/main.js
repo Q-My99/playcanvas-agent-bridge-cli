@@ -145,11 +145,14 @@
       if (editorSummary) return editorSummary;
 
       if (current instanceof Error) {
-        return {
+        const normalized = {
           name: current.name,
           message: current.message,
           stack: current.stack
         };
+        if (typeof current.code === "string") normalized.code = current.code;
+        if (current.details !== undefined) normalized.details = normalize(current.details, depth + 1);
+        return normalized;
       }
 
       if (depth >= settings.maxDepth) {
@@ -188,31 +191,197 @@
     return "playcanvas";
   }
 
-  function getRuntimeApp() {
-    try {
-      if (
-        window.pc &&
-        window.pc.Application &&
-        typeof window.pc.Application.getApplication === "function"
-      ) {
-        const app = window.pc.Application.getApplication();
-        if (app) return app;
-      }
-    } catch {
-      // Fall through to common global app locations.
-    }
-
-    if (window.app && window.app.graphicsDevice) return window.app;
-    if (window.pc && window.pc.app && window.pc.app.graphicsDevice) return window.pc.app;
-    return null;
-  }
-
-  function getPrimaryCanvas(app) {
+  function getAppCanvas(app) {
     return (
       (app && app.graphicsDevice && app.graphicsDevice.canvas) ||
       (app && app.canvas) ||
-      document.querySelector("canvas")
+      null
     );
+  }
+
+  function getPrimaryCanvas(app) {
+    return getAppCanvas(app) || document.querySelector("canvas");
+  }
+
+  function isVisibleElement(element) {
+    if (!element) return false;
+    const style = typeof window.getComputedStyle === "function"
+      ? window.getComputedStyle(element)
+      : null;
+    if (
+      style &&
+      (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0)
+    ) {
+      return false;
+    }
+    if (typeof element.getBoundingClientRect !== "function") return true;
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function runtimeRegistryEntries(registry) {
+    if (!registry) return [];
+    if (typeof registry.entries === "function") {
+      try {
+        return Array.from(registry.entries());
+      } catch {
+        // Fall through to object entries.
+      }
+    }
+    if (Array.isArray(registry)) return registry.map((app, index) => [String(index), app]);
+    if (typeof registry === "object") return Object.entries(registry);
+    return [];
+  }
+
+  function isLiveRuntimeApp(app) {
+    return Boolean(app && app.root);
+  }
+
+  function resolveRuntimeApp() {
+    const explicitCandidates = [];
+    const fallbackCandidates = [];
+    const seen = new Set();
+    const add = (list, app, source) => {
+      if (!isLiveRuntimeApp(app) || seen.has(app)) return;
+      seen.add(app);
+      list.push({ app, source, order: list.length });
+    };
+    const callGetter = (list, owner, id, source) => {
+      try {
+        if (owner && typeof owner.getApplication === "function") {
+          add(list, owner.getApplication(id), source);
+        }
+      } catch {
+        // Continue through the compatibility fallbacks.
+      }
+    };
+
+    const pc = window.pc;
+    try {
+      if (window.editor && typeof window.editor.call === "function") {
+        add(explicitCandidates, window.editor.call("viewport:app"), "editor.call(viewport:app)");
+      }
+    } catch {
+      // Launch can expose only a partial Editor event bus during startup.
+    }
+    const canvasIds = [
+      "application-canvas",
+      ...Array.from(document.querySelectorAll("canvas"))
+        .map((canvas) => canvas && canvas.id)
+        .filter((id) => id && id !== "application-canvas")
+    ];
+    for (const id of canvasIds) {
+      callGetter(
+        explicitCandidates,
+        pc && pc.AppBase,
+        id,
+        "pc.AppBase.getApplication(" + id + ")"
+      );
+    }
+    for (const [owner, label] of [
+      [pc && pc.AppBase, "pc.AppBase._applications"],
+      [pc && pc.Application, "pc.Application._applications"]
+    ]) {
+      for (const id of canvasIds) {
+        const match = runtimeRegistryEntries(owner && owner._applications)
+          .find(([key]) => String(key) === String(id));
+        if (match) add(explicitCandidates, match[1], label + "[" + id + "]");
+      }
+    }
+    for (const id of canvasIds) {
+      callGetter(
+        explicitCandidates,
+        pc && pc.Application,
+        id,
+        "pc.Application.getApplication(" + id + ")"
+      );
+    }
+
+    if (explicitCandidates.length) {
+      const selected = explicitCandidates[0];
+      return {
+        ...selected,
+        canvas: getAppCanvas(selected.app),
+        rootChildCount: selected.app.root && Array.isArray(selected.app.root.children)
+          ? selected.app.root.children.length
+          : 0,
+        score: null
+      };
+    }
+
+    callGetter(fallbackCandidates, pc && pc.AppBase, undefined, "pc.AppBase.getApplication()");
+    callGetter(fallbackCandidates, pc && pc.Application, undefined, "pc.Application.getApplication()");
+
+    for (const [owner, label] of [
+      [pc && pc.AppBase, "pc.AppBase._applications"],
+      [pc && pc.Application, "pc.Application._applications"]
+    ]) {
+      for (const [key, app] of runtimeRegistryEntries(owner && owner._applications)) {
+        add(fallbackCandidates, app, label + "[" + key + "]");
+      }
+    }
+
+    add(fallbackCandidates, window.app, "window.app");
+    add(fallbackCandidates, pc && pc.app, "pc.app");
+
+    const ownedMatches = fallbackCandidates.filter((candidate) => {
+      const canvas = getAppCanvas(candidate.app);
+      return Boolean(canvas && canvas.id && canvasIds.includes(canvas.id));
+    });
+    const mainCanvasMatches = ownedMatches.filter(
+      (candidate) => getAppCanvas(candidate.app).id === "application-canvas"
+    );
+    const selected = mainCanvasMatches.length === 1
+      ? mainCanvasMatches[0]
+      : ownedMatches.length === 1
+        ? ownedMatches[0]
+        : fallbackCandidates.length === 1
+          ? fallbackCandidates[0]
+          : null;
+    if (selected) {
+      return {
+        ...selected,
+        canvas: getAppCanvas(selected.app),
+        rootChildCount: Array.isArray(selected.app.root.children)
+          ? selected.app.root.children.length
+          : 0,
+        ambiguous: false,
+        candidateSources: fallbackCandidates.map((candidate) => candidate.source)
+      };
+    }
+
+    return {
+      app: null,
+      source: null,
+      canvas: null,
+      rootChildCount: 0,
+      ambiguous: fallbackCandidates.length > 1,
+      candidateSources: fallbackCandidates.map((candidate) => candidate.source)
+    };
+  }
+
+  function getScriptTypeCount(app) {
+    try {
+      return app && app.scripts && typeof app.scripts.list === "function"
+        ? app.scripts.list().length
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function getRuntimeApp() {
+    return resolveRuntimeApp().app;
+  }
+
+  function isLaunchSplashVisible() {
+    const selectors = [
+      "#application-splash-wrapper",
+      "#application-splash",
+      ".application-splash-wrapper",
+      ".application-splash"
+    ];
+    return selectors.some((selector) => isVisibleElement(document.querySelector(selector)));
   }
 
   function getSceneIdFromUrl() {
@@ -231,10 +400,47 @@
     const config = window.config || {};
     const kind = getTargetKind();
     const editorReady = Boolean(window.editor && window.editor.api && window.editor.api.globals);
-    const app = getRuntimeApp();
+    const runtime = resolveRuntimeApp();
+    const app = runtime.app;
     const canvasCount = document.querySelectorAll("canvas").length;
-    const launchReady = kind === "launch" && document.readyState !== "loading";
-    const ready = editorReady || launchReady;
+    const pageReady = document.readyState !== "loading";
+    const visibilityState = document.visibilityState || "unknown";
+    const runtimeCreated = Boolean(app && app.root);
+    const ownedCanvas = getAppCanvas(app);
+    const graphicsContextLost = Boolean(app && app.graphicsDevice && app.graphicsDevice.contextLost);
+    const graphicsReady = Boolean(
+      runtimeCreated && app.graphicsDevice && ownedCanvas && !graphicsContextLost
+    );
+    const rootChildren = app && app.root && Array.isArray(app.root.children)
+      ? app.root.children
+      : [];
+    const sceneRoot = app && app.scene ? app.scene.root : null;
+    const sceneLoaded = Boolean(
+      graphicsReady && rootChildren.length > 0 && (!sceneRoot || rootChildren.includes(sceneRoot))
+    );
+    const runtimeFrame = app && Number.isFinite(Number(app.frame)) ? Number(app.frame) : null;
+    const runtimeStarted = Boolean(sceneLoaded && runtimeFrame !== null && runtimeFrame > 0);
+    const scriptsReady = runtimeStarted;
+    const scriptTypeCount = getScriptTypeCount(app);
+    const splashVisible = kind === "launch" && isLaunchSplashVisible();
+    const lifecycleReady = Boolean(
+      pageReady && runtimeCreated && graphicsReady && sceneLoaded && runtimeStarted && !splashVisible
+    );
+    const readinessBlockers = [];
+    if (kind === "launch") {
+      if (!pageReady) readinessBlockers.push("page-loading");
+      if (visibilityState !== "visible") readinessBlockers.push("tab-hidden");
+      if (!runtimeCreated) readinessBlockers.push("runtime-not-created");
+      if (runtimeCreated && graphicsContextLost) readinessBlockers.push("graphics-context-lost");
+      if (runtimeCreated && !graphicsReady && !graphicsContextLost) {
+        readinessBlockers.push("graphics-not-ready");
+      }
+      if (runtimeCreated && !sceneLoaded) readinessBlockers.push("scene-not-loaded");
+      if (sceneLoaded && !runtimeStarted) readinessBlockers.push("runtime-not-started");
+      if (splashVisible) readinessBlockers.push("splash-visible");
+    }
+    const launchReady = kind === "launch" && lifecycleReady && visibilityState === "visible";
+    const ready = kind === "launch" ? launchReady : editorReady;
     return {
       kind,
       url: location.href,
@@ -243,6 +449,30 @@
       hasEditor: Boolean(window.editor),
       hasPc: Boolean(window.pc),
       hasRuntimeApp: Boolean(app),
+      runtimeAppSource: runtime.source || undefined,
+      runtimeAppAmbiguous: kind === "launch" ? Boolean(runtime.ambiguous) : undefined,
+      runtimeAppCandidateSources: kind === "launch" ? runtime.candidateSources || [] : undefined,
+      runtimeCanvasId: app && runtime.canvas && runtime.canvas.id
+        ? String(runtime.canvas.id)
+        : undefined,
+      engineVersion: kind === "launch" && window.pc && window.pc.version
+        ? String(window.pc.version)
+        : undefined,
+      readinessMode: kind === "launch" ? "heuristic" : undefined,
+      pageReady: kind === "launch" ? pageReady : undefined,
+      visibilityState: kind === "launch" ? visibilityState : undefined,
+      lifecycleReady: kind === "launch" ? lifecycleReady : undefined,
+      runtimeCreated: kind === "launch" ? runtimeCreated : undefined,
+      graphicsReady: kind === "launch" ? graphicsReady : undefined,
+      graphicsContextLost: kind === "launch" ? graphicsContextLost : undefined,
+      runtimeStarted: kind === "launch" ? runtimeStarted : undefined,
+      runtimeFrame: kind === "launch" ? runtimeFrame : undefined,
+      sceneLoaded: kind === "launch" ? sceneLoaded : undefined,
+      scriptsReady: kind === "launch" ? scriptsReady : undefined,
+      scriptTypeCount: kind === "launch" ? scriptTypeCount : undefined,
+      splashVisible: kind === "launch" ? splashVisible : undefined,
+      rootChildCount: kind === "launch" ? runtime.rootChildCount : undefined,
+      readinessBlockers: kind === "launch" ? readinessBlockers : undefined,
       canvasCount,
       projectId: config.project && config.project.id ? String(config.project.id) : undefined,
       projectName: config.project && config.project.name ? String(config.project.name) : undefined,
@@ -484,6 +714,7 @@
       editor: window.editor,
       pc: window.pc,
       pcui: window.pcui,
+      runtimeApp: getRuntimeApp(),
       command,
       serialize
     };
@@ -497,6 +728,7 @@
         const editor = ctx.editor;
         const pc = ctx.pc;
         const pcui = ctx.pcui;
+        const runtimeApp = ctx.runtimeApp;
         const command = ctx.command;
         const serialize = ctx.serialize;
         return (async () => {
@@ -505,7 +737,7 @@
       `
     );
 
-    return serialize(await withTimeout(fn(context), timeoutMs));
+    return serialize(await withTimeout(fn(context), timeoutMs), params.serializeOptions);
   }
 
   function encodeCanvas(canvas, params, source) {

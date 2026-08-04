@@ -20,6 +20,10 @@ npm install -g github:Q-My99/playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
+The commands documented below include repository version `0.4.2`. Until that version is published,
+the npm `latest` release (`0.3.0` as of 2026-08-04) does not contain every command described here;
+use the GitHub install when testing these unreleased changes.
+
 One-shot with npx:
 
 ```bash
@@ -110,10 +114,10 @@ When a ready Editor connects, pcbridge creates `<projectId>-<projectName>/` auto
 Inspect or refresh the workspace with:
 
 ```bash
-pcbridge workspace status --target scene:<sceneId>
-pcbridge workspace path --target scene:<sceneId>
-pcbridge workspace sync --target scene:<sceneId>
-pcbridge workspace pull --target scene:<sceneId> --asset <assetId>
+pcbridge workspace status --target editor:<sceneId>
+pcbridge workspace path --target editor:<sceneId>
+pcbridge workspace sync --target editor:<sceneId>
+pcbridge workspace pull --target editor:<sceneId> --asset <assetId>
 ```
 
 Script contents synchronize in both directions. Create, move, rename, and delete assets through
@@ -129,9 +133,12 @@ In another terminal:
 ```bash
 pcbridge doctor
 pcbridge targets
-pcbridge eval --target current --code "return { href: location.href, hasEditor: !!editor }"
-pcbridge eval --target launch:<sceneId> --code "return { href: location.href, hasPc: !!pc }"
+pcbridge eval --target editor:<sceneId> --code "return { href: location.href, hasEditor: !!editor }"
+pcbridge launch diagnose --target launch:<sceneId>
 ```
+
+`doctor` distinguishes a missing listener (`DAEMON_NOT_LISTENING`) from a sandbox that blocks
+localhost (`LOOPBACK_ACCESS_DENIED`); only the former means another daemon should be started.
 
 ## Progressive help
 
@@ -139,8 +146,10 @@ The CLI exposes layered help so agents can load only the command surface they ne
 
 ```bash
 pcbridge help
+pcbridge help core
 pcbridge help workspace
 pcbridge help frontend
+pcbridge help target
 pcbridge help entity
 pcbridge help asset
 pcbridge help material
@@ -161,53 +170,70 @@ large multi-step scene edits where one script is clearer and faster than many CL
 ## Common commands
 
 ```bash
-pcbridge entity list --target current --limit 50
-pcbridge entity list --target current --tag enemy --component render
-pcbridge entity create --target current --json ./entity.json
-pcbridge entity create-many --target current --json ./entities.json
-pcbridge entity patch --target current --id <resource_id> --set position='[0,1,0]'
-pcbridge entity patch-many --target current --json ./edits.json
-pcbridge entity duplicate --target current --id <resource_id>
-pcbridge entity reparent --target current --id <resource_id> --parent <parent_resource_id>
-pcbridge entity set-material --target current --id <resource_id> --material-id <material_asset_id>
-pcbridge entity add-script --target current --id <resource_id> --asset-id <script_asset_id> --attributes '{"speed":2.5}'
-pcbridge entity delete --target current --id <resource_id>
+pcbridge entity list --target editor:<sceneId> --limit 50
+pcbridge entity list --target editor:<sceneId> --tag enemy --component render
+pcbridge entity create --target editor:<sceneId> --json ./entity.json
+pcbridge entity create-many --target editor:<sceneId> --json ./entities.json
+pcbridge entity patch --target editor:<sceneId> --id <resource_id> --set position='[0,1,0]'
+pcbridge entity patch-many --target editor:<sceneId> --json ./edits.json
+pcbridge entity duplicate --target editor:<sceneId> --id <resource_id>
+pcbridge entity reparent --target editor:<sceneId> --id <resource_id> --parent <parent_resource_id>
+pcbridge entity set-material --target editor:<sceneId> --id <resource_id> --material-id <material_asset_id>
+pcbridge entity add-script --target editor:<sceneId> --id <resource_id> --asset-id <script_asset_id> --attributes '{"speed":2.5}'
+pcbridge entity add-script --target editor:<sceneId> --id <resource_id> --script-name sdsAudioPlayer --attributes-json ./audio-slots.json
+pcbridge entity delete --target editor:<sceneId> --id <resource_id>
 
-pcbridge asset list --target current --type script
-pcbridge asset list --target current --tag generated
-pcbridge asset get --target current --id <asset_id>
-pcbridge asset create --target current --json ./assets.json
-pcbridge asset folder ensure --target current --path "AI Agent Bridge/Demo/Textures"
-pcbridge asset upload --target current --file ./texture.png --name DemoTexture --folder "AI Agent Bridge/Demo/Textures"
-pcbridge asset upload-many --target current --json ./upload-manifest.json
-pcbridge asset instantiate --target current --id <template_asset_id>
-pcbridge asset delete --target current --id <asset_id>
+pcbridge asset list --target editor:<sceneId> --type script
+pcbridge asset list --target editor:<sceneId> --tag generated
+pcbridge asset get --target editor:<sceneId> --id <asset_id>
+pcbridge asset create --target editor:<sceneId> --json ./assets.json
+pcbridge asset folder ensure --target editor:<sceneId> --path "AI Agent Bridge/Demo/Textures"
+pcbridge asset upload --target editor:<sceneId> --file ./texture.png --name DemoTexture --folder "AI Agent Bridge/Demo/Textures"
+pcbridge asset upload-many --target editor:<sceneId> --json ./upload-manifest.json
+pcbridge asset instantiate --target editor:<sceneId> --id <template_asset_id>
+pcbridge asset delete --target editor:<sceneId> --id <asset_id>
 
-pcbridge material create --target current --name DemoMaterial --folder "AI Agent Bridge/Demo/Materials" --diffuse-map <texture_asset_id>
-pcbridge material patch --target current --asset-id <asset_id> --set diffuse='[1,0,0]'
+pcbridge material create --target editor:<sceneId> --name DemoMaterial --folder "AI Agent Bridge/Demo/Materials" --diffuse-map <texture_asset_id>
+pcbridge material patch --target editor:<sceneId> --asset-id <asset_id> --set diffuse='[1,0,0]'
 
-pcbridge template create --target current --entity-id <resource_id> --name DemoTemplate --folder "AI Agent Bridge/Demo/Templates"
-pcbridge template instantiate --target current --id <template_asset_id>
+pcbridge template create --target editor:<sceneId> --entity-id <resource_id> --name DemoTemplate --folder "AI Agent Bridge/Demo/Templates"
+pcbridge template instantiate --target editor:<sceneId> --id <template_asset_id>
+pcbridge template overrides --target editor:<sceneId> --entity-id <resource_id>
+pcbridge template apply --target editor:<sceneId> --entity-id <resource_id>
+pcbridge template apply-many --target editor:<sceneId> --json ./template-roots.json
 
-pcbridge script create --target current --filename controller.js --file ./controller.js --folder "AI Agent Bridge/Demo/Scripts"
-pcbridge script upsert --target current --filename controller.js --file ./controller.js --folder "AI Agent Bridge/Demo/Scripts" --parse
-pcbridge script set-text --target current --asset-id <asset_id> --file ./controller.js
-pcbridge script parse --target current --asset-id <asset_id>
+pcbridge script create --target editor:<sceneId> --filename controller.js --file ./controller.js --folder "AI Agent Bridge/Demo/Scripts"
+pcbridge script upsert --target editor:<sceneId> --filename controller.js --file ./controller.js --folder "AI Agent Bridge/Demo/Scripts" --parse --wait
+pcbridge script set-text --target editor:<sceneId> --asset-id <asset_id> --file ./controller.js --parse --wait
+pcbridge script parse --target editor:<sceneId> --asset-id <asset_id>
 
-pcbridge scene settings get --target current
-pcbridge scene settings patch --target current --set physics.gravity='[0,-9.8,0]'
+pcbridge scene settings get --target editor:<sceneId>
+pcbridge scene settings patch --target editor:<sceneId> --set physics.gravity='[0,-9.8,0]'
 
-pcbridge store search --target current --search vehicle --limit 20
-pcbridge store get --target current --id <store_asset_id>
-pcbridge store download --target current --id <store_asset_id> --name Vehicle --license-json ./license.json
+pcbridge store search --target editor:<sceneId> --search vehicle --limit 20
+pcbridge store get --target editor:<sceneId> --id <store_asset_id>
+pcbridge store download --target editor:<sceneId> --id <store_asset_id> --name Vehicle --license-json ./license.json
 
-pcbridge viewport capture --target current --out ./tmp/playcanvas-viewport.png
-pcbridge viewport focus --target current --id <resource_id> --view perspective
+pcbridge viewport capture --target editor:<sceneId> --out ./tmp/playcanvas-viewport.png
+pcbridge viewport focus --target editor:<sceneId> --id <resource_id> --view perspective
 
-pcbridge logs get --target current --limit 100
+pcbridge logs get --target editor:<sceneId> --limit 100
 pcbridge logs get --target launch:<sceneId> --level error
-pcbridge logs clear --target current
+pcbridge logs clear --target editor:<sceneId>
 ```
+
+Use `--script-name` for ScriptTypes registered by a bundle or runtime asset and therefore lacking a
+standalone script asset id. Script update commands with `--parse --wait` verify the uploaded text,
+stable file metadata, and parsed attributes before returning. This completion check covers the
+remote asset and current Editor observer, not a later workspace mirror sync.
+
+Template apply commands invoke the Editor's existing `templates:apply` action. When overrides exist,
+completion requires its pipeline callback plus two zero-override observations. A returned `verified`
+value only confirms the current Editor observer; it does not confirm persistence across an Editor
+reload. Editor entity patches are durable: restore preview-only enabled/visibility changes before
+applying a Template. `apply-many` accepts
+`{"entityIds":["root-a","root-b"]}` (or an array of ids or `{ "entityId": "..." }` items), validates
+its manifest first, and applies roots serially.
 
 For task-sized installs, keep upload manifests next to the generated files. Relative `file` paths are resolved from the manifest location:
 
@@ -227,22 +253,22 @@ For task-sized installs, keep upload manifests next to the generated files. Rela
 Use `eval --args-json` when a large Editor script needs local configuration without embedding JSON into source:
 
 ```bash
-pcbridge eval --target current --file ./install-scene.js --args-json ./install-args.json
+pcbridge eval --target editor:<sceneId> --file ./install-scene.js --args-json ./install-args.json
 ```
 
 ## Texture + material + script workflow
 
 ```bash
-pcbridge asset folder ensure --target current --path "AI Agent Bridge/Texture Box/Textures"
-pcbridge asset upload --target current --file ./cat.png --name CatTexture --folder "AI Agent Bridge/Texture Box/Textures"
+pcbridge asset folder ensure --target editor:<sceneId> --path "AI Agent Bridge/Texture Box/Textures"
+pcbridge asset upload --target editor:<sceneId> --file ./cat.png --name CatTexture --folder "AI Agent Bridge/Texture Box/Textures"
 
-pcbridge material create --target current --name CatMaterial --folder "AI Agent Bridge/Texture Box/Materials" --diffuse-map <texture_asset_id>
+pcbridge material create --target editor:<sceneId> --name CatMaterial --folder "AI Agent Bridge/Texture Box/Materials" --diffuse-map <texture_asset_id>
 
-pcbridge script create --target current --filename jumpingBox.js --file ./jumpingBox.js --folder "AI Agent Bridge/Texture Box/Scripts"
+pcbridge script create --target editor:<sceneId> --filename jumpingBox.js --file ./jumpingBox.js --folder "AI Agent Bridge/Texture Box/Scripts"
 
-pcbridge entity create --target current --json ./box.json
-pcbridge entity set-material --target current --id <box_resource_id> --material-id <material_asset_id>
-pcbridge entity add-script --target current --id <box_resource_id> --asset-id <script_asset_id> --attributes '{"height":0.5,"speed":2.4}'
+pcbridge entity create --target editor:<sceneId> --json ./box.json
+pcbridge entity set-material --target editor:<sceneId> --id <box_resource_id> --material-id <material_asset_id>
+pcbridge entity add-script --target editor:<sceneId> --id <box_resource_id> --asset-id <script_asset_id> --attributes '{"height":0.5,"speed":2.4}'
 ```
 
 ## Target selection
@@ -253,7 +279,9 @@ pcbridge eval --target current --code "return location.href"
 pcbridge eval --target tab:123 --code "return location.href"
 pcbridge eval --target scene:987654 --code "return location.href"
 pcbridge eval --target project:123456 --code "return location.href"
-pcbridge eval --target launch:987654 --code "return { href: location.href, hasPc: !!pc }"
+pcbridge launch diagnose --target launch:987654
+pcbridge launch wait-ready --target launch:987654 --focus --timeout-ms 30000
+pcbridge eval --target launch:987654 --code "return { runtimeCreated: !!runtimeApp, rootChildCount: runtimeApp?.root?.children?.length ?? 0 }"
 pcbridge viewport capture --target launch:987654 --out ./tmp/launch.png
 pcbridge logs get --target launch:987654 --limit 100
 ```
@@ -262,6 +290,17 @@ pcbridge logs get --target launch:987654 --limit 100
 are open for the same scene, use `tab:<id>`, `editor:<sceneId>`, or `launch:<sceneId>` to avoid
 ambiguity. Editor-only structured commands require an Editor target; `eval`, `viewport capture`,
 and `logs` also work on Launch targets.
+
+Launch readiness is a best-effort heuristic, not an Engine lifecycle event. `lifecycleReady`
+requires a runtime app with its own graphics canvas/context, an attached scene root, and at least
+one completed frame, with no recognized splash. Target `ready` additionally requires the tab to be
+visible, so use `launch wait-ready --focus` for a hidden Launch tab. `scriptTypeCount` is diagnostic
+only and does not prove every ScriptType has registered. Eval receives a compatibility-resolved
+`runtimeApp` binding for Engine V1 and V2.
+
+`viewport capture` records the current canvas; it does not resize Chrome or emulate a mobile DPR.
+PNG can preserve transparency; the default `--max-width 1200` can downscale output. Eval output is bounded; use a
+leaf projection first, then bounded `--max-depth`, `--max-items`, or `--max-keys` if needed.
 
 ## Agent skills
 
@@ -321,8 +360,8 @@ repository does not need an `NPM_TOKEN` secret.
 3. Create and push the matching tag, for example:
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+git tag v<version>
+git push origin v<version>
 ```
 
 The workflow rejects tags that do not match the package version or whose commit is not on `main`.

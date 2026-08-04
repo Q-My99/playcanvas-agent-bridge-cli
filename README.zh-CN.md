@@ -13,6 +13,9 @@ npm install -g playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
+下文命令包含仓库版 `0.4.2` 的尚未发布改动。在该版本发布前，npm 的 `latest`（截至
+2026-08-04 为 `0.3.0`）不包含这里列出的全部命令；测试本轮新能力时请使用 GitHub 安装。
+
 如果要测试尚未发布的改动，也可以直接从这个 GitHub 仓库安装：
 
 ```bash
@@ -100,7 +103,7 @@ pcbridge daemon start
 连接 ready 的 Editor 后，pcbridge 会自动创建 `<projectId>-<projectName>/` 工程目录：
 
 ```text
-1552681-pc-biedge-test/
+1552681-pcbridge-test/
 ├── pcbridge.project.json
 ├── assets/       # 与 PlayCanvas 文件夹结构对应，脚本自动双向同步
 ├── tmp/          # 临时脚本、清单、截图和冲突副本
@@ -110,10 +113,10 @@ pcbridge daemon start
 查看或手动刷新工作区：
 
 ```bash
-pcbridge workspace status --target scene:<sceneId>
-pcbridge workspace path --target scene:<sceneId>
-pcbridge workspace sync --target scene:<sceneId>
-pcbridge workspace pull --target scene:<sceneId> --asset <assetId>
+pcbridge workspace status --target editor:<sceneId>
+pcbridge workspace path --target editor:<sceneId>
+pcbridge workspace sync --target editor:<sceneId>
+pcbridge workspace pull --target editor:<sceneId> --asset <assetId>
 ```
 
 脚本内容保持双向同步。资源的新建、移动、重命名和删除仍应使用 pcbridge 结构化命令；
@@ -128,9 +131,12 @@ CLI 的脚本、JSON、上传文件和截图路径默认必须位于对应项目
 ```bash
 pcbridge doctor
 pcbridge targets
-pcbridge eval --target current --code "return { href: location.href, hasEditor: !!editor }"
-pcbridge eval --target launch:<sceneId> --code "return { href: location.href, hasPc: !!pc }"
+pcbridge eval --target editor:<sceneId> --code "return { href: location.href, hasEditor: !!editor }"
+pcbridge launch diagnose --target launch:<sceneId>
 ```
+
+`doctor` 会区分 daemon 未监听（`DAEMON_NOT_LISTENING`）和受限环境禁止 localhost
+（`LOOPBACK_ACCESS_DENIED`）；只有前一种情况才应该再启动 daemon。
 
 ## 渐进式 help
 
@@ -138,8 +144,10 @@ CLI 提供分层 help，方便 agent 只加载当前需要的命令面：
 
 ```bash
 pcbridge help
+pcbridge help core
 pcbridge help workspace
 pcbridge help frontend
+pcbridge help target
 pcbridge help entity
 pcbridge help asset
 pcbridge help material
@@ -159,53 +167,69 @@ Editor/Engine 工作流、Launch 调试、大量多步骤场景修改，则优�
 ## 常用命令
 
 ```bash
-pcbridge entity list --target current --limit 50
-pcbridge entity list --target current --tag enemy --component render
-pcbridge entity create --target current --json ./entity.json
-pcbridge entity create-many --target current --json ./entities.json
-pcbridge entity patch --target current --id <resource_id> --set position='[0,1,0]'
-pcbridge entity patch-many --target current --json ./edits.json
-pcbridge entity duplicate --target current --id <resource_id>
-pcbridge entity reparent --target current --id <resource_id> --parent <parent_resource_id>
-pcbridge entity set-material --target current --id <resource_id> --material-id <material_asset_id>
-pcbridge entity add-script --target current --id <resource_id> --asset-id <script_asset_id> --attributes '{"speed":2.5}'
-pcbridge entity delete --target current --id <resource_id>
+pcbridge entity list --target editor:<sceneId> --limit 50
+pcbridge entity list --target editor:<sceneId> --tag enemy --component render
+pcbridge entity create --target editor:<sceneId> --json ./entity.json
+pcbridge entity create-many --target editor:<sceneId> --json ./entities.json
+pcbridge entity patch --target editor:<sceneId> --id <resource_id> --set position='[0,1,0]'
+pcbridge entity patch-many --target editor:<sceneId> --json ./edits.json
+pcbridge entity duplicate --target editor:<sceneId> --id <resource_id>
+pcbridge entity reparent --target editor:<sceneId> --id <resource_id> --parent <parent_resource_id>
+pcbridge entity set-material --target editor:<sceneId> --id <resource_id> --material-id <material_asset_id>
+pcbridge entity add-script --target editor:<sceneId> --id <resource_id> --asset-id <script_asset_id> --attributes '{"speed":2.5}'
+pcbridge entity add-script --target editor:<sceneId> --id <resource_id> --script-name sdsAudioPlayer --attributes-json ./audio-slots.json
+pcbridge entity delete --target editor:<sceneId> --id <resource_id>
 
-pcbridge asset list --target current --type script
-pcbridge asset list --target current --tag generated
-pcbridge asset get --target current --id <asset_id>
-pcbridge asset create --target current --json ./assets.json
-pcbridge asset folder ensure --target current --path "AI Agent Bridge/Demo/Textures"
-pcbridge asset upload --target current --file ./texture.png --name DemoTexture --folder "AI Agent Bridge/Demo/Textures"
-pcbridge asset upload-many --target current --json ./upload-manifest.json
-pcbridge asset instantiate --target current --id <template_asset_id>
-pcbridge asset delete --target current --id <asset_id>
+pcbridge asset list --target editor:<sceneId> --type script
+pcbridge asset list --target editor:<sceneId> --tag generated
+pcbridge asset get --target editor:<sceneId> --id <asset_id>
+pcbridge asset create --target editor:<sceneId> --json ./assets.json
+pcbridge asset folder ensure --target editor:<sceneId> --path "AI Agent Bridge/Demo/Textures"
+pcbridge asset upload --target editor:<sceneId> --file ./texture.png --name DemoTexture --folder "AI Agent Bridge/Demo/Textures"
+pcbridge asset upload-many --target editor:<sceneId> --json ./upload-manifest.json
+pcbridge asset instantiate --target editor:<sceneId> --id <template_asset_id>
+pcbridge asset delete --target editor:<sceneId> --id <asset_id>
 
-pcbridge material create --target current --name DemoMaterial --folder "AI Agent Bridge/Demo/Materials" --diffuse-map <texture_asset_id>
-pcbridge material patch --target current --asset-id <asset_id> --set diffuse='[1,0,0]'
+pcbridge material create --target editor:<sceneId> --name DemoMaterial --folder "AI Agent Bridge/Demo/Materials" --diffuse-map <texture_asset_id>
+pcbridge material patch --target editor:<sceneId> --asset-id <asset_id> --set diffuse='[1,0,0]'
 
-pcbridge template create --target current --entity-id <resource_id> --name DemoTemplate --folder "AI Agent Bridge/Demo/Templates"
-pcbridge template instantiate --target current --id <template_asset_id>
+pcbridge template create --target editor:<sceneId> --entity-id <resource_id> --name DemoTemplate --folder "AI Agent Bridge/Demo/Templates"
+pcbridge template instantiate --target editor:<sceneId> --id <template_asset_id>
+pcbridge template overrides --target editor:<sceneId> --entity-id <resource_id>
+pcbridge template apply --target editor:<sceneId> --entity-id <resource_id>
+pcbridge template apply-many --target editor:<sceneId> --json ./template-roots.json
 
-pcbridge script create --target current --filename controller.js --file ./controller.js --folder "AI Agent Bridge/Demo/Scripts"
-pcbridge script upsert --target current --filename controller.js --file ./controller.js --folder "AI Agent Bridge/Demo/Scripts" --parse
-pcbridge script set-text --target current --asset-id <asset_id> --file ./controller.js
-pcbridge script parse --target current --asset-id <asset_id>
+pcbridge script create --target editor:<sceneId> --filename controller.js --file ./controller.js --folder "AI Agent Bridge/Demo/Scripts"
+pcbridge script upsert --target editor:<sceneId> --filename controller.js --file ./controller.js --folder "AI Agent Bridge/Demo/Scripts" --parse --wait
+pcbridge script set-text --target editor:<sceneId> --asset-id <asset_id> --file ./controller.js --parse --wait
+pcbridge script parse --target editor:<sceneId> --asset-id <asset_id>
 
-pcbridge scene settings get --target current
-pcbridge scene settings patch --target current --set physics.gravity='[0,-9.8,0]'
+pcbridge scene settings get --target editor:<sceneId>
+pcbridge scene settings patch --target editor:<sceneId> --set physics.gravity='[0,-9.8,0]'
 
-pcbridge store search --target current --search vehicle --limit 20
-pcbridge store get --target current --id <store_asset_id>
-pcbridge store download --target current --id <store_asset_id> --name Vehicle --license-json ./license.json
+pcbridge store search --target editor:<sceneId> --search vehicle --limit 20
+pcbridge store get --target editor:<sceneId> --id <store_asset_id>
+pcbridge store download --target editor:<sceneId> --id <store_asset_id> --name Vehicle --license-json ./license.json
 
-pcbridge viewport capture --target current --out ./tmp/playcanvas-viewport.png
-pcbridge viewport focus --target current --id <resource_id> --view perspective
+pcbridge viewport capture --target editor:<sceneId> --out ./tmp/playcanvas-viewport.png
+pcbridge viewport focus --target editor:<sceneId> --id <resource_id> --view perspective
 
-pcbridge logs get --target current --limit 100
+pcbridge logs get --target editor:<sceneId> --limit 100
 pcbridge logs get --target launch:<sceneId> --level error
-pcbridge logs clear --target current
+pcbridge logs clear --target editor:<sceneId>
 ```
+
+通过 bundle 或 runtime asset 注册、没有独立 script asset id 的 ScriptType，请使用
+`--script-name`。脚本更新配合 `--parse --wait` 时，会在返回前校验远端文本、稳定的文件元数据
+以及最新的解析属性。这个完成检查覆盖远端 asset 和当前 Editor observer，不等待之后一次
+workspace mirror sync。
+
+Template apply 命令会调用 Editor 现有的 `templates:apply` action。存在 overrides 时，完成条件
+是 pipeline callback 已到达，且连续两次观察到 overrides 为 0。返回的 `verified` 只确认当前
+Editor observer 状态，不代表刷新 Editor 后仍然持久。
+Editor entity patch 是持久修改；apply 前必须先恢复只用于预览的 enabled/visibility 状态。
+`apply-many` 会先校验清单，再串行处理每个 root。清单可以写成
+`{"entityIds":["root-a","root-b"]}`，也可直接使用 entity id 或 `{ "entityId": "..." }` 条目数组。
 
 大型任务可以把上传清单放在生成文件旁边。`file` 的相对路径会按清单文件所在目录解析：
 
@@ -225,22 +249,22 @@ pcbridge logs clear --target current
 当较大的 Editor 脚本需要本地配置时，用 `eval --args-json`，避免把 JSON 直接拼进代码里：
 
 ```bash
-pcbridge eval --target current --file ./install-scene.js --args-json ./install-args.json
+pcbridge eval --target editor:<sceneId> --file ./install-scene.js --args-json ./install-args.json
 ```
 
 ## 贴图 + 材质 + 脚本工作流
 
 ```bash
-pcbridge asset folder ensure --target current --path "AI Agent Bridge/Texture Box/Textures"
-pcbridge asset upload --target current --file ./cat.png --name CatTexture --folder "AI Agent Bridge/Texture Box/Textures"
+pcbridge asset folder ensure --target editor:<sceneId> --path "AI Agent Bridge/Texture Box/Textures"
+pcbridge asset upload --target editor:<sceneId> --file ./cat.png --name CatTexture --folder "AI Agent Bridge/Texture Box/Textures"
 
-pcbridge material create --target current --name CatMaterial --folder "AI Agent Bridge/Texture Box/Materials" --diffuse-map <texture_asset_id>
+pcbridge material create --target editor:<sceneId> --name CatMaterial --folder "AI Agent Bridge/Texture Box/Materials" --diffuse-map <texture_asset_id>
 
-pcbridge script create --target current --filename jumpingBox.js --file ./jumpingBox.js --folder "AI Agent Bridge/Texture Box/Scripts"
+pcbridge script create --target editor:<sceneId> --filename jumpingBox.js --file ./jumpingBox.js --folder "AI Agent Bridge/Texture Box/Scripts"
 
-pcbridge entity create --target current --json ./box.json
-pcbridge entity set-material --target current --id <box_resource_id> --material-id <material_asset_id>
-pcbridge entity add-script --target current --id <box_resource_id> --asset-id <script_asset_id> --attributes '{"height":0.5,"speed":2.4}'
+pcbridge entity create --target editor:<sceneId> --json ./box.json
+pcbridge entity set-material --target editor:<sceneId> --id <box_resource_id> --material-id <material_asset_id>
+pcbridge entity add-script --target editor:<sceneId> --id <box_resource_id> --asset-id <script_asset_id> --attributes '{"height":0.5,"speed":2.4}'
 ```
 
 ## 目标选择
@@ -251,7 +275,9 @@ pcbridge eval --target current --code "return location.href"
 pcbridge eval --target tab:123 --code "return location.href"
 pcbridge eval --target scene:987654 --code "return location.href"
 pcbridge eval --target project:123456 --code "return location.href"
-pcbridge eval --target launch:987654 --code "return { href: location.href, hasPc: !!pc }"
+pcbridge launch diagnose --target launch:987654
+pcbridge launch wait-ready --target launch:987654 --focus --timeout-ms 30000
+pcbridge eval --target launch:987654 --code "return { runtimeCreated: !!runtimeApp, rootChildCount: runtimeApp?.root?.children?.length ?? 0 }"
 pcbridge viewport capture --target launch:987654 --out ./tmp/launch.png
 pcbridge logs get --target launch:987654 --limit 100
 ```
@@ -259,6 +285,16 @@ pcbridge logs get --target launch:987654 --limit 100
 `current` 表示最近可用的 PlayCanvas 目标页。如果同一个 scene 同时打开了 Editor 和 Launch
 页面，请使用 `tab:<id>`、`editor:<sceneId>` 或 `launch:<sceneId>` 避免歧义。结构化编辑命令需要
 Editor 目标；`eval`、`viewport capture` 和 `logs` 也可以用于 Launch 目标。
+
+Launch ready 是尽力而为的启发式判断，不是 Engine 生命周期事件。`lifecycleReady` 要求找到
+拥有自身 graphics canvas/context 的 runtime app、scene root 已挂载、至少完成一帧，并且没有
+识别到启动遮罩；target `ready` 还要求 tab 可见。因此后台 Launch 应使用
+`launch wait-ready --focus`。`scriptTypeCount` 只用于诊断，不能证明所有 ScriptType 已注册。
+eval 提供通过兼容 resolver 选择的 Engine V1/V2 `runtimeApp`。
+
+`viewport capture` 只截取当前 canvas，不会调整 Chrome 尺寸或模拟手机 DPR。PNG 可能保留
+透明通道；默认的 `--max-width 1200` 可能缩放输出。eval 输出有边界；优先返回叶子字段，必要时再使用有
+上限的 `--max-depth`、`--max-items` 或 `--max-keys`。
 
 ## Agent skill / rules
 
@@ -316,8 +352,8 @@ node dist/cli.js doctor
 3. 创建并推送匹配的 tag，例如：
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+git tag v<version>
+git push origin v<version>
 ```
 
 如果 tag 与包版本不一致，或者 tag 对应的提交不属于 `main`，workflow 会拒绝发布。

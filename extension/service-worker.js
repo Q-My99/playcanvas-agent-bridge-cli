@@ -168,6 +168,19 @@ async function loadConfig() {
   };
 }
 
+async function focusSenderTab(sender) {
+  const tabId = sender.tab && sender.tab.id;
+  const windowId = sender.tab && sender.tab.windowId;
+  if (!Number.isInteger(tabId)) {
+    return { ok: false, error: "The requesting PlayCanvas tab is unavailable." };
+  }
+  if (Number.isInteger(windowId) && chrome.windows && chrome.windows.update) {
+    await chrome.windows.update(windowId, { focused: true });
+  }
+  await chrome.tabs.update(tabId, { active: true });
+  return { ok: true, tabId, windowId: Number.isInteger(windowId) ? windowId : null };
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.type === "pcbridge:getTabInfo") {
     sendResponse({
@@ -179,6 +192,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message && message.type === "pcbridge:getConfig") {
     loadConfig().then(sendResponse);
+    return true;
+  }
+
+  if (message && message.type === "pcbridge:focusCurrentTab") {
+    focusSenderTab(sender)
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
     return true;
   }
 

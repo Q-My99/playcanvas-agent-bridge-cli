@@ -59,7 +59,9 @@ import {
   storeDownloadSnippet,
   storeGetSnippet,
   storeSearchSnippet,
+  templateApplySnippet,
   templateCreateSnippet,
+  templateOverridesSnippet,
 } from "./snippets.js";
 import { fail, ok, type Envelope, type JsonValue } from "./shared/protocol.js";
 
@@ -127,6 +129,64 @@ function flagList(args: Args, name: string): string[] {
 
 function print(value: Envelope): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+  if (!value.ok) process.exitCode = 1;
+}
+
+type DaemonConnectionDiagnosis = {
+  code: string;
+  message: string;
+  nextAction: string;
+};
+
+function nestedErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const candidate = error as { code?: unknown; cause?: unknown };
+  if (typeof candidate.code === "string") return candidate.code;
+  return nestedErrorCode(candidate.cause);
+}
+
+export function diagnoseDaemonConnection(
+  error: unknown,
+  port = DEFAULT_PORT,
+): DaemonConnectionDiagnosis {
+  const code = nestedErrorCode(error) || "DAEMON_UNREACHABLE";
+  if (code === "EACCES" || code === "EPERM") {
+    return {
+      code: "LOOPBACK_ACCESS_DENIED",
+      message:
+        `Daemon may be running, but this process cannot access ${DEFAULT_HOST}:${port}.`,
+      nextAction: "Retry from an execution context with local-loopback permission.",
+    };
+  }
+  if (code === "ECONNREFUSED") {
+    return {
+      code: "DAEMON_NOT_LISTENING",
+      message: `No pcbridge daemon is listening on ${DEFAULT_HOST}:${port}.`,
+      nextAction: "Run pcbridge daemon start in a terminal.",
+    };
+  }
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
+    return {
+      code: "DAEMON_HOST_UNRESOLVED",
+      message: `The configured pcbridge daemon host could not be resolved (${code}).`,
+      nextAction: "Check the generated pcbridge session configuration.",
+    };
+  }
+  return {
+    code: "DAEMON_UNREACHABLE",
+    message: `The pcbridge daemon is not reachable (${code}).`,
+    nextAction: "Check pcbridge daemon status, then start it if no listener is running.",
+  };
+}
+
+class DaemonConnectionError extends Error {
+  readonly diagnosis: DaemonConnectionDiagnosis;
+
+  constructor(diagnosis: DaemonConnectionDiagnosis, cause: unknown) {
+    super(diagnosis.message, { cause });
+    this.name = "DaemonConnectionError";
+    this.diagnosis = diagnosis;
+  }
 }
 
 async function readStdin(): Promise<string> {
@@ -172,16 +232,30 @@ async function fetchDaemon(
   init: RequestInit = {},
 ): Promise<Envelope> {
   const session = await readOrCreateSession();
-  const response = await fetch(`http://${DEFAULT_HOST}:${session.port || DEFAULT_PORT}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      "X-PCBridge-Token": session.token,
-      ...(init.headers || {}),
-    },
-  });
-  const body = (await response.json()) as Envelope;
-  return body;
+  const port = session.port || DEFAULT_PORT;
+  let response: Response;
+  try {
+    response = await fetch(`http://${DEFAULT_HOST}:${port}${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        "X-PCBridge-Token": session.token,
+        ...(init.headers || {}),
+      },
+    });
+  } catch (error) {
+    throw new DaemonConnectionError(diagnoseDaemonConnection(error, port), error);
+  }
+  try {
+    return (await response.json()) as Envelope;
+  } catch {
+    return fail(
+      "DAEMON_INVALID_RESPONSE",
+      `pcbridge daemon returned a non-JSON response (HTTP ${response.status}).`,
+      undefined,
+      { status: response.status, path },
+    );
+  }
 }
 
 async function resolveWorkspaceFile(args: Args, path: string, label: string): Promise<string> {
@@ -230,8 +304,12 @@ async function rpcCall(
   method: string,
   params: Record<string, JsonValue> = {},
   defaultTimeoutMs = 15000,
+  honorTimeoutFlag = true,
 ): Promise<Envelope> {
-  const timeoutMs = Number(flagString(args, "timeout-ms", String(defaultTimeoutMs)));
+  const timeoutMs = honorTimeoutFlag
+    ? readTimeoutMs(args, defaultTimeoutMs)
+    : defaultTimeoutMs;
+  if (timeoutMs === null) return invalidTimeoutEnvelope();
   return fetchDaemon("/rpc", {
     method: "POST",
     body: JSON.stringify({
@@ -246,15 +324,44 @@ async function rpcCall(
   });
 }
 
+function readTimeoutMs(args: Args, defaultTimeoutMs: number): number | null {
+  const value = Number(flagString(args, "timeout-ms", String(defaultTimeoutMs)));
+  return Number.isInteger(value) && value >= 1000 && value <= 120000 ? value : null;
+}
+
+function invalidTimeoutEnvelope(): Envelope {
+  return fail("INVALID_REQUEST", "--timeout-ms must be an integer from 1000 to 120000.");
+}
+
 async function rpcEval(
   args: Args,
   code: string,
   commandArgs: Record<string, JsonValue> = {},
   defaultTimeoutMs = 15000,
 ): Promise<Envelope> {
+  const serializeOptions: Record<string, JsonValue> = {};
+  const optionFlags = [
+    ["max-depth", "maxDepth", 1, 20],
+    ["max-items", "maxArray", 1, 5000],
+    ["max-keys", "maxKeys", 1, 2000],
+    ["max-string", "maxString", 1, 100000],
+  ] as const;
+  for (const [flag, key, minimum, maximum] of optionFlags) {
+    const raw = flagString(args, flag);
+    if (raw === undefined) continue;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < minimum || value > maximum) {
+      return fail(
+        "INVALID_REQUEST",
+        `--${flag} must be an integer from ${minimum} to ${maximum}.`,
+      );
+    }
+    serializeOptions[key] = value;
+  }
   return rpcCall(args, "bridge:eval", {
     code,
     args: commandArgs as JsonValue,
+    serializeOptions: serializeOptions as JsonValue,
   }, defaultTimeoutMs);
 }
 
@@ -396,6 +503,8 @@ async function doctor(): Promise<Envelope> {
   const checks: JsonValue[] = [];
   const nextActions: string[] = [];
   const major = Number(process.versions.node.split(".", 1)[0]);
+  let daemonOk = false;
+  let connectedExtensionVersionsOk = true;
 
   checks.push({
     name: "node",
@@ -410,19 +519,42 @@ async function doctor(): Promise<Envelope> {
 
   try {
     const health = await fetchDaemon("/health");
+    const daemonData = health.ok ? objectJson(health.data, "daemon health") : null;
+    const daemonVersion = daemonData && typeof daemonData.version === "string"
+      ? daemonData.version
+      : null;
+    daemonOk = health.ok && daemonVersion === VERSION;
     checks.push({
       name: "daemon",
-      ok: health.ok,
-      message: health.ok ? "Daemon is reachable." : health.error.message,
+      ok: daemonOk,
+      code: health.ok ? null : health.error.code,
+      version: daemonVersion,
+      expectedVersion: VERSION,
+      message: !health.ok
+        ? health.error.message
+        : daemonVersion === VERSION
+          ? "Daemon is reachable and matches the CLI version."
+          : "Daemon is reachable but its version does not match the CLI.",
       data: health.ok ? health.data : null,
     });
+    if (!health.ok && health.error.code === "BAD_TOKEN") {
+      nextActions.push(
+        "Stop the stale daemon, start it again with this pcbridge install, then regenerate/reload the extension.",
+      );
+    } else if (health.ok && daemonVersion !== VERSION) {
+      nextActions.push("Restart the daemon with the same pcbridge version as this CLI.");
+    }
   } catch (error) {
+    const diagnosis = error instanceof DaemonConnectionError
+      ? error.diagnosis
+      : diagnoseDaemonConnection(error);
     checks.push({
       name: "daemon",
       ok: false,
-      message: "Daemon is not reachable.",
+      code: diagnosis.code,
+      message: diagnosis.message,
     });
-    nextActions.push("Run pcbridge daemon start in a terminal.");
+    nextActions.push(diagnosis.nextAction);
   }
 
   const frontend = await getFrontendStatus();
@@ -476,6 +608,7 @@ async function doctor(): Promise<Envelope> {
         .map((target) => (target && typeof target === "object" && !Array.isArray(target) ? target.extensionVersion : null))
         .filter(Boolean);
       const mismatched = connectedVersions.filter((version) => version !== VERSION);
+      connectedExtensionVersionsOk = mismatched.length === 0;
       checks.push({
         name: "connected-extension-version",
         ok: mismatched.length === 0,
@@ -495,6 +628,12 @@ async function doctor(): Promise<Envelope> {
 
   return ok({
     version: VERSION,
+    healthy:
+      major >= 20 &&
+      daemonOk &&
+      extensionExists &&
+      generatedExtensionVersion === VERSION &&
+      connectedExtensionVersionsOk,
     configDir: CONFIG_DIR,
     checks,
     nextActions,
@@ -877,13 +1016,21 @@ async function handleEntity(args: Args): Promise<Envelope> {
   if (subcommand === "add-script") {
     const id = flagString(args, "id");
     if (!id) return fail("INVALID_REQUEST", "entity add-script requires --id.");
+    const scriptName = flagString(args, "script-name");
+    const assetId = flagString(args, "asset-id");
+    if (Boolean(scriptName) === Boolean(assetId)) {
+      return fail(
+        "INVALID_REQUEST",
+        "entity add-script requires exactly one of --asset-id or --script-name.",
+      );
+    }
     const attributes =
       (await readJsonFlag(args, "attributes-json")) ??
       (flagString(args, "attributes") ? parseJsonValue(flagString(args, "attributes") || "{}") : {});
     return rpcEval(args, entityAddScriptSnippet(), {
       id,
-      scriptName: flagString(args, "script-name") || null,
-      assetId: flagString(args, "asset-id") || null,
+      scriptName: scriptName || null,
+      assetId: assetId || null,
       attributes: objectJson(attributes, "script attributes") as unknown as JsonValue,
       enabled: !flagBool(args, "disabled"),
     });
@@ -1085,6 +1232,50 @@ async function handleTemplate(args: Args): Promise<Envelope> {
       id: id || null,
     }, 60000);
   }
+  if (subcommand === "overrides") {
+    const entityId = flagString(args, "entity-id") || flagString(args, "id");
+    if (!entityId) return fail("INVALID_REQUEST", "template overrides requires --entity-id.");
+    return rpcEval(args, templateOverridesSnippet(), { entityId });
+  }
+  if (subcommand === "apply") {
+    const entityId = flagString(args, "entity-id") || flagString(args, "id");
+    if (!entityId) return fail("INVALID_REQUEST", "template apply requires --entity-id.");
+    const waitTimeoutMs = readTimeoutMs(args, 60000);
+    if (waitTimeoutMs === null) return invalidTimeoutEnvelope();
+    return rpcEval(args, templateApplySnippet(), {
+      entityId,
+      waitTimeoutMs,
+    }, 60000);
+  }
+  if (subcommand === "apply-many") {
+    const input = await readJsonFlag(args, "json");
+    if (input === undefined) {
+      return fail("INVALID_REQUEST", "template apply-many requires --json <file>.");
+    }
+    const values = Array.isArray(input)
+      ? input
+      : Array.isArray(objectJson(input, "template apply manifest").entityIds)
+        ? objectJson(input, "template apply manifest").entityIds as JsonValue[]
+        : [];
+    const entityIds = values.map((value) => {
+      if (typeof value === "string" || typeof value === "number") return String(value);
+      const item = objectJson(value, "template apply item");
+      const id = item.entityId ?? item.id;
+      return typeof id === "string" || typeof id === "number" ? String(id) : "";
+    }).filter(Boolean);
+    if (!entityIds.length) {
+      return fail(
+        "INVALID_REQUEST",
+        "template apply-many JSON must be an array of entity ids/items or {\"entityIds\":[...] }.",
+      );
+    }
+    const waitTimeoutMs = readTimeoutMs(args, 120000);
+    if (waitTimeoutMs === null) return invalidTimeoutEnvelope();
+    return rpcEval(args, templateApplySnippet(), {
+      entityIds: entityIds as unknown as JsonValue,
+      waitTimeoutMs,
+    }, 120000);
+  }
   return fail("UNKNOWN_COMMAND", `Unknown template command: ${subcommand || ""}`);
 }
 
@@ -1096,6 +1287,8 @@ async function handleScript(args: Args): Promise<Envelope> {
     if (!filename || !file) {
       return fail("INVALID_REQUEST", "script upsert requires --filename and --file.");
     }
+    const waitTimeoutMs = readTimeoutMs(args, 60000);
+    if (waitTimeoutMs === null) return invalidTimeoutEnvelope();
     return rpcEval(
       args,
       scriptUpsertSnippet(),
@@ -1106,6 +1299,8 @@ async function handleScript(args: Args): Promise<Envelope> {
         folderId: flagString(args, "folder-id") || null,
         preload: !flagBool(args, "no-preload"),
         parse: flagBool(args, "parse"),
+        wait: flagBool(args, "wait"),
+        waitTimeoutMs,
       },
       60000,
     );
@@ -1135,15 +1330,28 @@ async function handleScript(args: Args): Promise<Envelope> {
     if (!assetId || !file) {
       return fail("INVALID_REQUEST", "script set-text requires --asset-id and --file.");
     }
-    return rpcEval(args, scriptSetTextSnippet(), {
-      assetId,
-      text: await readFile(await resolveWorkspaceFile(args, file, "script file"), "utf8"),
-    });
+    const waitTimeoutMs = readTimeoutMs(args, 60000);
+    if (waitTimeoutMs === null) return invalidTimeoutEnvelope();
+    return rpcEval(
+      args,
+      scriptSetTextSnippet(),
+      {
+        assetId,
+        filename: basename(file),
+        text: await readFile(await resolveWorkspaceFile(args, file, "script file"), "utf8"),
+        parse: flagBool(args, "parse"),
+        wait: flagBool(args, "wait"),
+        waitTimeoutMs,
+      },
+      60000,
+    );
   }
   if (subcommand === "parse") {
     const assetId = flagString(args, "asset-id");
     if (!assetId) return fail("INVALID_REQUEST", "script parse requires --asset-id.");
-    return rpcEval(args, scriptParseSnippet(), { assetId });
+    const waitTimeoutMs = readTimeoutMs(args, 60000);
+    if (waitTimeoutMs === null) return invalidTimeoutEnvelope();
+    return rpcEval(args, scriptParseSnippet(), { assetId, waitTimeoutMs }, 60000);
   }
   return fail("UNKNOWN_COMMAND", `Unknown script command: ${subcommand || ""}`);
 }
@@ -1199,6 +1407,108 @@ async function handleStore(args: Args): Promise<Envelope> {
     }, 120000);
   }
   return fail("UNKNOWN_COMMAND", `Unknown store command: ${subcommand}`);
+}
+
+async function handleTarget(args: Args): Promise<Envelope> {
+  const subcommand = args._[1];
+  if (subcommand === "focus") {
+    if (!flagString(args, "target")) {
+      return fail("INVALID_REQUEST", "target focus requires an explicit --target selector.");
+    }
+    return rpcCall(args, "bridge:focusTarget");
+  }
+  return fail("UNKNOWN_COMMAND", `Unknown target command: ${subcommand || ""}`);
+}
+
+function launchReadinessSuggestions(data: Record<string, JsonValue>): string[] {
+  const blockers = Array.isArray(data.readinessBlockers)
+    ? data.readinessBlockers.map(String)
+    : [];
+  const suggestions: string[] = [];
+  if (blockers.includes("tab-hidden")) {
+    suggestions.push("Run pcbridge target focus with the same --target selector.");
+  }
+  if (
+    blockers.includes("runtime-not-created") ||
+    blockers.includes("runtime-not-started") ||
+    blockers.includes("graphics-not-ready") ||
+    blockers.includes("scene-not-loaded")
+  ) {
+    suggestions.push("Focus the Launch tab and wait; refresh it if the state remains unchanged.");
+  }
+  if (blockers.includes("graphics-context-lost")) {
+    suggestions.push("Refresh the Launch tab to recreate its graphics context.");
+  }
+  if (blockers.includes("splash-visible")) {
+    suggestions.push("Wait for the PlayCanvas startup splash to finish.");
+  }
+  return suggestions;
+}
+
+async function diagnoseLaunch(args: Args, pollTimeoutMs = 3000): Promise<Envelope> {
+  const raw = await rpcCall(args, "bridge:describeTarget", {}, pollTimeoutMs, false);
+  if (!raw.ok) return raw;
+  const data = objectJson(raw.data, "Launch target status");
+  if (data.kind !== "launch") {
+    return fail(
+      "INVALID_TARGET_KIND",
+      `Selected target is ${String(data.kind || "unknown")}; choose launch:<sceneId> or a Launch tab:<id>.`,
+      raw.meta,
+      raw.data,
+    );
+  }
+  return ok({
+    ...data,
+    suggestions: launchReadinessSuggestions(data),
+  }, raw.meta);
+}
+
+async function handleLaunch(args: Args): Promise<Envelope> {
+  const subcommand = args._[1] || "diagnose";
+  if (!flagString(args, "target")) {
+    return fail("INVALID_REQUEST", "launch commands require an explicit --target selector.");
+  }
+  if (subcommand === "diagnose") return diagnoseLaunch(args);
+  if (subcommand !== "wait-ready") {
+    return fail("UNKNOWN_COMMAND", `Unknown launch command: ${subcommand}`);
+  }
+
+  const timeoutMs = readTimeoutMs(args, 30000);
+  if (timeoutMs === null) return invalidTimeoutEnvelope();
+  if (flagBool(args, "focus")) {
+    const focused = await rpcCall(args, "bridge:focusTarget", {}, 5000);
+    if (!focused.ok) return focused;
+  }
+
+  const startedAt = Date.now();
+  let last: Envelope | null = null;
+  while (Date.now() - startedAt < timeoutMs) {
+    const remainingMs = timeoutMs - (Date.now() - startedAt);
+    last = await diagnoseLaunch(args, Math.max(1, Math.min(3000, remainingMs)));
+    if (!last.ok) return last;
+    const data = objectJson(last.data, "Launch target status");
+    if (data.ready === true) {
+      return ok({
+        ready: true,
+        waitedMs: Date.now() - startedAt,
+        target: data as unknown as JsonValue,
+      }, last.meta);
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+  }
+
+  const lastData = last && last.ok
+    ? objectJson(last.data, "Launch target status")
+    : {};
+  const blockers = Array.isArray(lastData.readinessBlockers)
+    ? lastData.readinessBlockers.map(String).join(", ")
+    : "unknown";
+  return fail(
+    "LAUNCH_NOT_READY",
+    `Launch did not become ready within ${timeoutMs}ms (blockers: ${blockers}).`,
+    last?.meta,
+    last && last.ok ? last.data : null,
+  );
 }
 
 async function handleViewport(args: Args): Promise<Envelope> {
@@ -1310,6 +1620,7 @@ function help(group = "overview"): Envelope {
       "pcbridge help core",
       "pcbridge help workspace",
       "pcbridge help frontend",
+      "pcbridge help target",
       "pcbridge help entity",
       "pcbridge help asset",
       "pcbridge help material",
@@ -1331,11 +1642,17 @@ function help(group = "overview"): Envelope {
       "pcbridge targets",
       "pcbridge version",
     ],
+    target: [
+      "pcbridge target focus --target launch:<sceneId>",
+      "pcbridge target focus --target tab:<id>",
+      "Focus activates both the PlayCanvas tab and its Chrome window.",
+      "Use editor:<sceneId> for writes and launch:<sceneId> for runtime checks; current can be ambiguous.",
+    ],
     workspace: [
-      "pcbridge workspace status --target scene:<sceneId>",
-      "pcbridge workspace path --target scene:<sceneId>",
-      "pcbridge workspace sync --target scene:<sceneId>",
-      "pcbridge workspace pull --target scene:<sceneId> --asset <assetId>",
+      "pcbridge workspace status --target editor:<sceneId>",
+      "pcbridge workspace path --target editor:<sceneId>",
+      "pcbridge workspace sync --target editor:<sceneId>",
+      "pcbridge workspace pull --target editor:<sceneId> --asset <assetId>",
       "The directory where `pcbridge daemon start` runs is the workspace root.",
     ],
     frontend: [
@@ -1348,89 +1665,103 @@ function help(group = "overview"): Envelope {
       "The active frontend is served from http://localhost:3487 while the daemon is running.",
     ],
     entity: [
-      "pcbridge entity list --target current --limit 50 [--name Player] [--component render] [--tag enemy] [--full]",
-      "pcbridge entity get --target current --id <resource_id> [--full]",
-      "pcbridge entity create --target current --json ./entity.json",
-      "pcbridge entity create-many --target current --json ./entities.json",
-      "pcbridge entity patch --target current --id <resource_id> --set position='[0,1,0]'",
-      "pcbridge entity patch-many --target current --json ./edits.json",
-      "pcbridge entity duplicate --target current --id <resource_id>",
-      "pcbridge entity reparent --target current --id <resource_id> --parent <parent_resource_id> [--index 0] [--no-preserve-transform]",
-      "pcbridge entity add-component --target current --id <resource_id> --component render --data '{\"type\":\"box\"}'",
-      "pcbridge entity add-components --target current --id <resource_id> --json ./components.json",
-      "pcbridge entity remove-component --target current --id <resource_id> --component render",
-      "pcbridge entity set-material --target current --id <resource_id> --material-id <asset_id>",
-      "pcbridge entity add-script --target current --id <resource_id> --asset-id <script_asset_id> --attributes-json ./attrs.json",
-      "pcbridge entity delete --target current --id <resource_id>",
+      "pcbridge entity list --target editor:<sceneId> [--limit 50] [--offset 0] [--name Player] [--component render] [--tag enemy] [--full]",
+      "pcbridge entity get --target editor:<sceneId> --id <resource_id> [--full]",
+      "pcbridge entity create --target editor:<sceneId> --json ./entity.json",
+      "pcbridge entity create-many --target editor:<sceneId> --json ./entities.json",
+      "pcbridge entity patch --target editor:<sceneId> --id <resource_id> --set position='[0,1,0]'",
+      "pcbridge entity patch-many --target editor:<sceneId> --json ./edits.json",
+      "pcbridge entity duplicate --target editor:<sceneId> --id <resource_id>",
+      "pcbridge entity reparent --target editor:<sceneId> --id <resource_id> --parent <parent_resource_id> [--index 0] [--no-preserve-transform]",
+      "pcbridge entity add-component --target editor:<sceneId> --id <resource_id> --component render --data '{\"type\":\"box\"}'",
+      "pcbridge entity add-components --target editor:<sceneId> --id <resource_id> --json ./components.json",
+      "pcbridge entity remove-component --target editor:<sceneId> --id <resource_id> --component render",
+      "pcbridge entity remove-components --target editor:<sceneId> --id <resource_id> --component render --component collision",
+      "pcbridge entity set-material --target editor:<sceneId> --id <resource_id> --material-id <asset_id>",
+      "pcbridge entity add-script --target editor:<sceneId> --id <resource_id> (--asset-id <script_asset_id> | --script-name <registered_type>) [--attributes-json ./attrs.json] [--disabled]",
+      "pcbridge entity delete --target editor:<sceneId> --id <resource_id>",
     ],
     asset: [
-      "pcbridge asset list --target current [--type script] [--name controller] [--tag ui] [--limit 50] [--full]",
-      "pcbridge asset get --target current --id <asset_id> [--full]",
-      "pcbridge asset create --target current --json ./assets.json",
-      "pcbridge asset folder ensure --target current --path \"AI Agent Bridge/Task/Textures\"",
-      "pcbridge asset upload --target current --file ./texture.png --folder \"AI Agent Bridge/Task/Textures\"",
-      "pcbridge asset upload-many --target current --json ./upload-manifest.json",
-      "pcbridge asset instantiate --target current --id <template_asset_id>",
-      "pcbridge asset delete --target current --id <asset_id>",
+      "pcbridge asset list --target editor:<sceneId> [--type script] [--name controller] [--tag ui] [--limit 50] [--offset 0] [--full]",
+      "pcbridge asset get --target editor:<sceneId> --id <asset_id> [--full]",
+      "pcbridge asset create --target editor:<sceneId> --json ./assets.json",
+      "pcbridge asset folder ensure --target editor:<sceneId> --path \"AI Agent Bridge/Task/Textures\"",
+      "pcbridge asset upload --target editor:<sceneId> --file ./texture.png --folder \"AI Agent Bridge/Task/Textures\"",
+      "pcbridge asset upload-many --target editor:<sceneId> --json ./upload-manifest.json",
+      "pcbridge asset instantiate --target editor:<sceneId> --id <template_asset_id>",
+      "pcbridge asset delete --target editor:<sceneId> --id <asset_id>",
     ],
     material: [
-      "pcbridge material create --target current --name Mat --diffuse-map <texture_asset_id>",
-      "pcbridge material patch --target current --asset-id <asset_id> --set diffuse='[1,0,0]'",
-      "pcbridge material patch --target current --asset-id <asset_id> --json ./material-data.json",
-      "pcbridge material set-diffuse --target current --asset-id <asset_id> --color '[1,0,0]'",
+      "pcbridge material create --target editor:<sceneId> --name Mat --diffuse-map <texture_asset_id>",
+      "pcbridge material patch --target editor:<sceneId> --asset-id <asset_id> --set diffuse='[1,0,0]'",
+      "pcbridge material patch --target editor:<sceneId> --asset-id <asset_id> --json ./material-data.json",
+      "pcbridge material set-diffuse --target editor:<sceneId> --asset-id <asset_id> --color '[1,0,0]'",
     ],
     template: [
-      "pcbridge template create --target current --entity-id <resource_id> --name TemplateName --folder \"AI Agent Bridge/Task/Templates\"",
-      "pcbridge template instantiate --target current --id <template_asset_id>",
+      "pcbridge template create --target editor:<sceneId> --entity-id <resource_id> --name TemplateName --folder \"AI Agent Bridge/Task/Templates\"",
+      "pcbridge template instantiate --target editor:<sceneId> --id <template_asset_id>",
+      "pcbridge template overrides --target editor:<sceneId> --entity-id <resource_id>",
+      "pcbridge template apply --target editor:<sceneId> --entity-id <resource_id> [--timeout-ms 60000]",
+      "pcbridge template apply-many --target editor:<sceneId> --json ./template-roots.json [--timeout-ms 120000]",
+      "When apply is needed, completion requires the pipeline callback plus two zero-override observations; timeout is an error.",
+      "verified covers the current Editor observer only, not persistence across a reload; apply-many runs serially.",
     ],
     script: [
-      "pcbridge script upsert --target current --filename controller.js --file ./controller.js --folder \"AI Agent Bridge/Task/Scripts\" [--parse]",
-      "pcbridge script create --target current --filename controller.js --file ./controller.js",
-      "pcbridge script set-text --target current --asset-id <asset_id> --file ./controller.js",
-      "pcbridge script parse --target current --asset-id <asset_id>",
+      "pcbridge script upsert --target editor:<sceneId> --filename controller.js --file ./controller.js --folder \"AI Agent Bridge/Task/Scripts\" [--parse] [--wait]",
+      "pcbridge script create --target editor:<sceneId> --filename controller.js --file ./controller.js",
+      "pcbridge script set-text --target editor:<sceneId> --asset-id <asset_id> --file ./controller.js [--parse] [--wait]",
+      "pcbridge script parse --target editor:<sceneId> --asset-id <asset_id> [--timeout-ms 60000]",
+      "Combine --parse --wait for completion-checked updates; it verifies remote content and current Editor metadata, not a later workspace mirror sync.",
     ],
     scene: [
-      "pcbridge scene settings get --target current",
-      "pcbridge scene settings patch --target current --json ./scene-settings.json",
-      "pcbridge scene settings patch --target current --set render.fog='\"linear\"' --set physics.gravity='[0,-9.8,0]'",
+      "pcbridge scene settings get --target editor:<sceneId>",
+      "pcbridge scene settings patch --target editor:<sceneId> --json ./scene-settings.json",
+      "pcbridge scene settings patch --target editor:<sceneId> --set render.fog='\"linear\"' --set physics.gravity='[0,-9.8,0]'",
     ],
     store: [
-      "pcbridge store search --target current --search vehicle --limit 20",
-      "pcbridge store get --target current --id <store_asset_id>",
-      "pcbridge store download --target current --id <store_asset_id> --name AssetName --license-json ./license.json",
+      "pcbridge store search --target editor:<sceneId> --search vehicle --limit 20",
+      "pcbridge store get --target editor:<sceneId> --id <store_asset_id>",
+      "pcbridge store download --target editor:<sceneId> --id <store_asset_id> --name AssetName --license-json ./license.json",
     ],
     viewport: [
-      "pcbridge viewport capture --target current --out ./tmp/viewport.png [--format png|webp]",
-      "pcbridge viewport capture --target launch:<sceneId> --out ./tmp/launch.png [--format png|webp]",
-      "pcbridge viewport focus --target current --id <resource_id> [--view perspective|top|bottom|front|back|left|right]",
+      "pcbridge viewport capture --target editor:<sceneId> --out ./tmp/viewport.png [--format png|webp] [--max-width 1200] [--quality 0.85]",
+      "pcbridge viewport capture --target launch:<sceneId> --out ./tmp/launch.png [--format png|webp] [--max-width 1200] [--quality 0.85]",
+      "pcbridge viewport focus --target editor:<sceneId> --id <resource_id> [--view perspective|top|bottom|front|back|left|right] [--yaw 45] [--pitch -25]",
+      "Capture defaults to max-width 1200 and may downscale the current canvas; it does not resize Chrome or emulate DPR.",
     ],
     launch: [
       "pcbridge targets",
-      "pcbridge eval --target launch:<sceneId> --code \"return { href: location.href, hasPc: !!pc, canvasCount: document.querySelectorAll('canvas').length }\"",
+      "pcbridge launch diagnose --target launch:<sceneId>",
+      "pcbridge launch wait-ready --target launch:<sceneId> [--focus] [--timeout-ms 30000]",
+      "pcbridge target focus --target launch:<sceneId>",
+      "pcbridge eval --target launch:<sceneId> --code \"return { href: location.href, runtimeCreated: !!runtimeApp, rootChildCount: runtimeApp?.root?.children?.length ?? 0 }\"",
       "pcbridge viewport capture --target launch:<sceneId> --out ./tmp/launch.png [--format png|webp]",
       "pcbridge logs get --target launch:<sceneId> [--limit 100] [--level error|warn|info|debug] [--since <seq>]",
       "pcbridge logs clear --target launch:<sceneId>",
       "Use --target tab:<id> when multiple Launch tabs are open for the same scene.",
+      "ready is a best-effort heuristic requiring a visible tab, owned graphics canvas, attached scene, completed first frame, and no recognized splash.",
+      "scriptsReady/scriptTypeCount are diagnostic only; they do not prove every ScriptType registered.",
     ],
     logs: [
-      "pcbridge logs get --target current [--limit 100] [--level error|warn|info|debug] [--since <seq>]",
-      "pcbridge logs get --target launch:<sceneId> [--limit 100] [--level error|warn|info|debug] [--since <seq>]",
-      "pcbridge logs clear --target current",
+      "pcbridge logs get --target editor:<sceneId> [--limit 100] [--offset 0] [--level error|warn|info|debug] [--since <seq>]",
+      "pcbridge logs get --target launch:<sceneId> [--limit 100] [--offset 0] [--level error|warn|info|debug] [--since <seq>]",
+      "pcbridge logs clear --target editor:<sceneId>",
       "pcbridge logs clear --target launch:<sceneId>",
     ],
     log: [
-      "pcbridge logs get --target current [--limit 100] [--level error|warn|info|debug] [--since <seq>]",
-      "pcbridge logs get --target launch:<sceneId> [--limit 100] [--level error|warn|info|debug] [--since <seq>]",
-      "pcbridge logs clear --target current",
+      "pcbridge logs get --target editor:<sceneId> [--limit 100] [--offset 0] [--level error|warn|info|debug] [--since <seq>]",
+      "pcbridge logs get --target launch:<sceneId> [--limit 100] [--offset 0] [--level error|warn|info|debug] [--since <seq>]",
+      "pcbridge logs clear --target editor:<sceneId>",
       "pcbridge logs clear --target launch:<sceneId>",
     ],
     eval: [
       "Use eval for custom Editor/Engine workflows, PlayCanvas Launch debugging, large multi-step scene edits, exploratory API inspection, and operations not yet structured.",
-      "pcbridge eval --target current --code \"return { href: location.href, hasEditor: !!editor }\"",
-      "pcbridge eval --target launch:<sceneId> --code \"return { href: location.href, hasPc: !!pc, canvasCount: document.querySelectorAll('canvas').length }\"",
-      "pcbridge eval --target current --file ./task.js",
-      "pcbridge eval --target current --file ./task.js --args-json ./task-args.json",
-      "pcbridge eval --target current --stdin",
+      "pcbridge eval --target editor:<sceneId> --code \"return { href: location.href, hasEditor: !!editor }\" [--timeout-ms 15000]",
+      "pcbridge eval --target launch:<sceneId> --code \"return { href: location.href, runtimeCreated: !!runtimeApp, rootChildCount: runtimeApp?.root?.children?.length ?? 0 }\"",
+      "pcbridge eval --target editor:<sceneId> --file ./task.js [--timeout-ms 15000]",
+      "pcbridge eval --target editor:<sceneId> --file ./task.js --args-json ./task-args.json [--timeout-ms 15000]",
+      "pcbridge eval --target editor:<sceneId> --stdin [--timeout-ms 15000]",
+      "Add --max-depth <1..20>, --max-items <1..5000>, --max-keys <1..2000>, or --max-string <1..100000> only when a compact projection is insufficient.",
     ],
   };
 
@@ -1472,6 +1803,8 @@ async function main(): Promise<void> {
       print(await handleFrontend(args));
     } else if (command === "targets") {
       print(await fetchDaemon("/targets"));
+    } else if (command === "target") {
+      print(await handleTarget(args));
     } else if (command === "workspace") {
       print(await handleWorkspace(args));
     } else if (command === "eval") {
@@ -1497,6 +1830,8 @@ async function main(): Promise<void> {
       print(await handleScene(args));
     } else if (command === "store") {
       print(await handleStore(args));
+    } else if (command === "launch") {
+      print(await handleLaunch(args));
     } else if (command === "viewport") {
       print(await handleViewport(args));
     } else if (command === "logs" || command === "log") {
@@ -1508,6 +1843,15 @@ async function main(): Promise<void> {
       process.exitCode = 1;
     }
   } catch (error) {
+    if (error instanceof DaemonConnectionError) {
+      print(fail(
+        error.diagnosis.code,
+        error.diagnosis.message,
+        undefined,
+        { nextAction: error.diagnosis.nextAction },
+      ));
+      return;
+    }
     print(fail("CLI_ERROR", error instanceof Error ? error.message : String(error)));
     process.exitCode = 1;
   }

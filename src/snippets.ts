@@ -502,7 +502,7 @@ if (existing) {
     ...attributes
   });
 } else {
-  entity.addScript(scriptName, {
+  await entity.addScript(scriptName, {
     attributes,
     history: true
   });
@@ -512,11 +512,15 @@ if (!order.includes(scriptName)) {
   order.push(scriptName);
   entity.set("components.script.order", order);
 }
+const installed = entity.get("components.script.scripts." + scriptName);
+if (!installed) {
+  throw new Error("Script was not attached: " + scriptName);
+}
 return {
   entity: readEntity(entity),
   scriptName,
   scriptAsset: scriptAsset ? readAsset(scriptAsset) : null,
-  script: entity.get("components.script.scripts." + scriptName)
+  script: installed
 };
 `;
 }
@@ -738,6 +742,283 @@ return {
 `;
 }
 
+const templateApplyHelpers = `
+function templateError(code, message, details) {
+  const error = new Error(message);
+  error.code = code;
+  error.details = details || {};
+  return error;
+}
+
+function templateObserver(entity) {
+  return entity.observer || entity;
+}
+
+function templateOverrides(entity) {
+  const value = editor.call("templates:computeFilteredOverrides", templateObserver(entity));
+  if (Array.isArray(value)) return { count: value.length, value };
+  if (value && typeof value === "object") {
+    const parts = ["conflicts", "addedEntities", "deletedEntities"];
+    const componentCount = parts.reduce(
+      (total, key) => total + (Array.isArray(value[key]) ? value[key].length : 0),
+      0
+    );
+    if (Number.isFinite(Number(value.totalOverrides))) {
+      if (Number(value.totalOverrides) !== componentCount) {
+        throw templateError(
+          "TEMPLATE_OVERRIDE_COUNT_MISMATCH",
+          "Template override total does not match its component arrays for entity " +
+            entity.get("resource_id") + ".",
+          { totalOverrides: Number(value.totalOverrides), componentCount }
+        );
+      }
+      return {
+        count: Number(value.totalOverrides),
+        value,
+        componentCount,
+        countMismatch: false
+      };
+    }
+    if (parts.some((key) => Array.isArray(value[key]))) {
+      return { count: componentCount, value, componentCount, countMismatch: false };
+    }
+  }
+  if (value && Array.isArray(value.overrides)) {
+    return { count: value.overrides.length, value: value.overrides };
+  }
+  if (value && Number.isFinite(Number(value.length))) {
+    return { count: Number(value.length), value };
+  }
+  throw templateError(
+    "TEMPLATE_OVERRIDES_UNREADABLE",
+    "Editor returned an unsupported Template overrides shape for entity " +
+      entity.get("resource_id") + ".",
+    { value: serialize(value, { maxDepth: 3, maxArray: 20, maxKeys: 30 }) }
+  );
+}
+
+function templateReadback(entity) {
+  const templateId = entity.get("template_id");
+  const asset = templateId
+    ? editor.api.globals.assets.get(Number(templateId))
+    : null;
+  if (!asset || asset.get("type") !== "template") {
+    throw new Error("Template asset not found for entity: " + entity.get("resource_id"));
+  }
+
+  const entities = asset.get("data.entities") || {};
+  const entries = Array.isArray(entities)
+    ? entities.map((value, index) => [String(index), value])
+    : Object.entries(entities);
+  const entityIds = new Set(entries.map(([id]) => String(id)));
+  const rootEntry = entries.find(([, value]) => {
+    const parent = value && typeof value === "object" ? value.parent : null;
+    return parent === null || parent === undefined || !entityIds.has(String(parent));
+  });
+
+  return {
+    templateId: asset.get("id"),
+    templateName: asset.get("name"),
+    templateRootId: rootEntry ? rootEntry[0] : null,
+    storedRootEnabled: rootEntry && rootEntry[1] && typeof rootEntry[1] === "object"
+      ? rootEntry[1].enabled ?? null
+      : null,
+    sourceEnabled: entity.get("enabled")
+  };
+}
+
+async function waitForTemplateOverrides(entity, deadline, intervalMs) {
+  let last = templateOverrides(entity);
+  while (Date.now() <= deadline) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    const waitMs = Math.min(intervalMs, remainingMs);
+    if (last.count === 0) {
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      const confirmed = templateOverrides(entity);
+      if (confirmed.count === 0) return confirmed;
+      last = confirmed;
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      last = templateOverrides(entity);
+    }
+  }
+  throw templateError(
+    "TEMPLATE_OBSERVER_NOT_CONVERGED",
+    "Template pipeline completed, but overrides did not converge for entity " +
+      entity.get("resource_id") + " (remaining: " + last.count + ").",
+    { entityId: entity.get("resource_id"), remainingOverrides: last.count }
+  );
+}
+
+async function waitForTemplateCallback(promise, entity, deadline) {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    throw templateError(
+      "TEMPLATE_CALLBACK_TIMEOUT",
+      "Timed out waiting for Template pipeline callback for entity " + entity.get("resource_id") + ".",
+      { entityId: entity.get("resource_id"), stateUnknown: true }
+    );
+  }
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(templateError(
+          "TEMPLATE_CALLBACK_TIMEOUT",
+          "Timed out waiting for Template pipeline callback for entity " +
+            entity.get("resource_id") + ".",
+          { entityId: entity.get("resource_id"), stateUnknown: true }
+        )), remainingMs);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function applyTemplate(entity, deadline, intervalMs) {
+  const startedAt = Date.now();
+  const beforeReadback = templateReadback(entity);
+  const beforeState = templateOverrides(entity);
+  const enabledOverride = JSON.stringify(
+    serialize(beforeState.value, { maxDepth: 4, maxArray: 100, maxKeys: 100 })
+  ).includes("enabled");
+  let callback = null;
+  let callResult = null;
+
+  if (beforeState.count > 0) {
+    let resolveCallback;
+    const callbackPromise = new Promise((resolve) => {
+      resolveCallback = resolve;
+    });
+    callResult = editor.call(
+      "templates:apply",
+      templateObserver(entity),
+      (...values) => resolveCallback(values)
+    );
+    if (callResult !== true) {
+      throw templateError(
+        "TEMPLATE_APPLY_REJECTED",
+        "Editor rejected Template apply for entity " + entity.get("resource_id") + ".",
+        { entityId: entity.get("resource_id"), accepted: false }
+      );
+    }
+    const callbackValues = await waitForTemplateCallback(callbackPromise, entity, deadline);
+    callback = serialize(callbackValues, { maxDepth: 3, maxArray: 20, maxKeys: 30 });
+  }
+
+  const afterState = beforeState.count > 0
+    ? await waitForTemplateOverrides(entity, deadline, intervalMs)
+    : beforeState;
+  const readback = templateReadback(entity);
+  if (String(readback.templateId) !== String(beforeReadback.templateId)) {
+    throw templateError(
+      "TEMPLATE_ID_CHANGED",
+      "Template id changed while applying entity " + entity.get("resource_id") + ".",
+      { beforeTemplateId: beforeReadback.templateId, afterTemplateId: readback.templateId }
+    );
+  }
+  return {
+    entityId: entity.get("resource_id"),
+    templateId: readback.templateId,
+    templateName: readback.templateName,
+    before: beforeState.count,
+    after: afterState.count,
+    applied: beforeState.count > 0,
+    accepted: beforeState.count > 0 ? true : null,
+    callbackReceived: beforeState.count > 0,
+    observerVerified: afterState.count === 0,
+    verified: afterState.count === 0,
+    completionSignal: beforeState.count > 0 ? "pipeline-callback-and-overrides" : "no-overrides",
+    verificationScope: "current-editor-observer",
+    reloadPersistenceChecked: false,
+    durationMs: Date.now() - startedAt,
+    sourceEnabled: readback.sourceEnabled,
+    storedRootEnabled: readback.storedRootEnabled,
+    templateRootId: readback.templateRootId,
+    enabledOverride,
+    warnings: enabledOverride
+      ? ["The applied overrides include enabled state; confirm this was not temporary preview state."]
+      : [],
+    callResult: serialize(callResult, { maxDepth: 2, maxArray: 10, maxKeys: 20 }),
+    callback
+  };
+}
+`;
+
+export function templateOverridesSnippet(): string {
+  return `
+${templateApplyHelpers}
+const args = command.args || {};
+const entity = editor.api.globals.entities.get(args.entityId || args.id);
+if (!entity) {
+  throw new Error("Template source entity not found: " + (args.entityId || args.id));
+}
+const state = templateOverrides(entity);
+const readback = templateReadback(entity);
+return {
+  entityId: entity.get("resource_id"),
+  templateId: readback.templateId,
+  templateName: readback.templateName,
+  count: state.count,
+  sourceEnabled: readback.sourceEnabled,
+  storedRootEnabled: readback.storedRootEnabled,
+  templateRootId: readback.templateRootId,
+  overrides: serialize(state.value, { maxDepth: 5, maxArray: 200, maxKeys: 200 })
+};
+`;
+}
+
+export function templateApplySnippet(): string {
+  return `
+${templateApplyHelpers}
+const args = command.args || {};
+const totalTimeoutMs = Number(args.waitTimeoutMs || command.timeoutMs || 15000);
+const deadline = Date.now() + Math.max(100, totalTimeoutMs - 500);
+const ids = Array.isArray(args.entityIds) && args.entityIds.length
+  ? args.entityIds
+  : [args.entityId || args.id];
+const entitiesApi = editor.api.globals.entities;
+if (editor.call("permissions:write") === false) {
+  throw templateError("WRITE_DENIED", "PlayCanvas Editor write permission is required.");
+}
+const entities = ids.map((id) => {
+  const entity = entitiesApi.get(id);
+  if (!entity) throw new Error("Template source entity not found: " + id);
+  templateReadback(entity);
+  templateOverrides(entity);
+  return entity;
+});
+const intervalMs = Math.max(10, Number(args.pollIntervalMs || 200));
+const items = [];
+for (const entity of entities) {
+  try {
+    items.push(await applyTemplate(entity, deadline, intervalMs));
+  } catch (error) {
+    const completedEntityIds = items.map((item) => item.entityId);
+    if (error && typeof error === "object") {
+      error.details = { ...(error.details || {}), completedEntityIds };
+      throw error;
+    }
+    throw templateError(
+      "TEMPLATE_APPLY_FAILED",
+      String(error),
+      { completedEntityIds }
+    );
+  }
+}
+return {
+  affected: items.filter((item) => item.applied).length,
+  verified: items.every((item) => item.verified),
+  verificationScope: "current-editor-observer",
+  reloadPersistenceChecked: false,
+  items
+};
+`;
+}
+
 export function assetDeleteSnippet(): string {
   return `
 ${assetReader}
@@ -854,9 +1135,344 @@ return {
 `;
 }
 
+const scriptUpdateHelpers = `
+function scriptError(code, message, details) {
+  const error = new Error(message);
+  error.code = code;
+  error.details = details || {};
+  return error;
+}
+
+async function withScriptDeadline(promise, deadline, code, message, details) {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) throw scriptError(code, message, details);
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(scriptError(code, message, details)), remainingMs);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function scriptBranchId() {
+  return window.config?.self?.branch?.id || window.config?.branch?.id || null;
+}
+
+function scriptFileSnapshot(asset) {
+  const file = asset.get("file") || null;
+  return {
+    filename: asset.get("file.filename") || asset.get("name") || null,
+    hash: asset.get("file.hash") || null,
+    size: asset.get("file.size") || null,
+    file
+  };
+}
+
+function scriptFileSignature(snapshot) {
+  return JSON.stringify([snapshot?.filename || null, snapshot?.hash || null, snapshot?.size ?? null]);
+}
+
+async function putScriptText(globals, asset, text, fallbackFilename, deadline) {
+  const filename = asset.get("file.filename") || fallbackFilename || asset.get("name");
+  const form = new FormData();
+  form.append("filename", filename);
+  form.append("file", new Blob([String(text || "")], { type: "text/javascript" }), filename);
+  const branchId = scriptBranchId();
+  if (branchId) form.append("branchId", String(branchId));
+  const headers = {};
+  if (globals.accessToken) headers.Authorization = "Bearer " + globals.accessToken;
+  const response = await withScriptDeadline(
+    fetch("/api/assets/" + asset.get("id"), { method: "PUT", headers, body: form }),
+    deadline,
+    "SCRIPT_UPDATE_TIMEOUT",
+    "Timed out updating script asset " + asset.get("id") + ".",
+    { assetId: String(asset.get("id")), stateUnknown: true }
+  );
+  const body = await withScriptDeadline(
+    response.json().catch(() => ({})),
+    deadline,
+    "SCRIPT_UPDATE_TIMEOUT",
+    "Timed out reading the update response for script asset " + asset.get("id") + ".",
+    { assetId: String(asset.get("id")), stateUnknown: true }
+  );
+  if (!response.ok || body.error) {
+    throw new Error(body.error || "Failed to update script asset.");
+  }
+  return body;
+}
+
+async function readRemoteScriptText(globals, asset, filename, deadline) {
+  const branchId = scriptBranchId();
+  const params = new URLSearchParams();
+  if (branchId) params.set("branchId", String(branchId));
+  params.set("pcbridge", String(Date.now()));
+  const headers = { "Cache-Control": "no-cache" };
+  if (globals.accessToken) headers.Authorization = "Bearer " + globals.accessToken;
+  const response = await withScriptDeadline(
+    fetch(
+      "/api/assets/" + encodeURIComponent(String(asset.get("id"))) +
+        "/file/" + encodeURIComponent(String(filename)) + "?" + params.toString(),
+      { headers, cache: "no-store" }
+    ),
+    deadline,
+    "SCRIPT_READBACK_TIMEOUT",
+    "Timed out reading script asset " + asset.get("id") + ".",
+    { assetId: String(asset.get("id")) }
+  );
+  if (!response.ok) return null;
+  return withScriptDeadline(
+    response.text(),
+    deadline,
+    "SCRIPT_READBACK_TIMEOUT",
+    "Timed out reading script content for asset " + asset.get("id") + ".",
+    { assetId: String(asset.get("id")) }
+  );
+}
+
+async function waitForScriptFile(
+  globals,
+  asset,
+  expectedText,
+  fallbackFilename,
+  beforeSignature,
+  allowUnchangedSignature,
+  deadline,
+  intervalMs
+) {
+  let stableCount = 0;
+  let previousSignature = null;
+  let verifiedSignature = null;
+  let last = scriptFileSnapshot(asset);
+  while (Date.now() <= deadline) {
+    last = scriptFileSnapshot(asset);
+    const filename = last.file ? last.filename : fallbackFilename || last.filename;
+    const signature = scriptFileSignature(last);
+    const mutationObserved = allowUnchangedSignature || signature !== beforeSignature;
+    if (
+      mutationObserved &&
+      last.file &&
+      last.filename &&
+      last.hash &&
+      verifiedSignature !== signature &&
+      filename
+    ) {
+      const remoteText = await readRemoteScriptText(globals, asset, filename, deadline).catch(() => null);
+      if (remoteText === String(expectedText || "")) verifiedSignature = signature;
+    }
+    if (
+      mutationObserved &&
+      last.file &&
+      last.filename &&
+      last.hash &&
+      verifiedSignature === signature
+    ) {
+      stableCount = signature === previousSignature ? stableCount + 1 : 1;
+      if (stableCount >= 2) return { ...last, remoteContentVerified: true };
+    } else {
+      stableCount = 0;
+    }
+    previousSignature = signature;
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, remainingMs)));
+  }
+  throw scriptError(
+    "SCRIPT_FILE_NOT_CONVERGED",
+    "Timed out waiting for script file metadata and remote content for asset " + asset.get("id") + ".",
+    {
+      assetId: String(asset.get("id")),
+      beforeSignature,
+      actualSignature: scriptFileSignature(last),
+      remoteContentVerified: verifiedSignature === scriptFileSignature(last)
+    }
+  );
+}
+
+async function parseScriptAsset(asset, deadline) {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    const timeoutError = new Error("Timed out before parsing script asset " + asset.get("id") + ".");
+    timeoutError.code = "SCRIPT_PARSE_CALLBACK_TIMEOUT";
+    timeoutError.details = { assetId: String(asset.get("id")), parserCompleted: false };
+    throw timeoutError;
+  }
+  let timer;
+  const [error, data] = await new Promise((resolve, reject) => {
+    timer = setTimeout(() => {
+      const timeoutError = new Error("Timed out parsing script asset " + asset.get("id") + ".");
+      timeoutError.code = "SCRIPT_PARSE_CALLBACK_TIMEOUT";
+      timeoutError.details = { assetId: String(asset.get("id")), parserCompleted: false };
+      reject(timeoutError);
+    }, remainingMs);
+    editor.call("scripts:parse", asset.observer, (...values) => {
+      clearTimeout(timer);
+      resolve(values);
+    });
+  });
+  if (error) {
+    const parseError = new Error(String(error));
+    parseError.code = "SCRIPT_PARSE_FAILED";
+    parseError.details = { assetId: String(asset.get("id")), parserCompleted: true };
+    throw parseError;
+  }
+  return data || {};
+}
+
+function stableScriptValue(value) {
+  if (Array.isArray(value)) return value.map(stableScriptValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, stableScriptValue(value[key])])
+    );
+  }
+  return value;
+}
+
+function normalizedScriptMetadata(scripts) {
+  return Object.keys(scripts || {}).sort().map((name) => {
+    const definition = scripts[name] || {};
+    return [name, {
+      attributesOrder: Array.isArray(definition.attributesOrder)
+        ? definition.attributesOrder.map(String)
+        : [],
+      attributes: stableScriptValue(definition.attributes || {})
+    }];
+  });
+}
+
+function scriptParseFailures(diagnostics) {
+  const scriptsInvalid = Array.isArray(diagnostics?.scriptsInvalid)
+    ? diagnostics.scriptsInvalid
+    : [];
+  const attributesInvalid = Object.entries(diagnostics?.scripts || {}).flatMap(
+    ([name, definition]) => Array.isArray(definition?.attributesInvalid) && definition.attributesInvalid.length
+      ? [{ name, errors: definition.attributesInvalid }]
+      : []
+  );
+  return { scriptsInvalid, attributesInvalid };
+}
+
+function throwIfScriptParseInvalid(diagnostics, fileUpdated) {
+  const failures = scriptParseFailures(diagnostics);
+  if (!failures.scriptsInvalid.length && !failures.attributesInvalid.length) {
+    if (diagnostics?.scripts && Object.keys(diagnostics.scripts).length > 0) return;
+    throw scriptError(
+      "SCRIPT_NO_DECLARATIONS",
+      "Script parser returned no declarations.",
+      {
+        fileUpdated: Boolean(fileUpdated),
+        parserCompleted: true,
+        metadataApplied: false
+      }
+    );
+  }
+  const error = new Error("Script parse returned invalid scripts or attributes.");
+  error.code = "SCRIPT_PARSE_INVALID";
+  error.details = {
+    ...failures,
+    fileUpdated: Boolean(fileUpdated),
+    parserCompleted: true,
+    metadataApplied: false
+  };
+  throw error;
+}
+
+async function waitForScriptMetadata(asset, expectedScripts, deadline, intervalMs) {
+  const expected = JSON.stringify(normalizedScriptMetadata(expectedScripts || {}));
+  let stableCount = 0;
+  let last = asset.get("data.scripts") || {};
+  while (Date.now() <= deadline) {
+    last = asset.get("data.scripts") || {};
+    if (JSON.stringify(normalizedScriptMetadata(last)) === expected) {
+      stableCount += 1;
+      if (stableCount >= 2) return last;
+    } else {
+      stableCount = 0;
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(intervalMs, remainingMs)));
+  }
+  const error = new Error(
+    "Parsed script metadata did not converge for asset " + asset.get("id") + "."
+  );
+  error.code = "SCRIPT_METADATA_NOT_CONVERGED";
+  error.details = {
+    assetId: String(asset.get("id")),
+    expected: normalizedScriptMetadata(expectedScripts || {}),
+    actual: normalizedScriptMetadata(last || {})
+  };
+  throw error;
+}
+
+function readScriptMetadata(scripts) {
+  return Object.fromEntries(Object.entries(scripts || {}).map(([name, definition]) => [name, {
+    attributesOrder: definition?.attributesOrder || null,
+    attributesInvalid: definition?.attributesInvalid || null
+  }]));
+}
+
+async function finishScriptUpdate(globals, asset, text, fallbackFilename, args) {
+  const startedAt = Number(args.updateStartedAt || Date.now());
+  const timeoutMs = Math.max(100, Number(args.waitTimeoutMs || command.timeoutMs || 60000) - 500);
+  const deadline = Number(args.updateDeadline || startedAt + timeoutMs);
+  const intervalMs = Math.max(50, Number(args.pollIntervalMs || 500));
+  let file = scriptFileSnapshot(asset);
+  if (args.wait) {
+    file = await waitForScriptFile(
+      globals,
+      asset,
+      text,
+      fallbackFilename,
+      args.beforeFileSignature || null,
+      Boolean(args.allowUnchangedFileSignature),
+      deadline,
+      intervalMs
+    );
+  }
+
+  let diagnostics = null;
+  let scripts = asset.get("data.scripts") || {};
+  if (args.parse) {
+    diagnostics = await parseScriptAsset(asset, deadline);
+    throwIfScriptParseInvalid(diagnostics, true);
+    const parsedScripts = diagnostics.scripts || {};
+    if (args.wait) {
+      scripts = await waitForScriptMetadata(
+        asset,
+        parsedScripts,
+        deadline,
+        intervalMs
+      );
+    } else {
+      scripts = parsedScripts;
+    }
+  }
+
+  return {
+    asset: readAsset(asset),
+    file,
+    scripts,
+    scriptMetadata: readScriptMetadata(scripts),
+    parseDiagnostics: diagnostics
+      ? Object.fromEntries(Object.entries(diagnostics).filter(([key]) => key !== "scripts"))
+      : null,
+    parsed: Boolean(args.parse),
+    waited: Boolean(args.wait),
+    durationMs: Date.now() - startedAt
+  };
+}
+`;
+
 export function scriptSetTextSnippet(): string {
   return `
 ${assetReader}
+${scriptUpdateHelpers}
 const args = command.args || {};
 const globals = editor.api.globals;
 const asset = globals.assets.get(Number(args.assetId));
@@ -866,29 +1482,39 @@ if (!asset) {
 if (asset.get("type") !== "script") {
   throw new Error("Asset is not a script: " + args.assetId);
 }
-const filename = asset.get("file.filename") || asset.get("name");
-const form = new FormData();
-form.append("filename", filename);
-form.append("file", new Blob([String(args.text || "")], { type: "text/javascript" }), filename);
-const branchId = window.config?.self?.branch?.id || window.config?.branch?.id;
-if (branchId) {
-  form.append("branchId", String(branchId));
+const updateStartedAt = Date.now();
+const updateTimeoutMs = Math.max(
+  100,
+  Number(args.waitTimeoutMs || command.timeoutMs || 60000) - 500
+);
+const updateArgs = {
+  ...args,
+  updateStartedAt,
+  updateDeadline: updateStartedAt + updateTimeoutMs
+};
+const filename = asset.get("file.filename") || args.filename || asset.get("name");
+const beforeFile = scriptFileSnapshot(asset);
+let beforeRemoteText = null;
+if (args.wait && beforeFile.file && filename) {
+  beforeRemoteText = await readRemoteScriptText(
+    globals,
+    asset,
+    filename,
+    updateArgs.updateDeadline
+  ).catch(() => null);
 }
-const headers = {};
-if (globals.accessToken) {
-  headers.Authorization = "Bearer " + globals.accessToken;
-}
-const response = await fetch("/api/assets/" + asset.get("id"), {
-  method: "PUT",
-  headers,
-  body: form
-});
-const body = await response.json().catch(() => ({}));
-if (!response.ok || body.error) {
-  throw new Error(body.error || "Failed to update script asset.");
-}
+updateArgs.beforeFileSignature = scriptFileSignature(beforeFile);
+updateArgs.allowUnchangedFileSignature = beforeRemoteText === String(args.text || "");
+const body = await putScriptText(
+  globals,
+  asset,
+  args.text,
+  filename,
+  updateArgs.updateDeadline
+);
+const result = await finishScriptUpdate(globals, asset, args.text, filename, updateArgs);
 return {
-  asset: readAsset(asset),
+  ...result,
   response: body
 };
 `;
@@ -898,12 +1524,23 @@ export function scriptUpsertSnippet(): string {
   return `
 ${assetReader}
 ${assetFolderHelpers}
+${scriptUpdateHelpers}
 const args = command.args || {};
 const globals = editor.api.globals;
 const assets = globals.assets;
 if (!args.filename) {
   throw new Error("filename is required.");
 }
+const updateStartedAt = Date.now();
+const updateTimeoutMs = Math.max(
+  100,
+  Number(args.waitTimeoutMs || command.timeoutMs || 60000) - 500
+);
+const updateArgs = {
+  ...args,
+  updateStartedAt,
+  updateDeadline: updateStartedAt + updateTimeoutMs
+};
 const folderResult = await resolveFolder(assets, args);
 const folderId = folderResult.folder ? folderResult.folder.get("id") : null;
 function isInTargetFolder(asset) {
@@ -911,7 +1548,7 @@ function isInTargetFolder(asset) {
   const path = asset.get("path") || [];
   return path[path.length - 1] === folderId;
 }
-let asset = assets.list().find((candidate) =>
+const matches = assets.list().filter((candidate) =>
   candidate.get("type") === "script" &&
   isInTargetFolder(candidate) &&
   (
@@ -919,54 +1556,61 @@ let asset = assets.list().find((candidate) =>
     candidate.get("name") === args.filename
   )
 );
+if (!folderId && !args.folder && matches.length > 1) {
+  throw new Error(
+    "Multiple script assets match " + args.filename + ": " +
+    matches.map((candidate) => candidate.get("id") + "@" + (candidate.get("path") || []).join("/")).join(", ") +
+    ". Specify --folder or --folder-id."
+  );
+}
+let asset = matches[0] || null;
 let action = "updated";
+let responseBody = null;
 if (!asset) {
-  asset = await assets.createScript({
-    filename: args.filename,
-    text: String(args.text || ""),
-    folder: folderResult.folder || undefined,
-    preload: args.preload !== false
-  });
+  asset = await withScriptDeadline(
+    assets.createScript({
+      filename: args.filename,
+      text: String(args.text || ""),
+      folder: folderResult.folder || undefined,
+      preload: args.preload !== false
+    }),
+    updateArgs.updateDeadline,
+    "SCRIPT_CREATE_TIMEOUT",
+    "Timed out creating script asset " + args.filename + ".",
+    { filename: args.filename, stateUnknown: true }
+  );
   action = "created";
+  updateArgs.beforeFileSignature = null;
+  updateArgs.allowUnchangedFileSignature = false;
 } else {
-  const filename = asset.get("file.filename") || asset.get("name") || args.filename;
-  const form = new FormData();
-  form.append("filename", filename);
-  form.append("file", new Blob([String(args.text || "")], { type: "text/javascript" }), filename);
-  const branchId = window.config?.self?.branch?.id || window.config?.branch?.id;
-  if (branchId) {
-    form.append("branchId", String(branchId));
+  const filename = asset.get("file.filename") || args.filename || asset.get("name");
+  const beforeFile = scriptFileSnapshot(asset);
+  let beforeRemoteText = null;
+  if (args.wait && beforeFile.file && filename) {
+    beforeRemoteText = await readRemoteScriptText(
+      globals,
+      asset,
+      filename,
+      updateArgs.updateDeadline
+    ).catch(() => null);
   }
-  const headers = {};
-  if (globals.accessToken) {
-    headers.Authorization = "Bearer " + globals.accessToken;
-  }
-  const response = await fetch("/api/assets/" + asset.get("id"), {
-    method: "PUT",
-    headers,
-    body: form
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok || body.error) {
-    throw new Error(body.error || "Failed to update script asset.");
-  }
+  updateArgs.beforeFileSignature = scriptFileSignature(beforeFile);
+  updateArgs.allowUnchangedFileSignature = beforeRemoteText === String(args.text || "");
+  responseBody = await putScriptText(
+    globals,
+    asset,
+    args.text,
+    filename,
+    updateArgs.updateDeadline
+  );
 }
 
-let scripts = asset.get("data.scripts") || {};
-if (args.parse) {
-  const [error, data] = await new Promise((resolve) => {
-    editor.call("scripts:parse", asset.observer, (...values) => resolve(values));
-  });
-  if (error) {
-    throw new Error(String(error));
-  }
-  scripts = data?.scripts || {};
-}
+const result = await finishScriptUpdate(globals, asset, args.text, args.filename, updateArgs);
 
 return {
   action,
-  asset: readAsset(asset),
-  scripts,
+  ...result,
+  response: responseBody,
   createdFolders: folderResult.created.map(readAsset)
 };
 `;
@@ -975,20 +1619,37 @@ return {
 export function scriptParseSnippet(): string {
   return `
 ${assetReader}
+${scriptUpdateHelpers}
 const args = command.args || {};
 const asset = editor.api.globals.assets.get(Number(args.assetId));
 if (!asset) {
   throw new Error("Asset not found: " + args.assetId);
 }
-const [error, data] = await new Promise((resolve) => {
-  editor.call("scripts:parse", asset.observer, (...values) => resolve(values));
-});
-if (error) {
-  throw new Error(String(error));
+if (asset.get("type") !== "script") {
+  throw new Error("Asset is not a script: " + args.assetId);
 }
+const startedAt = Date.now();
+const timeoutMs = Math.max(100, Number(args.waitTimeoutMs || command.timeoutMs || 60000) - 500);
+const deadline = startedAt + timeoutMs;
+const intervalMs = Math.max(50, Number(args.pollIntervalMs || 500));
+const diagnostics = await parseScriptAsset(asset, deadline);
+throwIfScriptParseInvalid(diagnostics, false);
+const scripts = await waitForScriptMetadata(
+  asset,
+  diagnostics.scripts || {},
+  deadline,
+  intervalMs
+);
 return {
   asset: readAsset(asset),
-  scripts: data?.scripts || {}
+  scripts,
+  scriptMetadata: readScriptMetadata(scripts),
+  parseDiagnostics: Object.fromEntries(
+    Object.entries(diagnostics).filter(([key]) => key !== "scripts")
+  ),
+  parsed: true,
+  observerVerified: true,
+  durationMs: Date.now() - startedAt
 };
 `;
 }

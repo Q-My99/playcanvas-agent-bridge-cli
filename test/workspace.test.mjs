@@ -18,6 +18,8 @@ test("workspace creates a project mirror, syncs scripts, and lazily pulls binari
 
   let remoteText = "const version = 1;\n";
   let remoteHash = "remote-file-v1";
+  let scriptName = "New Asset~11";
+  let scriptFileReady = false;
   let includeTemporaryFolder = true;
   const writes = [];
   const snapshot = () => ({
@@ -25,10 +27,12 @@ test("workspace creates a project mirror, syncs scripts, and lazily pulls binari
       { id: 10, name: "Scripts", type: "folder", path: [] },
       {
         id: 11,
-        name: "controller.js",
+        name: scriptName,
         type: "script",
         path: [10],
-        file: { filename: "controller.js", hash: remoteHash, size: remoteText.length },
+        file: scriptFileReady
+          ? { filename: "controller.js", hash: remoteHash, size: remoteText.length }
+          : null,
       },
       { id: 20, name: "Textures", type: "folder", path: [] },
       {
@@ -84,7 +88,14 @@ test("workspace creates a project mirror, syncs scripts, and lazily pulls binari
   await manager.handleTarget(target);
   const projectDirectory = join(root, "1552681-pc-bridge-test");
   const scriptPath = join(projectDirectory, "assets", "Scripts", "controller.js");
+  const temporaryScriptPath = join(projectDirectory, "assets", "Scripts", "New Asset~11");
+  assert.equal(await readFile(temporaryScriptPath, "utf8"), remoteText);
+
+  scriptName = "controller.js";
+  scriptFileReady = true;
+  await manager.syncTarget(target);
   assert.equal(await readFile(scriptPath, "utf8"), remoteText);
+  await assert.rejects(access(temporaryScriptPath));
   const manifest = JSON.parse(await readFile(join(projectDirectory, "pcbridge.project.json"), "utf8"));
   assert.equal(manifest.project.id, "1552681");
   assert.equal(manifest.activeBranch.id, "99");
