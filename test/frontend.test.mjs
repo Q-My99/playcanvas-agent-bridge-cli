@@ -85,9 +85,11 @@ function fixtureFetch(manifest, archive) {
   };
 }
 
-async function runPopup(initialUrl, statusData) {
+async function runPopup(initialUrl, statusData, initialPreference = null) {
   const elements = new Map();
   const updatedUrls = [];
+  const runtimeMessages = [];
+  let preference = initialPreference;
   const document = {
     getElementById(id) {
       if (!elements.has(id)) {
@@ -113,6 +115,25 @@ async function runPopup(initialUrl, statusData) {
   const chrome = {
     runtime: {
       getURL: () => "chrome-extension://test/config.json",
+      sendMessage: async (message) => {
+        runtimeMessages.push(message);
+        if (message.type === "pcbridge:getFrontendPreference") {
+          return {
+            ok: Boolean(message.projectId),
+            mode: preference,
+            projectId: message.projectId || null,
+          };
+        }
+        if (message.type === "pcbridge:setFrontendPreference") {
+          preference = message.mode;
+          return {
+            ok: Boolean(message.projectId),
+            mode: preference,
+            projectId: message.projectId || null,
+          };
+        }
+        return null;
+      },
     },
     tabs: {
       query: async () => [{ id: 123, url: initialUrl }],
@@ -146,7 +167,7 @@ async function runPopup(initialUrl, statusData) {
   });
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
-  return { elements, updatedUrls };
+  return { elements, runtimeMessages, updatedUrls };
 }
 
 test("frontend releases install, switch, serve, and remove safely", async (t) => {
@@ -259,7 +280,7 @@ test("extension popup preserves Editor URLs and always allows returning to offic
     },
   };
   const statusData = {
-    daemon: { version: "0.4.0", targetCount: 1 },
+    daemon: { version: "0.4.1", targetCount: 1 },
     target: {
       connected: true,
       ready: true,
@@ -297,6 +318,10 @@ test("extension popup preserves Editor URLs and always allows returning to offic
   assert.equal(customUrl.searchParams.get("foo"), "bar");
   assert.equal(customUrl.searchParams.has("use_local_frontend"), true);
   assert.equal(customUrl.hash, "#viewport");
+  assert.equal(
+    official.runtimeMessages.find((message) => message.type === "pcbridge:setFrontendPreference").mode,
+    "custom",
+  );
 
   const custom = await runPopup(
     "https://playcanvas.com/editor/scene/2558608?foo=bar&use_local_frontend",
@@ -313,6 +338,19 @@ test("extension popup preserves Editor URLs and always allows returning to offic
   assert.equal(official.elements.get("workspace-status").textContent, "Synced");
   assert.equal(official.elements.get("project").textContent, "pcbridge-test · 1552681");
   assert.equal(official.elements.get("metric-scripts").textContent, "3/3");
+  assert.equal(official.elements.get("frontend-preference").textContent, "Follow current URL");
+
+  const rememberedCustom = await runPopup(
+    "https://playcanvas.com/editor/project/1552681?use_local_frontend",
+    statusData,
+    "custom",
+  );
+  assert.equal(
+    rememberedCustom.elements.get("frontend-preference").textContent,
+    "Custom · remembered",
+  );
+  assert.equal(rememberedCustom.elements.get("use-custom").disabled, true);
+  assert.equal(rememberedCustom.elements.get("use-official").disabled, false);
 });
 
 test("frontend install rejects a checksum mismatch", async (t) => {

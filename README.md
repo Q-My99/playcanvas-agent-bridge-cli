@@ -70,6 +70,12 @@ The daemon serves the active build from `http://localhost:3487`. On a
 frontend**. Choose **Use official frontend** to remove `use_local_frontend` and reload the same
 Editor URL with the official frontend.
 
+The extension remembers the last popup selection per PlayCanvas project ID. Later visits to either
+the `/editor/project/<projectId>` scene picker or an `/editor/scene/<sceneId>` page automatically
+add or remove `use_local_frontend` while preserving other query parameters and the URL hash. The
+preference changes only when the user clicks **Use custom frontend** or **Use official frontend**
+again, and the popup shows the remembered value under **Project preference**.
+
 Manage installed releases explicitly when needed:
 
 ```bash

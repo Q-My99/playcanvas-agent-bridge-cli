@@ -22,6 +22,8 @@ or sync error.
 
 Use `pcbridge frontend install latest` and `pcbridge frontend status` when the user wants the
 published custom Editor build. The extension popup switches between custom and official modes.
+The popup remembers that choice per PlayCanvas project and applies it automatically on later
+project-picker and scene Editor navigations; change the remembered mode only through the popup.
 
 Use layered help to load only the command surface you need:
 

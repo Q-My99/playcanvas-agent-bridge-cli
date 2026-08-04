@@ -33,6 +33,20 @@ function isEditorUrl(url) {
   );
 }
 
+function projectIdFromUrl(url) {
+  if (!isEditorUrl(url)) return null;
+  const match = url.pathname.match(/^\/editor\/project\/(\d+)(?:\/|$)/);
+  return match ? match[1] : null;
+}
+
+async function sendRuntimeMessage(message) {
+  try {
+    return await chrome.runtime.sendMessage(message);
+  } catch {
+    return null;
+  }
+}
+
 function setStatus(element, label, state) {
   element.textContent = label;
   element.dataset.state = state;
@@ -54,8 +68,15 @@ function relativeTime(value) {
   return `Synced ${Math.round(minutes / 60)}h ago`;
 }
 
-async function switchFrontend(active, url, custom) {
+async function switchFrontend(active, url, custom, projectId) {
   if (!active || !url) return;
+  await sendRuntimeMessage({
+    type: "pcbridge:setFrontendPreference",
+    tabId: active.id,
+    url: url.toString(),
+    projectId,
+    mode: custom ? "custom" : "official"
+  });
   if (custom) url.searchParams.set("use_local_frontend", "");
   else url.searchParams.delete("use_local_frontend");
   await chrome.tabs.update(active.id, { url: url.toString() });
@@ -73,6 +94,16 @@ async function main() {
   const target = status && status.target;
   const workspace = status && status.workspace;
   const frontend = status && status.frontend;
+  const projectId = (target && target.projectId) || projectIdFromUrl(url);
+  const frontendPreference = isEditor
+    ? await sendRuntimeMessage({
+        type: "pcbridge:getFrontendPreference",
+        tabId: active && active.id,
+        url: url && url.toString(),
+        projectId
+      })
+    : null;
+  const rememberedMode = frontendPreference && frontendPreference.mode;
 
   const overallStatus = document.getElementById("overall-status");
   const daemonStatus = document.getElementById("daemon-status");
@@ -160,11 +191,14 @@ async function main() {
   document.getElementById("mode").textContent = isEditor
     ? customMode ? "Custom" : "Official"
     : "Unavailable";
+  document.getElementById("frontend-preference").textContent = rememberedMode
+    ? rememberedMode === "custom" ? "Custom · remembered" : "Official · remembered"
+    : isEditor ? "Follow current URL" : "Unavailable";
 
-  useCustom.disabled = !isEditor || !serverReady;
-  useOfficial.disabled = !isEditor || !customMode;
-  useCustom.addEventListener("click", () => switchFrontend(active, url, true));
-  useOfficial.addEventListener("click", () => switchFrontend(active, url, false));
+  useCustom.disabled = !isEditor || !serverReady || rememberedMode === "custom" || (!rememberedMode && customMode);
+  useOfficial.disabled = !isEditor || rememberedMode === "official" || (!rememberedMode && !customMode);
+  useCustom.addEventListener("click", () => switchFrontend(active, url, true, projectId));
+  useOfficial.addEventListener("click", () => switchFrontend(active, url, false, projectId));
   copyPath.addEventListener("click", async () => {
     const path = copyPath.dataset.path;
     if (!path || !navigator.clipboard) return;

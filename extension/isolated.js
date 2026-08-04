@@ -210,6 +210,15 @@
       const target = await describeTarget();
       const signature = JSON.stringify(target);
       if (!force && signature === lastTargetSignature) return;
+      if (target.projectId) {
+        await requestRuntime({
+          type: "pcbridge:rememberProjectContext",
+          url: target.url,
+          projectId: target.projectId,
+          sceneId: target.sceneId
+        });
+        if (stopped) return;
+      }
       lastTargetSignature = signature;
       ws.send(
         JSON.stringify({
@@ -349,6 +358,14 @@
   }
 
   async function start() {
+    const frontendPreference = await requestRuntime({
+      type: "pcbridge:applyFrontendPreference",
+      url: location.href
+    });
+    if (frontendPreference && frontendPreference.redirected) {
+      stopBridge();
+      return;
+    }
     config = await loadConfig();
     if (stopped) return;
     extensionVersion = getExtensionVersion();
