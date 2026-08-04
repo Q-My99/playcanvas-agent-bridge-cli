@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "PlayCanvas Agent Bridge",
   "description": "Connects open PlayCanvas Editor and Launch tabs to the local pcbridge daemon.",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "permissions": ["activeTab", "storage"],
   "host_permissions": [
     "http://playcanvas.com/*",
@@ -14,7 +14,19 @@
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "PlayCanvas Agent Bridge"
+    "default_title": "PlayCanvas Agent Bridge",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
   },
   "background": {
     "service_worker": "service-worker.js"

@@ -10,10 +10,11 @@ pcbridge daemon status
 pcbridge targets
 ```
 
-If the daemon is offline, ask the user to run `pcbridge daemon start`. If no target is connected, ask the user to run `pcbridge install-extension`, load the printed unpacked extension path in `chrome://extensions`, and refresh the Editor or Launch tab.
+Run `pcbridge daemon start` only for `DAEMON_NOT_LISTENING`; for `LOOPBACK_ACCESS_DENIED`, retry
+with local-loopback permission. If no target is connected, install/reload the unpacked extension.
 
 The daemon start directory is the workspace root. After selecting an explicit target, run
-`pcbridge workspace status --target scene:<sceneId>` and stop if it reports a conflict or sync
+`pcbridge workspace status --target editor:<sceneId>` and stop if it reports a conflict or sync
 error. Each project is mirrored under `<projectId>-<projectName>/{assets,tmp}`. Script content syncs
 both ways; other asset files are lazy until explicitly pulled.
 
@@ -22,41 +23,58 @@ For the optional published Editor build, use `pcbridge frontend install latest`,
 The popup remembers that choice per project and reapplies it on later project-picker and scene
 Editor navigations; change the remembered choice only through the popup.
 
-Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help workspace|frontend|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
+Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help target|workspace|frontend|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
 
 Use structured commands for small, known Editor operations:
 
 ```bash
-pcbridge entity list --target current --limit 50
-pcbridge entity create --target current --json ./entity.json
-pcbridge entity patch --target current --id <resource_id> --set position='[0,1,0]'
-pcbridge entity duplicate --target current --id <resource_id>
-pcbridge entity reparent --target current --id <resource_id> --parent <parent_resource_id>
-pcbridge entity set-material --target current --id <resource_id> --material-id <material_asset_id>
-pcbridge entity add-script --target current --id <resource_id> --asset-id <script_asset_id> --attributes '{"speed":2.4}'
-pcbridge asset list --target current --type script
-pcbridge asset create --target current --json ./assets.json
-pcbridge asset folder ensure --target current --path "AI Agent Bridge/My Task/Textures"
-pcbridge asset upload --target current --file ./texture.png --name TaskTexture --folder "AI Agent Bridge/My Task/Textures"
-pcbridge asset upload-many --target current --json ./upload-manifest.json
-pcbridge material create --target current --name TaskMaterial --folder "AI Agent Bridge/My Task/Materials" --diffuse-map <texture_asset_id>
-pcbridge template create --target current --entity-id <resource_id> --name TaskTemplate --folder "AI Agent Bridge/My Task/Templates"
-pcbridge template instantiate --target current --id <template_asset_id>
-pcbridge scene settings get --target current
-pcbridge viewport focus --target current --id <resource_id> --view perspective
-pcbridge script upsert --target current --filename controller.js --file ./script.js --folder "AI Agent Bridge/My Task/Scripts" --parse
-pcbridge script create --target current --filename controller.js --file ./script.js --folder "AI Agent Bridge/My Task/Scripts"
-pcbridge script set-text --target current --asset-id <id> --file ./script.js
-pcbridge viewport capture --target current --out ./tmp/playcanvas.png
+pcbridge entity list --target editor:<sceneId> --limit 50
+pcbridge entity create --target editor:<sceneId> --json ./entity.json
+pcbridge entity patch --target editor:<sceneId> --id <resource_id> --set position='[0,1,0]'
+pcbridge entity duplicate --target editor:<sceneId> --id <resource_id>
+pcbridge entity reparent --target editor:<sceneId> --id <resource_id> --parent <parent_resource_id>
+pcbridge entity set-material --target editor:<sceneId> --id <resource_id> --material-id <material_asset_id>
+pcbridge entity add-script --target editor:<sceneId> --id <resource_id> --asset-id <script_asset_id> --attributes '{"speed":2.4}'
+pcbridge entity add-script --target editor:<sceneId> --id <resource_id> --script-name sdsAudioPlayer --attributes-json ./audio-slots.json
+pcbridge asset list --target editor:<sceneId> --type script
+pcbridge asset create --target editor:<sceneId> --json ./assets.json
+pcbridge asset folder ensure --target editor:<sceneId> --path "AI Agent Bridge/My Task/Textures"
+pcbridge asset upload --target editor:<sceneId> --file ./texture.png --name TaskTexture --folder "AI Agent Bridge/My Task/Textures"
+pcbridge asset upload-many --target editor:<sceneId> --json ./upload-manifest.json
+pcbridge material create --target editor:<sceneId> --name TaskMaterial --folder "AI Agent Bridge/My Task/Materials" --diffuse-map <texture_asset_id>
+pcbridge template create --target editor:<sceneId> --entity-id <resource_id> --name TaskTemplate --folder "AI Agent Bridge/My Task/Templates"
+pcbridge template instantiate --target editor:<sceneId> --id <template_asset_id>
+pcbridge template overrides --target editor:<sceneId> --entity-id <resource_id>
+pcbridge template apply --target editor:<sceneId> --entity-id <resource_id>
+pcbridge template apply-many --target editor:<sceneId> --json ./template-roots.json
+pcbridge scene settings get --target editor:<sceneId>
+pcbridge viewport focus --target editor:<sceneId> --id <resource_id> --view perspective
+pcbridge script upsert --target editor:<sceneId> --filename controller.js --file ./script.js --folder "AI Agent Bridge/My Task/Scripts" --parse --wait
+pcbridge script create --target editor:<sceneId> --filename controller.js --file ./script.js --folder "AI Agent Bridge/My Task/Scripts"
+pcbridge script set-text --target editor:<sceneId> --asset-id <id> --file ./script.js --parse --wait
+pcbridge viewport capture --target editor:<sceneId> --out ./tmp/playcanvas.png
 pcbridge logs get --target launch:<sceneId> --limit 100
 pcbridge logs get --target launch:<sceneId> --level error
 ```
 
 Put generated assets under `AI Agent Bridge/<task name>/Textures`, `Materials`, and `Scripts`.
 
-Use `pcbridge eval` for exploratory API inspection, custom Editor/Engine workflows, Launch runtime debugging, and large multi-step scene edits. Use `pcbridge eval --file ./install.js --args-json ./args.json --timeout-ms 120000` when local configuration is too large to embed in code or the install can exceed the default 15s timeout. Return compact JSON and never return raw PlayCanvas Editor objects. Use history-enabled mutations when available and verify writes with a read-only command.
+Use `pcbridge launch diagnose` and `pcbridge launch wait-ready --focus` before runtime assertions.
+Launch `lifecycleReady` is a best-effort heuristic based on an owned graphics canvas/context,
+attached scene root, a completed frame, and known splash selectors; target `ready` also requires a
+visible tab. These are not Engine lifecycle events, and script type count is diagnostic only. Eval
+includes compatibility-resolved `runtimeApp` for Engine V1/V2 plus the existing Editor bindings. Return compact
+JSON; use bounded `--max-depth`/`--max-items` only when a leaf projection is insufficient.
 
 For Launch runtime debugging, target `launch:<sceneId>` or `tab:<id>` and use `pcbridge eval`, `pcbridge viewport capture`, and `pcbridge logs get`. Editor-only structured entity/asset/script commands require an Editor target.
+
+Use `editor:<sceneId>` for writes and `--script-name` for bundle-registered ScriptTypes. Editor
+patches are durable, so restore preview-only enabled/visibility changes before Template apply.
+Template `verified` covers current Editor overrides, not persistence across a reload. Script
+`--parse --wait` completion checks do not wait for the workspace mirror's later sync.
+Capture records the current canvas, defaults to `--max-width 1200`, and does not emulate a mobile viewport or DPR.
+
+For large eval installs, use `pcbridge eval --target editor:<sceneId> --file ./install.js --args-json ./install-args.json --timeout-ms 120000`.
 
 For large tasks, choose an explicit target from `pcbridge targets`, keep generated files and captures under the project `tmp/` directory, upload batches with `asset upload-many`, edit tracked scripts under `assets/`, and capture the viewport after smoke tests. Local file arguments must remain inside the workspace; never use `--allow-external-path` without explicit user approval. If repeated manual glue appears, improve the CLI or this rule.
 

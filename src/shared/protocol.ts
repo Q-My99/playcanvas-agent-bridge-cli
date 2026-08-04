@@ -42,6 +42,26 @@ export type TargetInfo = {
   hasEditor?: boolean;
   hasPc?: boolean;
   hasRuntimeApp?: boolean;
+  runtimeAppSource?: string;
+  runtimeAppAmbiguous?: boolean;
+  runtimeAppCandidateSources?: string[];
+  runtimeCanvasId?: string;
+  engineVersion?: string;
+  readinessMode?: "heuristic";
+  pageReady?: boolean;
+  visibilityState?: string;
+  lifecycleReady?: boolean;
+  runtimeCreated?: boolean;
+  graphicsReady?: boolean;
+  graphicsContextLost?: boolean;
+  runtimeStarted?: boolean;
+  runtimeFrame?: number | null;
+  sceneLoaded?: boolean;
+  scriptsReady?: boolean;
+  scriptTypeCount?: number | null;
+  splashVisible?: boolean;
+  rootChildCount?: number;
+  readinessBlockers?: string[];
   canvasCount?: number;
   ready: boolean;
   connected: boolean;
@@ -93,9 +113,11 @@ export function fail(
 
 export function normalizeError(value: unknown): BridgeError {
   if (value && typeof value === "object") {
-    const candidate = value as { code?: unknown; message?: unknown };
+    const candidate = value as { code?: unknown; message?: unknown; details?: unknown };
     if (typeof candidate.code === "string" && typeof candidate.message === "string") {
-      return { code: candidate.code, message: candidate.message };
+      return candidate.details === undefined
+        ? { code: candidate.code, message: candidate.message }
+        : { code: candidate.code, message: candidate.message, details: candidate.details as JsonValue };
     }
     if (typeof candidate.message === "string") {
       return { code: "PAGE_ERROR", message: candidate.message };
