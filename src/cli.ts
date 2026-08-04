@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CONFIG_DIR,
@@ -141,7 +141,7 @@ async function readCode(args: Args): Promise<string> {
   const code = flagString(args, "code");
   const file = flagString(args, "file");
   if (code !== undefined) return code;
-  if (file) return readFile(file, "utf8");
+  if (file) return readFile(await resolveWorkspaceFile(args, file, "eval file"), "utf8");
   if (flagBool(args, "stdin")) return readStdin();
   throw new Error("Provide --code, --file, or --stdin.");
 }
@@ -182,6 +182,47 @@ async function fetchDaemon(
   });
   const body = (await response.json()) as Envelope;
   return body;
+}
+
+async function resolveWorkspaceFile(args: Args, path: string, label: string): Promise<string> {
+  const resolvedPath = resolve(path);
+  if (flagBool(args, "allow-external-path")) return resolvedPath;
+  const target = flagString(args, "target", "current") || "current";
+  const response = await fetchDaemon(`/workspace/status?target=${encodeURIComponent(target)}`);
+  if (!response.ok) throw new Error(response.error.message);
+  const status = objectJson(response.data, "workspace status");
+  const projectDirectory = typeof status.projectDirectory === "string"
+    ? resolve(status.projectDirectory)
+    : null;
+  if (!projectDirectory) {
+    throw new Error(
+      `${label} requires an initialized project workspace. ` +
+      "Use --allow-external-path only for an intentional external file.",
+    );
+  }
+  let checkedPath = resolvedPath;
+  try {
+    checkedPath = realpathSync(resolvedPath);
+  } catch {
+    let ancestor = dirname(resolvedPath);
+    while (ancestor !== dirname(ancestor)) {
+      try {
+        const realAncestor = realpathSync(ancestor);
+        checkedPath = resolve(realAncestor, relative(ancestor, resolvedPath));
+        break;
+      } catch {
+        ancestor = dirname(ancestor);
+      }
+    }
+  }
+  const checkedProject = realpathSync(projectDirectory);
+  if (checkedPath !== checkedProject && !checkedPath.startsWith(`${checkedProject}${sep}`)) {
+    throw new Error(
+      `${label} must be inside ${checkedProject}. ` +
+      "Use --allow-external-path to override this workspace guard.",
+    );
+  }
+  return resolvedPath;
 }
 
 async function rpcCall(
@@ -278,7 +319,8 @@ function nameFromFile(path: string): string {
 async function readJsonFlag(args: Args, flagName: string): Promise<JsonValue | undefined> {
   const file = flagString(args, flagName);
   if (!file) return undefined;
-  return JSON.parse(await readFile(file, "utf8")) as JsonValue;
+  const path = await resolveWorkspaceFile(args, file, `--${flagName}`);
+  return JSON.parse(await readFile(path, "utf8")) as JsonValue;
 }
 
 function objectJson(value: JsonValue | undefined, label: string): Record<string, JsonValue> {
@@ -327,6 +369,7 @@ function resolveManifestFile(manifestPath: string, file: string): string {
 }
 
 async function uploadAsset(args: Args, spec: UploadSpec): Promise<Envelope> {
+  spec.file = await resolveWorkspaceFile(args, spec.file, "asset upload file");
   const fileBuffer = await readFile(spec.file);
   const type = spec.type || inferAssetType(spec.file);
   if (!type) return fail("INVALID_REQUEST", `asset upload requires --type for ${spec.file}.`);
@@ -476,6 +519,7 @@ async function daemon(args: Args): Promise<void> {
       host: DEFAULT_HOST,
       port: session.port || DEFAULT_PORT,
       token: session.token,
+      workspaceRoot: process.cwd(),
       log: (message) => {
         if (flagBool(args, "json")) {
           process.stderr.write(`${JSON.stringify({ time: new Date().toISOString(), message })}\n`);
@@ -503,6 +547,7 @@ async function daemon(args: Args): Promise<void> {
         version: VERSION,
         host: DEFAULT_HOST,
         port: session.port || DEFAULT_PORT,
+        workspaceRoot: process.cwd(),
         extensionPath: EXTENSION_INSTALL_DIR,
         frontend: await server.frontend.status() as unknown as JsonValue,
       }),
@@ -710,13 +755,13 @@ async function handleEntity(args: Args): Promise<Envelope> {
   if (subcommand === "create") {
     const file = flagString(args, "json");
     if (!file) return fail("INVALID_REQUEST", "entity create requires --json <file>.");
-    const data = JSON.parse(await readFile(file, "utf8")) as JsonValue;
+    const data = JSON.parse(await readFile(await resolveWorkspaceFile(args, file, "entity JSON"), "utf8")) as JsonValue;
     return rpcEval(args, entityCreateSnippet(), { data });
   }
   if (subcommand === "create-many") {
     const file = flagString(args, "json");
     if (!file) return fail("INVALID_REQUEST", "entity create-many requires --json <file>.");
-    const data = JSON.parse(await readFile(file, "utf8")) as JsonValue;
+    const data = JSON.parse(await readFile(await resolveWorkspaceFile(args, file, "entity JSON"), "utf8")) as JsonValue;
     const entities = Array.isArray(data)
       ? data
       : objectJson(data, "entity create-many data").entities;
@@ -730,7 +775,7 @@ async function handleEntity(args: Args): Promise<Envelope> {
   if (subcommand === "patch-many") {
     const file = flagString(args, "json");
     if (!file) return fail("INVALID_REQUEST", "entity patch-many requires --json <file>.");
-    const data = JSON.parse(await readFile(file, "utf8")) as JsonValue;
+    const data = JSON.parse(await readFile(await resolveWorkspaceFile(args, file, "entity JSON"), "utf8")) as JsonValue;
     const edits = Array.isArray(data)
       ? data
       : objectJson(data, "entity patch-many data").edits;
@@ -868,7 +913,7 @@ async function handleAsset(args: Args): Promise<Envelope> {
   if (subcommand === "create") {
     const file = flagString(args, "json");
     if (!file) return fail("INVALID_REQUEST", "asset create requires --json <file>.");
-    const data = JSON.parse(await readFile(file, "utf8")) as JsonValue;
+    const data = JSON.parse(await readFile(await resolveWorkspaceFile(args, file, "asset JSON"), "utf8")) as JsonValue;
     const assets = Array.isArray(data)
       ? data
       : objectJson(data, "asset create data").assets || [data];
@@ -905,7 +950,8 @@ async function handleAsset(args: Args): Promise<Envelope> {
   if (subcommand === "upload-many") {
     const manifestPath = flagString(args, "json");
     if (!manifestPath) return fail("INVALID_REQUEST", "asset upload-many requires --json <file>.");
-    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as JsonValue;
+    const safeManifestPath = await resolveWorkspaceFile(args, manifestPath, "upload manifest");
+    const manifest = JSON.parse(await readFile(safeManifestPath, "utf8")) as JsonValue;
     const rawItems = Array.isArray(manifest)
       ? manifest
       : objectJson(manifest, "asset upload-many manifest").assets;
@@ -918,7 +964,7 @@ async function handleAsset(args: Args): Promise<Envelope> {
     const errors: JsonValue[] = [];
     for (let index = 0; index < items.length; index += 1) {
       const spec = uploadSpecFromJson(items[index] as JsonValue, `assets[${index}]`);
-      spec.file = resolveManifestFile(manifestPath, spec.file);
+      spec.file = resolveManifestFile(safeManifestPath, spec.file);
       const result = await uploadAsset(args, spec);
       uploads.push({
         index,
@@ -1055,7 +1101,7 @@ async function handleScript(args: Args): Promise<Envelope> {
       scriptUpsertSnippet(),
       {
         filename,
-        text: await readFile(file, "utf8"),
+        text: await readFile(await resolveWorkspaceFile(args, file, "script file"), "utf8"),
         folder: flagString(args, "folder") || null,
         folderId: flagString(args, "folder-id") || null,
         preload: !flagBool(args, "no-preload"),
@@ -1075,7 +1121,7 @@ async function handleScript(args: Args): Promise<Envelope> {
       scriptCreateSnippet(),
       {
         filename,
-        text: await readFile(file, "utf8"),
+        text: await readFile(await resolveWorkspaceFile(args, file, "script file"), "utf8"),
         folder: flagString(args, "folder") || null,
         folderId: flagString(args, "folder-id") || null,
         preload: !flagBool(args, "no-preload"),
@@ -1091,7 +1137,7 @@ async function handleScript(args: Args): Promise<Envelope> {
     }
     return rpcEval(args, scriptSetTextSnippet(), {
       assetId,
-      text: await readFile(file, "utf8"),
+      text: await readFile(await resolveWorkspaceFile(args, file, "script file"), "utf8"),
     });
   }
   if (subcommand === "parse") {
@@ -1182,7 +1228,10 @@ async function handleViewport(args: Args): Promise<Envelope> {
   if (!raw.ok) return raw;
 
   const data = raw.data as { base64?: string; mime?: string; width?: number; height?: number };
-  const out = flagString(args, "out");
+  const requestedOut = flagString(args, "out");
+  const out = requestedOut
+    ? await resolveWorkspaceFile(args, requestedOut, "viewport output")
+    : undefined;
   if (out && data.base64) {
     await writeFile(out, Buffer.from(data.base64, "base64"));
     return ok(
@@ -1220,10 +1269,46 @@ async function handleLogs(args: Args): Promise<Envelope> {
   return fail("UNKNOWN_COMMAND", `Unknown logs command: ${subcommand}`);
 }
 
+async function handleWorkspace(args: Args): Promise<Envelope> {
+  const subcommand = args._[1] || "status";
+  const target = flagString(args, "target", "current") || "current";
+
+  if (subcommand === "status") {
+    return fetchDaemon(`/workspace/status?target=${encodeURIComponent(target)}`);
+  }
+  if (subcommand === "path") {
+    const status = await fetchDaemon(`/workspace/status?target=${encodeURIComponent(target)}`);
+    if (!status.ok) return status;
+    const data = objectJson(status.data, "workspace status");
+    return ok({
+      rootDirectory: data.rootDirectory || null,
+      projectDirectory: data.projectDirectory || null,
+      assetsDirectory: data.assetsDirectory || null,
+      tmpDirectory: data.tmpDirectory || null,
+    });
+  }
+  if (subcommand === "sync") {
+    return fetchDaemon("/workspace/sync", {
+      method: "POST",
+      body: JSON.stringify({ target }),
+    });
+  }
+  if (subcommand === "pull") {
+    const assetId = flagString(args, "asset") || flagString(args, "asset-id") || flagString(args, "id");
+    if (!assetId) return fail("INVALID_REQUEST", "workspace pull requires --asset <assetId>.");
+    return fetchDaemon("/workspace/pull", {
+      method: "POST",
+      body: JSON.stringify({ target, assetId }),
+    });
+  }
+  return fail("UNKNOWN_COMMAND", `Unknown workspace command: ${subcommand}`);
+}
+
 function help(group = "overview"): Envelope {
   const groups: Record<string, string[]> = {
     overview: [
       "pcbridge help core",
+      "pcbridge help workspace",
       "pcbridge help frontend",
       "pcbridge help entity",
       "pcbridge help asset",
@@ -1245,6 +1330,13 @@ function help(group = "overview"): Envelope {
       "pcbridge daemon status",
       "pcbridge targets",
       "pcbridge version",
+    ],
+    workspace: [
+      "pcbridge workspace status --target scene:<sceneId>",
+      "pcbridge workspace path --target scene:<sceneId>",
+      "pcbridge workspace sync --target scene:<sceneId>",
+      "pcbridge workspace pull --target scene:<sceneId> --asset <assetId>",
+      "The directory where `pcbridge daemon start` runs is the workspace root.",
     ],
     frontend: [
       "pcbridge frontend install [latest|playcanvas-editor-v<version>-r<revision>] [--no-activate]",
@@ -1380,6 +1472,8 @@ async function main(): Promise<void> {
       print(await handleFrontend(args));
     } else if (command === "targets") {
       print(await fetchDaemon("/targets"));
+    } else if (command === "workspace") {
+      print(await handleWorkspace(args));
     } else if (command === "eval") {
       const commandArgs = await readJsonFlag(args, "args-json");
       print(

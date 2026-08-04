@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const VERSION = "0.3.0";
+export const VERSION = "0.4.0";
 export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 17329;
 export const DEFAULT_FRONTEND_PORT = 3487;

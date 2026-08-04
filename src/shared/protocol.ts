@@ -33,8 +33,11 @@ export type TargetInfo = {
   url: string;
   title?: string;
   projectId?: string;
+  projectName?: string;
   sceneId?: string;
+  sceneName?: string;
   branchId?: string;
+  branchName?: string;
   extensionVersion?: string;
   hasEditor?: boolean;
   hasPc?: boolean;

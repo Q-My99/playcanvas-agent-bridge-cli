@@ -14,6 +14,7 @@ import {
   type FrontendServer,
 } from "../frontend/server.js";
 import { TargetRegistry } from "./target-registry.js";
+import { WorkspaceManager } from "../workspace/manager.js";
 import {
   fail,
   normalizeError,
@@ -33,6 +34,7 @@ type DaemonOptions = {
   log?: (message: string) => void;
   frontendPort?: number;
   frontendRootDir?: string;
+  workspaceRoot?: string;
 };
 
 type PendingRequest = {
@@ -54,6 +56,7 @@ export type DaemonServer = {
   port: number;
   registry: TargetRegistry;
   frontend: FrontendServer;
+  workspace: WorkspaceManager;
   close: () => Promise<void>;
   listen: () => Promise<void>;
 };
@@ -107,7 +110,6 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
     host,
     port: options.frontendPort ?? DEFAULT_FRONTEND_PORT,
     rootDir: options.frontendRootDir || CONFIG_DIR,
-    log,
   });
 
   function requireToken(req: http.IncomingMessage): boolean {
@@ -170,6 +172,16 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
     });
   }
 
+  const workspace = new WorkspaceManager({
+    rootDir: options.workspaceRoot || process.cwd(),
+    requestTarget: (target, method, params = {}, timeoutMs = 15000) => sendToTarget({
+      target,
+      method,
+      params,
+      timeoutMs,
+    }),
+  });
+
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url || "/", `http://${req.headers.host || `${host}:${port}`}`);
@@ -188,6 +200,7 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
             host,
             port: actualPort,
             targetCount: registry.list().filter((target) => target.connected).length,
+            workspaceRoot: workspace.rootDir,
             frontend: frontendStatus as unknown as JsonValue,
           }),
         );
@@ -209,6 +222,87 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
           return;
         }
         writeJson(res, 200, ok(registry.list() as unknown as JsonValue));
+        return;
+      }
+
+      if (url.pathname === "/status" && req.method === "GET") {
+        if (!requireToken(req)) {
+          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
+          return;
+        }
+        const tabId = Number(url.searchParams.get("tabId"));
+        const target = Number.isFinite(tabId) ? registry.getByTabId(tabId) : undefined;
+        writeJson(res, 200, ok({
+          daemon: {
+            version: VERSION,
+            host,
+            port: actualPort,
+            workspaceRoot: workspace.rootDir,
+            targetCount: registry.list().filter((item) => item.connected).length,
+          },
+          target: target || null,
+          workspace: workspace.statusForTarget(target),
+          frontend: await frontend.status() as unknown as JsonValue,
+        }));
+        return;
+      }
+
+      if (url.pathname === "/workspace/status" && req.method === "GET") {
+        if (!requireToken(req)) {
+          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
+          return;
+        }
+        const resolved = registry.resolve(url.searchParams.get("target") || "current");
+        if (!resolved.ok) {
+          writeJson(res, 400, fail(resolved.code, resolved.message));
+          return;
+        }
+        writeJson(res, 200, ok(workspace.statusForTarget(resolved.target.info)));
+        return;
+      }
+
+      if (url.pathname === "/workspace/sync" && req.method === "POST") {
+        if (!requireToken(req)) {
+          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
+          return;
+        }
+        const body = await readBody(req);
+        const data = isJsonObject(body) ? body : {};
+        const selector = typeof data.target === "string" ? data.target : "current";
+        const resolved = registry.resolve(selector);
+        if (!resolved.ok) {
+          writeJson(res, 400, fail(resolved.code, resolved.message));
+          return;
+        }
+        try {
+          writeJson(res, 200, ok(await workspace.syncTarget(resolved.target.info)));
+        } catch (error) {
+          writeJson(res, 400, fail("WORKSPACE_SYNC_FAILED", String(error)));
+        }
+        return;
+      }
+
+      if (url.pathname === "/workspace/pull" && req.method === "POST") {
+        if (!requireToken(req)) {
+          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
+          return;
+        }
+        const body = await readBody(req);
+        if (!isJsonObject(body) || typeof body.assetId !== "string") {
+          writeJson(res, 400, fail("INVALID_REQUEST", "workspace pull requires assetId."));
+          return;
+        }
+        const selector = typeof body.target === "string" ? body.target : "current";
+        const resolved = registry.resolve(selector);
+        if (!resolved.ok) {
+          writeJson(res, 400, fail(resolved.code, resolved.message));
+          return;
+        }
+        try {
+          writeJson(res, 200, ok(await workspace.pullAsset(resolved.target.info, body.assetId)));
+        } catch (error) {
+          writeJson(res, 400, fail("WORKSPACE_PULL_FAILED", String(error)));
+        }
         return;
       }
 
@@ -248,16 +342,40 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
     });
   });
 
+  const liveness = new WeakMap<WebSocket, boolean>();
+  const pingTimer = setInterval(() => {
+    for (const client of wss.clients) {
+      if (liveness.get(client) === false) {
+        client.terminate();
+        continue;
+      }
+      liveness.set(client, false);
+      client.ping();
+    }
+  }, 15000);
+  pingTimer.unref();
+
   wss.on("connection", (ws: WebSocket) => {
-    log("extension connected");
+    liveness.set(ws, true);
+    ws.on("pong", () => liveness.set(ws, true));
 
     ws.on("message", (raw) => {
       try {
         const message = JSON.parse(raw.toString()) as IncomingWsMessage;
 
         if (message.type === "target:update" && message.target?.clientId) {
-          const info = registry.upsert(message.target, ws);
-          log(`target ${info.id} kind=${info.kind || "unknown"} ready=${info.ready} url=${info.url}`);
+          const result = registry.upsert(message.target, ws);
+          if (result.connected) {
+            log(
+              `connected ${result.info.id} project=${result.info.projectId || "unknown"} ` +
+              `scene=${result.info.sceneId || "unknown"}`,
+            );
+          }
+          if (result.connected || result.changed) {
+            void workspace.handleTarget(result.info).catch((error) => {
+              log(`workspace initialization failed for ${result.info.id}: ${String(error)}`);
+            });
+          }
           return;
         }
 
@@ -294,8 +412,25 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
     });
 
     ws.on("close", () => {
-      registry.markDisconnected(ws);
-      log("extension disconnected");
+      for (const info of registry.markDisconnected(ws)) {
+        const replacement = registry.list().find((candidate) =>
+          candidate.connected &&
+          candidate.ready &&
+          candidate.kind === "editor" &&
+          candidate.projectId === info.projectId &&
+          candidate.branchId === info.branchId,
+        );
+        if (replacement) {
+          void workspace.handleTarget(replacement).catch((error) => {
+            log(`workspace failover failed for ${replacement.id}: ${String(error)}`);
+          });
+        }
+        else workspace.markDisconnected(info);
+        log(
+          `disconnected ${info.id} project=${info.projectId || "unknown"} ` +
+          `scene=${info.sceneId || "unknown"}`,
+        );
+      }
     });
   });
 
@@ -306,6 +441,7 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
     },
     registry,
     frontend,
+    workspace,
     listen: async () => {
       await new Promise<void>((resolveListen, reject) => {
         server.once("error", reject);
@@ -323,6 +459,8 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
       }
     },
     close: async () => {
+      clearInterval(pingTimer);
+      await workspace.close();
       await frontend.close();
       await new Promise<void>((resolveClose) => {
         wss.close();

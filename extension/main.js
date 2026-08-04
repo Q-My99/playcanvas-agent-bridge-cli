@@ -245,14 +245,21 @@
       hasRuntimeApp: Boolean(app),
       canvasCount,
       projectId: config.project && config.project.id ? String(config.project.id) : undefined,
+      projectName: config.project && config.project.name ? String(config.project.name) : undefined,
       sceneId:
         (config.scene && config.scene.id ? String(config.scene.id) : undefined) ||
         getSceneIdFromUrl(),
+      sceneName: config.scene && config.scene.name ? String(config.scene.name) : undefined,
       branchId:
         (config.self && config.self.branch && config.self.branch.id
           ? String(config.self.branch.id)
           : undefined) ||
-        (config.branch && config.branch.id ? String(config.branch.id) : undefined)
+        (config.branch && config.branch.id ? String(config.branch.id) : undefined),
+      branchName:
+        (config.self && config.self.branch && config.self.branch.name
+          ? String(config.self.branch.name)
+          : undefined) ||
+        (config.branch && config.branch.name ? String(config.branch.name) : undefined)
     };
   }
 
@@ -326,6 +333,122 @@
       bytes[index] = binary.charCodeAt(index);
     }
     return bytes;
+  }
+
+  function base64FromBytes(bytes) {
+    const chunkSize = 0x8000;
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+    }
+    return btoa(binary);
+  }
+
+  function requireEditorAsset(assetId) {
+    if (!window.editor || !window.editor.api || !window.editor.api.globals) {
+      throw new Error("Workspace operations require a ready PlayCanvas Editor target.");
+    }
+    const asset = window.editor.api.globals.assets.get(Number(assetId));
+    if (!asset) throw new Error("Asset not found: " + assetId);
+    return asset;
+  }
+
+  async function fetchAssetFile(asset) {
+    const filename = asset.get("file.filename") || asset.get("name");
+    if (!filename) throw new Error("Asset has no downloadable file: " + asset.get("id"));
+    const branchId =
+      (window.config && window.config.self && window.config.self.branch && window.config.self.branch.id) ||
+      (window.config && window.config.branch && window.config.branch.id);
+    const query = branchId ? "?branchId=" + encodeURIComponent(String(branchId)) : "";
+    const headers = {};
+    const accessToken = window.editor.api.globals.accessToken;
+    if (accessToken) headers.Authorization = "Bearer " + accessToken;
+    const response = await fetch(
+      "/api/assets/" + encodeURIComponent(String(asset.get("id"))) +
+        "/file/" + encodeURIComponent(String(filename)) + query,
+      { headers }
+    );
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(body || "Failed to download asset " + asset.get("id") + ".");
+    }
+    return { response, filename };
+  }
+
+  function workspaceSnapshot() {
+    if (!window.editor || !window.editor.api || !window.editor.api.globals) {
+      throw new Error("Workspace operations require a ready PlayCanvas Editor target.");
+    }
+    return {
+      assets: window.editor.api.globals.assets.list().map(readAsset)
+    };
+  }
+
+  async function readAssetText(params) {
+    const asset = requireEditorAsset(params.assetId);
+    if (asset.get("type") !== "script") {
+      throw new Error("Asset is not a script: " + params.assetId);
+    }
+    const { response, filename } = await fetchAssetFile(asset);
+    return {
+      assetId: String(asset.get("id")),
+      filename,
+      text: await response.text()
+    };
+  }
+
+  async function readAssetFile(params) {
+    const asset = requireEditorAsset(params.assetId);
+    const { response, filename } = await fetchAssetFile(asset);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return {
+      assetId: String(asset.get("id")),
+      filename,
+      mime: response.headers.get("content-type") || "application/octet-stream",
+      size: bytes.length,
+      base64: base64FromBytes(bytes)
+    };
+  }
+
+  async function writeScriptText(params) {
+    const asset = requireEditorAsset(params.assetId);
+    if (asset.get("type") !== "script") {
+      throw new Error("Asset is not a script: " + params.assetId);
+    }
+    const filename = asset.get("file.filename") || asset.get("name");
+    const form = new FormData();
+    form.append("filename", filename);
+    form.append("file", new Blob([String(params.text || "")], { type: "text/javascript" }), filename);
+    const branchId =
+      (window.config && window.config.self && window.config.self.branch && window.config.self.branch.id) ||
+      (window.config && window.config.branch && window.config.branch.id);
+    if (branchId) form.append("branchId", String(branchId));
+    const headers = {};
+    const accessToken = window.editor.api.globals.accessToken;
+    if (accessToken) headers.Authorization = "Bearer " + accessToken;
+    const response = await fetch("/api/assets/" + encodeURIComponent(String(asset.get("id"))), {
+      method: "PUT",
+      headers,
+      body: form
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body.error) {
+      throw new Error(body.error || "Failed to update script asset.");
+    }
+
+    const parseResult = await new Promise((resolve, reject) => {
+      window.editor.call("scripts:parse", asset.observer, (error, data) => {
+        if (error) reject(new Error(String(error)));
+        else resolve(data || {});
+      });
+    });
+    return {
+      assetId: String(asset.get("id")),
+      filename,
+      parsed: true,
+      scripts: parseResult.scripts || {},
+      response: body
+    };
   }
 
   function withTimeout(promise, timeoutMs) {
@@ -629,6 +752,10 @@
     if (method === "bridge:clearLogs") return clearLogs();
     if (method === "bridge:uploadAsset") return uploadAsset(params || {});
     if (method === "bridge:focusViewport") return focusViewport(params || {});
+    if (method === "bridge:workspaceSnapshot") return workspaceSnapshot();
+    if (method === "bridge:readAssetText") return readAssetText(params || {});
+    if (method === "bridge:readAssetFile") return readAssetFile(params || {});
+    if (method === "bridge:writeScriptText") return writeScriptText(params || {});
     throw new Error(`Unknown bridge method: ${method}`);
   }
 

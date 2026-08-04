@@ -85,7 +85,7 @@ function fixtureFetch(manifest, archive) {
   };
 }
 
-async function runPopup(initialUrl, frontendData) {
+async function runPopup(initialUrl, statusData) {
   const elements = new Map();
   const updatedUrls = [];
   const document = {
@@ -93,9 +93,15 @@ async function runPopup(initialUrl, frontendData) {
       if (!elements.has(id)) {
         const handlers = {};
         elements.set(id, {
+          classList: {
+            add() {},
+            toggle() {},
+          },
+          dataset: {},
           disabled: false,
           handlers,
           textContent: "",
+          title: "",
           addEventListener(name, handler) {
             handlers[name] = handler;
           },
@@ -123,8 +129,8 @@ async function runPopup(initialUrl, frontendData) {
         token: "test-token",
       }));
     }
-    if (!frontendData) throw new Error("daemon offline");
-    return new Response(JSON.stringify({ ok: true, data: frontendData }));
+    if (!statusData) throw new Error("daemon offline");
+    return new Response(JSON.stringify({ ok: true, data: statusData }));
   };
   const window = { close: () => undefined };
   const source = await readFile(join(process.cwd(), "extension/popup.js"), "utf8");
@@ -134,6 +140,7 @@ async function runPopup(initialUrl, frontendData) {
     console,
     document,
     fetch: fetchMock,
+    navigator: { clipboard: { writeText: async () => undefined } },
     Response,
     window,
   });
@@ -251,9 +258,37 @@ test("extension popup preserves Editor URLs and always allows returning to offic
       error: null,
     },
   };
+  const statusData = {
+    daemon: { version: "0.4.0", targetCount: 1 },
+    target: {
+      connected: true,
+      ready: true,
+      kind: "editor",
+      projectId: "1552681",
+      projectName: "pcbridge-test",
+      sceneId: "2533764",
+      sceneName: "Main",
+      branchId: "99",
+      branchName: "main",
+    },
+    workspace: {
+      available: true,
+      state: "synced",
+      projectDirectory: "/workspace/1552681-pcbridge-test",
+      lastSyncedAt: new Date().toISOString(),
+      counts: {
+        scripts: 3,
+        scriptsSynced: 3,
+        assets: 20,
+        lazyAssets: 4,
+        conflicts: 0,
+      },
+    },
+    frontend: frontendData,
+  };
   const official = await runPopup(
     "https://playcanvas.com/editor/scene/2558608?foo=bar#viewport",
-    frontendData,
+    statusData,
   );
   assert.equal(official.elements.get("use-custom").disabled, false);
   assert.equal(official.elements.get("use-official").disabled, true);
@@ -273,6 +308,11 @@ test("extension popup preserves Editor URLs and always allows returning to offic
   const restoredUrl = new URL(custom.updatedUrls[0]);
   assert.equal(restoredUrl.searchParams.get("foo"), "bar");
   assert.equal(restoredUrl.searchParams.has("use_local_frontend"), false);
+
+  assert.equal(official.elements.get("daemon-status").textContent, "Connected");
+  assert.equal(official.elements.get("workspace-status").textContent, "Synced");
+  assert.equal(official.elements.get("project").textContent, "pcbridge-test · 1552681");
+  assert.equal(official.elements.get("metric-scripts").textContent, "3/3");
 });
 
 test("frontend install rejects a checksum mismatch", async (t) => {

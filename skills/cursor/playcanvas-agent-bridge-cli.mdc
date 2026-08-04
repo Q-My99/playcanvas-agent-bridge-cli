@@ -16,10 +16,15 @@ pcbridge targets
 
 If needed, ask the user to run `pcbridge daemon start`. If no target appears, ask them to run `pcbridge install-extension`, load the printed extension directory in `chrome://extensions`, and refresh PlayCanvas Editor or Launch.
 
+The daemon start directory is the workspace root. After selecting an explicit target, run
+`pcbridge workspace status --target scene:<sceneId>` and do not write while it reports a conflict
+or sync error. Project files live under `<projectId>-<projectName>/{assets,tmp}`. Existing scripts
+sync automatically; other files are lazy until `pcbridge workspace pull --asset <id>`.
+
 For the optional published Editor build, use `pcbridge frontend install latest`, verify it with
 `pcbridge frontend status`, and switch custom/official mode from the extension popup.
 
-Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help frontend|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
+Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help workspace|frontend|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
 
 Use structured commands for small, known Editor operations:
 
@@ -54,6 +59,6 @@ Use `pcbridge eval` for exploratory API inspection, custom Editor/Engine workflo
 
 For Launch runtime debugging, target `launch:<sceneId>` or `tab:<id>` and use `pcbridge eval`, `pcbridge viewport capture`, and `pcbridge logs get`. Editor-only structured entity/asset/script commands require an Editor target.
 
-For large tasks, choose an explicit target from `pcbridge targets`, keep generated files and captures in a local task folder, upload batches with `asset upload-many`, update scripts with `script upsert`, and capture the viewport after smoke tests. If repeated manual glue appears, improve the CLI or this rule.
+For large tasks, choose an explicit target from `pcbridge targets`, keep generated files and captures under the project `tmp/` directory, upload batches with `asset upload-many`, edit tracked scripts under `assets/`, and capture the viewport after smoke tests. File arguments must remain inside the workspace; never use `--allow-external-path` without explicit user approval. If repeated manual glue appears, improve the CLI or this rule.
 
 Do not pre-place runtime-generated content just to prove a game exists. Keep procedural maps, pickups, enemies, and VFX in the runtime script, with only a small durable Editor root and helper entities when needed. If Editor entities must be created, use structured commands and small `entity create-many` batches with read-back verification; large eval scripts that create many entities in a tight loop can briefly show objects and then lose them from the Editor data model.
