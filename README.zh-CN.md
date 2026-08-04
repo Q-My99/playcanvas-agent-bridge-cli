@@ -70,6 +70,12 @@ daemon 会在 `http://localhost:3487` 提供当前激活的构建。打开
 点击 **Use official frontend** 会删除 `use_local_frontend` 参数，并用官方前端重新加载同一个
 Editor URL。
 
+插件会按 PlayCanvas project ID 记住最后一次在 popup 中选择的模式。之后进入
+`/editor/project/<projectId>` 场景选择页或 `/editor/scene/<sceneId>` 场景编辑页时，会自动
+添加或删除 `use_local_frontend`，并保留 URL 中其他查询参数和 hash。该偏好只会在用户再次
+点击 **Use custom frontend** 或 **Use official frontend** 时改变；popup 的 **Project
+preference** 会显示当前项目的记忆值。
+
 需要时可以显式管理本地版本：
 
 ```bash

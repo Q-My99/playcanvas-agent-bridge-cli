@@ -31,6 +31,8 @@ If no target appears, tell the user to run `pcbridge install-extension`, load th
 For the optional custom Editor frontend, use `pcbridge frontend install latest`, confirm
 `pcbridge frontend status`, then use the extension popup to switch between custom and official
 frontend modes. Load focused help with `pcbridge help frontend`.
+The popup remembers that choice per PlayCanvas project and applies it automatically on later
+project-picker and scene Editor navigations; change the remembered mode only through the popup.
 
 ## Workflow
 

@@ -13,12 +13,12 @@ Status as of 2026-08-03:
 - Git repository initialized and pushed to GitHub:
   - `https://github.com/Q-My99/playcanvas-agent-bridge-cli`
   - default branch: `main`
-- Package version is currently `0.4.0`.
+- Package version is currently `0.4.1`.
 - The npm package has been published:
   - package: `playcanvas-agent-bridge-cli`
   - npm latest: `0.2.2`
   - registry: `https://registry.npmjs.org/`
-  - local `0.4.0` workspace/sync and custom Editor frontend changes have not been published to npm yet.
+  - local `0.4.1` workspace/sync and custom Editor frontend changes have not been published to npm yet.
 - npm releases are published by `.github/workflows/npm-publish.yml` using npm Trusted Publishing (OIDC); no long-lived npm token is stored in GitHub.
 - A publish runs only for a stable tag matching `v<major>.<minor>.<patch>` whose commit is on `main`, and the tag must match the synchronized versions in `package.json`, `src/config.ts`, and `extension/manifest.json`.
 - Temporary test files should be written under project-local `./tmp/`, not `/tmp`. The `tmp/` directory is ignored by git.
@@ -274,7 +274,7 @@ Verified against a real open PlayCanvas Editor scene:
 
 Known unfinished work:
 
-- Publish local version `0.4.0` to npm only after the user explicitly requests a release.
+- Publish local version `0.4.1` to npm only after the user explicitly requests a release.
 - Create a GitHub tag/release for `v0.2.2` if desired.
 - Add `pcbridge daemon install-service` or another durable service installation flow if needed.
 - Consider structured material texture assignment helpers beyond generic `material patch`:

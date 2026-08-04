@@ -19,6 +19,8 @@ both ways; other asset files are lazy until explicitly pulled.
 
 For the optional published Editor build, use `pcbridge frontend install latest`, verify it with
 `pcbridge frontend status`, and switch custom/official mode from the extension popup.
+The popup remembers that choice per project and reapplies it on later project-picker and scene
+Editor navigations; change the remembered choice only through the popup.
 
 Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help workspace|frontend|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
 
