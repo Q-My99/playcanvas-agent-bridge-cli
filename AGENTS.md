@@ -8,17 +8,17 @@ The important product decision: **do not make MCP the core interface**. The core
 
 ## Current Project Progress
 
-Status as of 2026-07-31:
+Status as of 2026-08-03:
 
 - Git repository initialized and pushed to GitHub:
   - `https://github.com/Q-My99/playcanvas-agent-bridge-cli`
   - default branch: `main`
-- Package version is currently `0.3.0`.
+- Package version is currently `0.4.0`.
 - The npm package has been published:
   - package: `playcanvas-agent-bridge-cli`
   - npm latest: `0.2.2`
   - registry: `https://registry.npmjs.org/`
-  - local `0.3.0` custom Editor frontend distribution changes have not been published to npm yet.
+  - local `0.4.0` workspace/sync and custom Editor frontend changes have not been published to npm yet.
 - npm releases are published by `.github/workflows/npm-publish.yml` using npm Trusted Publishing (OIDC); no long-lived npm token is stored in GitHub.
 - A publish runs only for a stable tag matching `v<major>.<minor>.<patch>` whose commit is on `main`, and the tag must match the synchronized versions in `package.json`, `src/config.ts`, and `extension/manifest.json`.
 - Temporary test files should be written under project-local `./tmp/`, not `/tmp`. The `tmp/` directory is ignored by git.
@@ -42,6 +42,17 @@ Completed implementation:
   - extension manifest version is synced to package version `0.3.0`.
   - matches both PlayCanvas Editor pages and PlayCanvas Launch pages.
   - captures page console logs, window errors, and unhandled promise rejections in a bounded in-page ring buffer.
+  - probes daemon health before reconnecting WebSockets, uses backoff while offline, and sends target updates only when metadata changes.
+  - popup separates daemon, current target, workspace sync, project/scene/branch, and custom frontend status with semantic red/yellow/green indicators.
+- Workspace mode:
+  - the `pcbridge daemon start` working directory is the workspace root.
+  - ready Editor targets create `<projectId>-<projectName>/{assets,tmp,.pcbridge}` automatically.
+  - `pcbridge.project.json` stores readable project, branch, and scene metadata.
+  - PlayCanvas folders and all script assets are mirrored locally; existing script content synchronizes in both directions.
+  - images, models, audio, and other file assets are indexed and pulled lazily with `workspace pull`.
+  - simultaneous local and remote script changes are preserved under `tmp/conflicts` instead of overwritten.
+  - one local project workspace binds to one active PlayCanvas branch; mismatched branches report a conflict.
+  - CLI file inputs and viewport outputs are guarded to the selected project directory unless `--allow-external-path` is explicit.
 - Core CLI commands:
   - `pcbridge doctor`
   - `pcbridge daemon start`
@@ -50,6 +61,7 @@ Completed implementation:
   - `pcbridge eval --code/--file/--stdin`
   - `pcbridge install-extension`
   - `pcbridge install-skill --agent codex|claude|cursor|windsurf|all`
+  - `pcbridge workspace status|path|sync|pull`
 - Structured entity commands:
   - `entity list`
   - `entity get`
@@ -262,7 +274,7 @@ Verified against a real open PlayCanvas Editor scene:
 
 Known unfinished work:
 
-- Publish local version `0.3.0` to npm after frontend integration verification.
+- Publish local version `0.4.0` to npm only after the user explicitly requests a release.
 - Create a GitHub tag/release for `v0.2.2` if desired.
 - Add `pcbridge daemon install-service` or another durable service installation flow if needed.
 - Consider structured material texture assignment helpers beyond generic `material patch`:

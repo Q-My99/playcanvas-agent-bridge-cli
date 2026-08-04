@@ -17,6 +17,10 @@
   let reconnectTimer = null;
   let heartbeatTimer = null;
   let stopped = false;
+  let connecting = false;
+  let reconnectAttempt = 0;
+  let connectionState = "unknown";
+  let lastTargetSignature = null;
   let config = DEFAULT_CONFIG;
   let tabInfo = {};
   let extensionVersion = null;
@@ -200,13 +204,17 @@
     }
   }
 
-  async function sendTargetUpdate() {
+  async function sendTargetUpdate(force = false) {
     if (stopped || !ws || ws.readyState !== WebSocket.OPEN) return;
     try {
+      const target = await describeTarget();
+      const signature = JSON.stringify(target);
+      if (!force && signature === lastTargetSignature) return;
+      lastTargetSignature = signature;
       ws.send(
         JSON.stringify({
           type: "target:update",
-          target: await describeTarget()
+          target
         })
       );
     } catch (error) {
@@ -214,18 +222,50 @@
     }
   }
 
+  function setConnectionState(next) {
+    if (connectionState === next) return;
+    connectionState = next;
+    if (next === "connected") {
+      console.info("[pcbridge] connected to local daemon");
+    } else if (next === "disconnected") {
+      console.info("[pcbridge] disconnected from local daemon; waiting to reconnect");
+    }
+  }
+
+  async function probeDaemon() {
+    const response = await requestRuntime({ type: "pcbridge:probeDaemon" });
+    return Boolean(response && response.reachable);
+  }
+
   function scheduleReconnect() {
     if (stopped) return;
     if (reconnectTimer) return;
+    const delays = [1000, 2000, 5000, 10000, 30000];
+    const delay = delays[Math.min(reconnectAttempt, delays.length - 1)];
+    reconnectAttempt += 1;
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
-      connect();
-    }, 1000);
+      void connect();
+    }, delay);
   }
 
-  function connect() {
+  async function connect() {
     if (stopped) return;
+    if (connecting) return;
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+
+    connecting = true;
+    const reachable = await probeDaemon();
+    if (stopped) {
+      connecting = false;
+      return;
+    }
+    if (!reachable) {
+      connecting = false;
+      setConnectionState("disconnected");
+      scheduleReconnect();
       return;
     }
 
@@ -236,18 +276,22 @@
     try {
       ws = new WebSocket(url);
     } catch {
+      connecting = false;
       scheduleReconnect();
       return;
     }
+    const socket = ws;
+    connecting = false;
 
-    ws.addEventListener("open", () => {
-      console.info("[pcbridge] connected to local daemon");
-      sendTargetUpdate().catch((error) => {
+    socket.addEventListener("open", () => {
+      reconnectAttempt = 0;
+      setConnectionState("connected");
+      sendTargetUpdate(true).catch((error) => {
         if (isExtensionContextInvalidated(error)) stopBridge();
       });
     });
 
-    ws.addEventListener("message", async (event) => {
+    socket.addEventListener("message", async (event) => {
       let message;
       try {
         message = JSON.parse(event.data);
@@ -288,13 +332,16 @@
       }
     });
 
-    ws.addEventListener("close", () => {
+    socket.addEventListener("close", () => {
+      if (ws === socket) ws = null;
+      lastTargetSignature = null;
+      setConnectionState("disconnected");
       scheduleReconnect();
     });
 
-    ws.addEventListener("error", () => {
+    socket.addEventListener("error", () => {
       try {
-        ws.close();
+        socket.close();
       } catch {
         scheduleReconnect();
       }
@@ -308,7 +355,7 @@
     if (stopped) return;
     tabInfo = await getTabInfo();
     if (stopped) return;
-    connect();
+    void connect();
     heartbeatTimer = setInterval(() => {
       sendTargetUpdate().catch((error) => {
         if (isExtensionContextInvalidated(error)) stopBridge();

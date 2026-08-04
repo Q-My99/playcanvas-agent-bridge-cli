@@ -84,9 +84,38 @@ pcbridge frontend remove playcanvas-editor-v2.28.1-r1
 
 ## 启动桥接
 
+请先进入希望作为本地工作区根目录的位置，再启动 daemon：
+
 ```bash
+cd /path/to/my-playcanvas-workspace
 pcbridge daemon start
 ```
+
+连接 ready 的 Editor 后，pcbridge 会自动创建 `<projectId>-<projectName>/` 工程目录：
+
+```text
+1552681-pc-biedge-test/
+├── pcbridge.project.json
+├── assets/       # 与 PlayCanvas 文件夹结构对应，脚本自动双向同步
+├── tmp/          # 临时脚本、清单、截图和冲突副本
+└── .pcbridge/    # 内部资源索引，请勿手动修改
+```
+
+查看或手动刷新工作区：
+
+```bash
+pcbridge workspace status --target scene:<sceneId>
+pcbridge workspace path --target scene:<sceneId>
+pcbridge workspace sync --target scene:<sceneId>
+pcbridge workspace pull --target scene:<sceneId> --asset <assetId>
+```
+
+脚本内容保持双向同步。资源的新建、移动、重命名和删除仍应使用 pcbridge 结构化命令；
+图片、模型和音频等文件只建立索引，需要时用 `workspace pull` 懒下载。检测到本地与远端
+同时修改时不会覆盖任一版本，冲突副本写入 `tmp/conflicts/`。
+
+CLI 的脚本、JSON、上传文件和截图路径默认必须位于对应项目工作区内。只有明确需要使用
+外部文件时才使用 `--allow-external-path`。
 
 另开一个终端检查：
 
@@ -103,6 +132,7 @@ CLI 提供分层 help，方便 agent 只加载当前需要的命令面：
 
 ```bash
 pcbridge help
+pcbridge help workspace
 pcbridge help frontend
 pcbridge help entity
 pcbridge help asset
@@ -242,6 +272,10 @@ pcbridge install-skill --agent all
 - Claude: `~/.claude/skills/playcanvas-agent-bridge-cli`
 - Cursor: `~/.cursor/rules/playcanvas-agent-bridge-cli.mdc`
 - Windsurf: `~/.windsurf/rules/playcanvas-agent-bridge-cli.md`
+
+插件 popup 会展示 daemon、当前 tab、项目、scene、branch、工作区路径、同步统计、冲突数
+以及自定义 Editor frontend 状态。红色表示断联或冲突，黄色表示初始化、同步中或本地待处理
+状态，绿色表示 ready / synced。
 
 ## 安全模型
 

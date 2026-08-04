@@ -23,6 +23,9 @@ If the daemon is offline, tell the user to run this in a separate terminal:
 pcbridge daemon start
 ```
 
+The directory where `pcbridge daemon start` runs is the workspace root. Choose it intentionally;
+each connected Editor project is mirrored into `<projectId>-<projectName>/` below that directory.
+
 If no target appears, tell the user to run `pcbridge install-extension`, load the printed directory in `chrome://extensions`, then refresh the PlayCanvas Editor or Launch tab.
 
 For the optional custom Editor frontend, use `pcbridge frontend install latest`, confirm
@@ -31,13 +34,40 @@ frontend modes. Load focused help with `pcbridge help frontend`.
 
 ## Workflow
 
-1. Run `pcbridge targets` and choose an explicit target when possible.
-2. Use layered help to load only the command group you need: `pcbridge help`, then `pcbridge help frontend|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
-3. Use structured commands for small, known operations that map cleanly to one Editor action.
-4. Use `pcbridge eval` for exploratory API inspection, custom Editor/Engine workflows, Launch runtime debugging, and large multi-step scene edits where one script is clearer than many CLI calls.
-5. Return compact JSON from snippets. Never return raw `editor`, `Entity`, `Asset`, `entities.root`, or app objects.
-6. Use PlayCanvas history options for writes when available.
-7. Verify writes with a read-only command after mutation.
+1. Run `pcbridge targets` and choose an explicit `scene:<id>` or `tab:<id>` target.
+2. Run `pcbridge workspace status --target <target>`. Do not write while it reports a conflict or sync error.
+3. Use layered help to load only the command group you need: `pcbridge help`, then `pcbridge help workspace|frontend|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
+4. Keep temporary scripts, JSON manifests, uploads, and captures inside the selected project workspace.
+5. Use structured commands for small, known operations that map cleanly to one Editor action.
+6. Use `pcbridge eval` for exploratory API inspection, custom Editor/Engine workflows, Launch runtime debugging, and large multi-step scene edits where one script is clearer than many CLI calls.
+7. Return compact JSON from snippets. Never return raw `editor`, `Entity`, `Asset`, `entities.root`, or app objects.
+8. Use PlayCanvas history options for writes when available and verify writes with a read-only command.
+
+## Workspace
+
+```text
+<workspace root>/<projectId>-<projectName>/
+  pcbridge.project.json
+  assets/       # PlayCanvas folder tree; scripts synchronize automatically
+  tmp/          # task scripts, manifests, captures, and conflict copies
+  .pcbridge/    # internal index and sync state; do not edit
+```
+
+Use:
+
+```bash
+pcbridge workspace status --target scene:<sceneId>
+pcbridge workspace path --target scene:<sceneId>
+pcbridge workspace sync --target scene:<sceneId>
+pcbridge workspace pull --target scene:<sceneId> --asset <assetId>
+```
+
+Existing script contents synchronize in both directions. Create, move, rename, and delete assets
+through structured pcbridge commands; do not perform structural changes by moving or deleting
+mirrored local files. Non-script files are indexed but downloaded only with `workspace pull`.
+
+Local file arguments are restricted to the selected project workspace. Never use
+`--allow-external-path` unless the user explicitly asks to use a known external file.
 
 ## Safe Commands
 
@@ -127,7 +157,8 @@ pcbridge logs get --target launch:<sceneId> --level error
 
 ## Asset Organization
 
-Create task-scoped folders before uploading generated assets:
+Create task-scoped remote folders before uploading generated assets. Keep local generated files
+under the project `tmp/` directory until they are uploaded:
 
 ```text
 AI Agent Bridge/<task name>/Textures
@@ -142,12 +173,12 @@ Use stable names that describe the asset purpose. Avoid dumping generated files 
 For multi-asset or game-sized tasks:
 
 1. Choose an explicit target from `pcbridge targets`, preferably `scene:<sceneId>` or `tab:<id>`.
-2. Create a project-local task folder for generated scripts, manifests, captures, and temporary assets.
+2. Confirm `workspace status`, then create task files under `<project>/tmp/<task name>/`.
 3. Put PlayCanvas assets under `AI Agent Bridge/<task name>/{Textures,Materials,Scripts,Templates}`.
 4. Use `pcbridge asset upload-many --json ./upload-manifest.json` for batches. In the manifest, each item needs `file` and may include `key`, `name`, `filename`, `type`, `mime`, `folder`, `folderId`, and `preload`. Relative `file` paths resolve from the manifest file; `key` is returned for later argument mapping but is not sent to PlayCanvas.
 5. Use `pcbridge script upsert --filename <name>.js --file ./script.js --folder "AI Agent Bridge/<task name>/Scripts" --parse` for repeatable script creation or update.
 6. Use `pcbridge eval --file ./install.js --args-json ./args.json --timeout-ms 120000` for large scene installation scripts. The JSON object is available as `command.args`; increase `--timeout-ms` instead of splitting a coherent install script just to avoid the default 15s timeout.
-7. Verify with read-only commands, a small smoke-test eval, and `pcbridge viewport capture --out ./task/captures/preview.png`.
+7. Verify with read-only commands, a small smoke-test eval, and a capture under `<project>/tmp/captures/`.
 
 If repeated manual glue is needed across tasks, improve the CLI or this skill rather than continuing to hand-roll brittle shell/script sequences.
 

@@ -10,11 +10,17 @@ export type ResolveResult =
   | { ok: true; target: TargetConnection }
   | { ok: false; code: string; message: string; candidates?: TargetInfo[] };
 
+export type UpsertResult = {
+  info: TargetInfo;
+  connected: boolean;
+  changed: boolean;
+};
+
 export class TargetRegistry {
   #targets = new Map<string, TargetConnection>();
   #clientToTarget = new Map<string, string>();
 
-  upsert(info: Partial<TargetInfo> & { clientId: string }, ws: WebSocket): TargetInfo {
+  upsert(info: Partial<TargetInfo> & { clientId: string }, ws: WebSocket): UpsertResult {
     const targetId = info.tabId !== undefined ? `tab:${info.tabId}` : `client:${info.clientId}`;
     const now = new Date().toISOString();
     const existing = this.#targets.get(targetId)?.info;
@@ -27,8 +33,11 @@ export class TargetRegistry {
       url: info.url || existing?.url || "",
       title: info.title || existing?.title,
       projectId: info.projectId || existing?.projectId,
+      projectName: info.projectName || existing?.projectName,
       sceneId: info.sceneId || existing?.sceneId,
+      sceneName: info.sceneName || existing?.sceneName,
       branchId: info.branchId || existing?.branchId,
+      branchName: info.branchName || existing?.branchName,
       extensionVersion: info.extensionVersion || existing?.extensionVersion,
       hasEditor: info.hasEditor ?? existing?.hasEditor,
       hasPc: info.hasPc ?? existing?.hasPc,
@@ -41,18 +50,34 @@ export class TargetRegistry {
 
     this.#targets.set(targetId, { info: next, ws });
     this.#clientToTarget.set(info.clientId, targetId);
-    return next;
+    const comparable = (target: TargetInfo | undefined) => target ? {
+      ...target,
+      lastSeen: undefined,
+      connected: undefined,
+    } : null;
+    return {
+      info: next,
+      connected: !existing?.connected,
+      changed: JSON.stringify(comparable(existing)) !== JSON.stringify(comparable(next)),
+    };
   }
 
-  markDisconnected(ws: WebSocket): void {
+  markDisconnected(ws: WebSocket): TargetInfo[] {
+    const disconnected: TargetInfo[] = [];
     for (const [id, connection] of this.#targets.entries()) {
-      if (connection.ws === ws) {
+      if (connection.ws === ws && connection.info.connected) {
         connection.info.connected = false;
         connection.info.ready = false;
         connection.info.lastSeen = new Date().toISOString();
         this.#targets.set(id, connection);
+        disconnected.push(connection.info);
       }
     }
+    return disconnected;
+  }
+
+  getByTabId(tabId: number): TargetInfo | undefined {
+    return this.#targets.get(`tab:${tabId}`)?.info;
   }
 
   list(): TargetInfo[] {

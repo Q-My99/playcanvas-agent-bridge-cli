@@ -84,9 +84,39 @@ until another installed release is selected.
 
 ## Start the bridge
 
+Change into the directory that should become the local workspace root before starting the daemon:
+
 ```bash
+cd /path/to/my-playcanvas-workspace
 pcbridge daemon start
 ```
+
+When a ready Editor connects, pcbridge creates `<projectId>-<projectName>/` automatically:
+
+```text
+1552681-pcbridge-test/
+├── pcbridge.project.json
+├── assets/       # PlayCanvas folder mirror with bidirectional script sync
+├── tmp/          # task scripts, manifests, captures, and conflict copies
+└── .pcbridge/    # internal asset index; do not edit
+```
+
+Inspect or refresh the workspace with:
+
+```bash
+pcbridge workspace status --target scene:<sceneId>
+pcbridge workspace path --target scene:<sceneId>
+pcbridge workspace sync --target scene:<sceneId>
+pcbridge workspace pull --target scene:<sceneId> --asset <assetId>
+```
+
+Script contents synchronize in both directions. Create, move, rename, and delete assets through
+structured pcbridge commands. Images, models, audio, and other file assets are indexed and downloaded
+lazily with `workspace pull`. Concurrent local and remote script edits are preserved under
+`tmp/conflicts/` instead of being overwritten.
+
+Script, JSON, upload, and capture paths are restricted to the selected project workspace by default.
+Use `--allow-external-path` only for an intentional external file.
 
 In another terminal:
 
@@ -103,6 +133,7 @@ The CLI exposes layered help so agents can load only the command surface they ne
 
 ```bash
 pcbridge help
+pcbridge help workspace
 pcbridge help frontend
 pcbridge help entity
 pcbridge help asset
@@ -244,6 +275,10 @@ Installed locations:
 - Claude: `~/.claude/skills/playcanvas-agent-bridge-cli`
 - Cursor: `~/.cursor/rules/playcanvas-agent-bridge-cli.mdc`
 - Windsurf: `~/.windsurf/rules/playcanvas-agent-bridge-cli.md`
+
+The extension popup shows daemon and current-tab connectivity, project/scene/branch identity,
+workspace path and sync counts, conflicts, and custom Editor frontend state. Red means disconnected
+or conflicted, yellow means initializing/syncing/local attention, and green means ready/synced.
 
 ## Security model
 

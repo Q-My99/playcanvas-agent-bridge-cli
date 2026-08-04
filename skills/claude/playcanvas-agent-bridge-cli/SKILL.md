@@ -15,6 +15,11 @@ pcbridge targets
 
 If the daemon is offline, ask the user to run `pcbridge daemon start` in another terminal. If no PlayCanvas target appears, ask the user to run `pcbridge install-extension`, load the printed directory in `chrome://extensions`, and refresh the Editor or Launch tab.
 
+The directory where `pcbridge daemon start` runs is the workspace root. Each ready Editor project
+is mirrored into `<projectId>-<projectName>/` below it. After choosing an explicit target, run
+`pcbridge workspace status --target scene:<sceneId>` and do not write while it reports a conflict
+or sync error.
+
 Use `pcbridge frontend install latest` and `pcbridge frontend status` when the user wants the
 published custom Editor build. The extension popup switches between custom and official modes.
 
@@ -22,6 +27,7 @@ Use layered help to load only the command surface you need:
 
 ```bash
 pcbridge help
+pcbridge help workspace
 pcbridge help frontend
 pcbridge help entity
 pcbridge help asset
@@ -32,6 +38,22 @@ pcbridge help launch
 pcbridge help logs
 pcbridge help eval
 ```
+
+Workspace layout:
+
+```text
+<workspace root>/<projectId>-<projectName>/
+  pcbridge.project.json
+  assets/       # remote folder tree and synchronized scripts
+  tmp/          # task scripts, manifests, captures, and conflict copies
+  .pcbridge/    # internal state; do not edit
+```
+
+Existing script contents synchronize in both directions. Use structured commands for asset create,
+move, rename, and delete operations. Other asset files remain lazy until
+`pcbridge workspace pull --target scene:<sceneId> --asset <assetId>` is requested. Local file
+arguments must stay inside the selected project workspace. Do not use `--allow-external-path`
+unless the user explicitly asks to use a known external file.
 
 Use structured commands for small, known Editor operations:
 
@@ -74,6 +96,6 @@ Eval snippets run in an async function with `editor`, `pc`, `pcui`, `window`, `d
 
 For Launch runtime debugging, target `launch:<sceneId>` or `tab:<id>` and use `pcbridge eval`, `pcbridge viewport capture`, and `pcbridge logs get`. Editor-only structured entity/asset/script commands require an Editor target.
 
-For large PlayCanvas tasks, choose an explicit target from `pcbridge targets`, keep task files in a local folder, upload assets with an upload manifest, use `script upsert` for repeatable script updates, and capture the viewport after smoke tests. If the same manual glue repeats across tasks, improve the CLI or this skill instead of continuing the brittle sequence.
+For large PlayCanvas tasks, choose an explicit target from `pcbridge targets`, confirm `workspace status`, keep task files under the project `tmp/` directory, upload assets with an upload manifest, edit tracked scripts under `assets/`, and capture the viewport under `tmp/captures/` after smoke tests. If the same manual glue repeats across tasks, improve the CLI or this skill instead of continuing the brittle sequence.
 
 Do not pre-place runtime-generated content just to prove a game exists. Keep procedural maps, pickups, enemies, and VFX in the runtime script, with only a small durable Editor root and helper entities when needed. If Editor entities must be created, use structured commands and small `entity create-many` batches with read-back verification; large eval scripts that create many entities in a tight loop can briefly show objects and then lose them from the Editor data model.
