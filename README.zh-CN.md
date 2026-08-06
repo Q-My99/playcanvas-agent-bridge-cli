@@ -13,8 +13,8 @@ npm install -g playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-下文命令包含仓库版 `0.5.0` 的尚未发布改动。在该版本发布前，npm 的 `latest`（截至
-2026-08-04 为 `0.3.0`）不包含这里列出的全部命令；测试本轮新能力时请使用 GitHub 安装。
+下文命令跟随仓库版 `0.5.1`。npm 安装的是最新稳定版本；测试尚未发布的改动时请使用
+GitHub 安装。
 
 如果要测试尚未发布的改动，也可以直接从这个 GitHub 仓库安装：
 

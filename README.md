@@ -20,9 +20,8 @@ npm install -g github:Q-My99/playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-The commands documented below include repository version `0.5.0`. Until that version is published,
-the npm `latest` release (`0.3.0` as of 2026-08-04) does not contain every command described here;
-use the GitHub install when testing these unreleased changes.
+The commands documented below track repository version `0.5.1`. npm installs the latest stable
+release; use the GitHub install when testing changes that have not been released yet.
 
 One-shot with npx:
 

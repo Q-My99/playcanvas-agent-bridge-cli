@@ -462,8 +462,9 @@ export class BuilderManager {
           const originalFilename = asset.file?.filename;
           const local = preparedById.get(id);
           if (output.file && local?.path && local.filename) {
-            const key = `${prefix}/${buildName}/${id}/${safeSegment(local.filename, `asset-${id}`)}`;
-            output.file.url = publicObjectUrl(settings.publicBaseUrl, key);
+            const relativeUrl = `${buildName}/${id}/${safeSegment(local.filename, `asset-${id}`)}`;
+            const key = `${prefix}/${relativeUrl}`;
+            output.file.url = relativeUrl;
             uploads.set(key, {
               key,
               path: local.path,
@@ -481,8 +482,9 @@ export class BuilderManager {
               variant.url,
               variant.hash,
             );
-            const key = `${prefix}/${buildName}/${id}/${safeSegment(variant.filename, "variant.bin")}`;
-            variant.url = publicObjectUrl(settings.publicBaseUrl, key);
+            const relativeUrl = `${buildName}/${id}/${safeSegment(variant.filename, "variant.bin")}`;
+            const key = `${prefix}/${relativeUrl}`;
+            variant.url = relativeUrl;
             uploads.set(key, {
               key,
               path: cached.path,
@@ -528,8 +530,9 @@ export class BuilderManager {
         if (scriptText.trim()) {
           const scriptPath = join(buildRoot, "gamescript.js");
           await writeFile(scriptPath, scriptText);
-          const key = `${prefix}/${buildName}/gamescript.js`;
-          rootData.scriptUrl = publicObjectUrl(settings.publicBaseUrl, key);
+          const relativeUrl = `${buildName}/gamescript.js`;
+          const key = `${prefix}/${relativeUrl}`;
+          rootData.scriptUrl = relativeUrl;
           uploads.set(key, {
             key,
             path: scriptPath,
