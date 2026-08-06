@@ -168,6 +168,64 @@ async function loadConfig() {
   };
 }
 
+async function requestDaemon(message, sender) {
+  const path = String(message.path || "");
+  const method = String(message.method || "GET").toUpperCase();
+  const allowed =
+    (path === "/builder/jobs" && method === "POST") ||
+    (/^\/builder\/jobs\/[^/]+$/.test(path) && method === "GET");
+  if (!allowed) {
+    return {
+      ok: false,
+      error: { code: "UNSUPPORTED_DAEMON_REQUEST", message: "Unsupported pcbridge browser request." }
+    };
+  }
+
+  const config = await loadConfig();
+  if (!config.token) {
+    return {
+      ok: false,
+      error: { code: "DAEMON_CONFIG_UNAVAILABLE", message: "pcbridge daemon configuration is unavailable." }
+    };
+  }
+  const payload = message.body && typeof message.body === "object" ? { ...message.body } : {};
+  const tabId = sender.tab && sender.tab.id;
+  if (method === "POST" && !payload.target && Number.isInteger(tabId)) {
+    payload.target = "tab:" + tabId;
+  }
+  const host = config.host || "127.0.0.1";
+  const port = config.port || 17329;
+  try {
+    const response = await fetch(`http://${host}:${port}${path}`, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        "X-PCBridge-Token": config.token
+      },
+      body: method === "POST" ? JSON.stringify(payload) : undefined
+    });
+    const envelope = await response.json().catch(() => null);
+    if (!response.ok || !envelope || !envelope.ok) {
+      return {
+        ok: false,
+        error: (envelope && envelope.error) || {
+          code: "DAEMON_HTTP_ERROR",
+          message: `pcbridge daemon request failed with HTTP ${response.status}.`
+        }
+      };
+    }
+    return { ok: true, data: envelope.data };
+  } catch (error) {
+    return {
+      ok: false,
+      error: {
+        code: "DAEMON_UNREACHABLE",
+        message: String((error && error.message) || error)
+      }
+    };
+  }
+}
+
 async function focusSenderTab(sender) {
   const tabId = sender.tab && sender.tab.id;
   const windowId = sender.tab && sender.tab.windowId;
@@ -218,6 +276,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       })
       .then(sendResponse);
+    return true;
+  }
+
+  if (message && message.type === "pcbridge:daemonRequest") {
+    requestDaemon(message, sender).then(sendResponse);
     return true;
   }
 

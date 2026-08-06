@@ -20,7 +20,7 @@ npm install -g github:Q-My99/playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-The commands documented below include repository version `0.4.2`. Until that version is published,
+The commands documented below include repository version `0.5.0`. Until that version is published,
 the npm `latest` release (`0.3.0` as of 2026-08-04) does not contain every command described here;
 use the GitHub install when testing these unreleased changes.
 
@@ -105,10 +105,10 @@ When a ready Editor connects, pcbridge creates `<projectId>-<projectName>/` auto
 
 ```text
 1552681-pcbridge-test/
-├── pcbridge.project.json
-├── assets/       # PlayCanvas folder mirror with bidirectional script sync
-├── tmp/          # task scripts, manifests, captures, and conflict copies
-└── .pcbridge/    # internal asset index; do not edit
+├── pcbridge.project.json # project metadata plus the agent-readable asset catalog
+├── assets/       # PlayCanvas folder mirror with bidirectional file-content sync
+├── tmp/          # builds, cache, conflicts, captures, and quarantined remote deletions
+└── .pcbridge/    # internal sync state; do not edit
 ```
 
 Inspect or refresh the workspace with:
@@ -120,10 +120,53 @@ pcbridge workspace sync --target editor:<sceneId>
 pcbridge workspace pull --target editor:<sceneId> --asset <assetId>
 ```
 
-Script contents synchronize in both directions. Create, move, rename, and delete assets through
-structured pcbridge commands. Images, models, audio, and other file assets are indexed and downloaded
-lazily with `workspace pull`. Concurrent local and remote script edits are preserved under
-`tmp/conflicts/` instead of being overwritten.
+Scripts, images, models, audio, and other asset files synchronize in both directions. The initial
+mirror downloads project files. Later refreshes read the complete Asset metadata snapshot but reuse
+cached local size/mtime/MD5 values and transfer file content only when it is missing or changed.
+A local-only edit uploads, a remote-only edit downloads, and concurrent edits preserve both text or
+binary copies under `tmp/conflicts/`. Create, move, rename, and delete assets through structured
+pcbridge commands; `workspace pull` remains available for an explicit single-file refresh.
+
+`pcbridge.project.json` schema v2 stores every asset id, type, PlayCanvas folder, project-relative
+`assets/...` file path, download presence, and the remote/local/base MD5 values. Agents may read
+this catalog directly; the `assets` object is managed by pcbridge. An existing schema-v1 hidden
+asset index is migrated automatically and retained as `.pcbridge/asset-index.v1.json` for rollback.
+An empty snapshot received while indexed assets exist is ignored, and a non-empty shrinking
+snapshot must repeat before files are moved to `tmp/trash/remote/`.
+
+## Template builds and S3 uploads
+
+Selecting a PlayCanvas Template Asset adds a **pcbridge Tiny Builder** section to the Attributes
+panel. **Build and upload to S3** collects recursive Asset references, attached scripts, and child
+Templates in the page. The daemon validates the workspace MD5 cache, downloads only missing or
+remote-updated files, and uploads objects concurrently without creating a ZIP. Generated
+`tinyapp.json` and `gamescript.js` files live under `tmp/builds/`; variants and additional font maps
+are cached under `tmp/cache/assets/`.
+
+Create `.env` in the directory where the daemon starts for workspace defaults, or in a project
+directory for per-project values. Project values override workspace values field by field. Do not
+commit credential-bearing `.env` files:
+
+```dotenv
+PCBRIDGE_S3_ENDPOINT=https://s3.example.com
+PCBRIDGE_S3_REGION=us-east-1
+PCBRIDGE_S3_BUCKET=my-bucket
+PCBRIDGE_S3_ACCESS_KEY_ID=your-access-key
+PCBRIDGE_S3_SECRET_ACCESS_KEY=your-secret-key
+# PCBRIDGE_S3_SESSION_TOKEN=
+PCBRIDGE_S3_PUBLIC_BASE_URL=https://cdn.example.com
+PCBRIDGE_S3_PREFIX=assets
+PCBRIDGE_S3_FORCE_PATH_STYLE=false
+```
+
+The implementation uses the standard AWS S3 client and supports Amazon S3, Alibaba OSS, Tencent
+COS, Cloudflare R2, and other compatible providers. Set `PCBRIDGE_S3_FORCE_PATH_STYLE` when the
+provider requires path-style addressing. Builds can also be started and inspected from the CLI:
+
+```bash
+pcbridge builder start --target editor:<sceneId> --asset <templateAssetId> --suffix '-${time}'
+pcbridge builder status --job <jobId>
+```
 
 Script, JSON, upload, and capture paths are restricted to the selected project workspace by default.
 Use `--allow-external-path` only for an intentional external file.
@@ -148,6 +191,7 @@ The CLI exposes layered help so agents can load only the command surface they ne
 pcbridge help
 pcbridge help core
 pcbridge help workspace
+pcbridge help builder
 pcbridge help frontend
 pcbridge help target
 pcbridge help entity

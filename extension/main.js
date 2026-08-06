@@ -7,7 +7,12 @@
 
   const MAX_LOGS = 500;
   const capturedLogs = [];
+  const daemonWaiters = new Map();
   let nextLogSeq = 1;
+  let builderPanel = null;
+  let builderRefreshTimer = null;
+  let selectedTemplateId = null;
+  let selectedTemplateAsset = null;
 
   function formatLogArg(value) {
     if (typeof value === "string") return value;
@@ -640,6 +645,84 @@
     };
   }
 
+  async function readAssetResource(params) {
+    const asset = requireEditorAsset(params.assetId);
+    const file = plainAssetJson(asset)?.file || {};
+    const allowedUrls = new Set();
+    if (file.url) allowedUrls.add(String(file.url));
+    for (const variant of Object.values(file.variants || {})) {
+      if (variant && variant.url) allowedUrls.add(String(variant.url));
+    }
+    if (asset.get("type") === "font" && file.url) {
+      const mapCount = Number(plainAssetJson(asset)?.data?.info?.maps?.length || 0);
+      for (let index = 1; index < mapCount; index += 1) {
+        allowedUrls.add(String(file.url).replace(/(\.[^.]*)$/, `${index}$1`));
+      }
+    }
+    const url = String(params.url || "");
+    if (!url || !allowedUrls.has(url)) {
+      throw new Error("Requested URL does not belong to asset " + params.assetId + ".");
+    }
+    const resolvedUrl = new URL(url, location.href);
+    const headers = {};
+    const accessToken = window.editor.api.globals.accessToken;
+    const playCanvasHost =
+      resolvedUrl.hostname === "playcanvas.com" || resolvedUrl.hostname.endsWith(".playcanvas.com");
+    if (accessToken && playCanvasHost) headers.Authorization = "Bearer " + accessToken;
+    const response = await fetch(resolvedUrl.href, { headers });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(body || "Failed to download asset resource " + params.assetId + ".");
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return {
+      assetId: String(asset.get("id")),
+      mime: response.headers.get("content-type") || "application/octet-stream",
+      size: bytes.length,
+      base64: base64FromBytes(bytes)
+    };
+  }
+
+  async function writeAssetFile(params) {
+    const asset = requireEditorAsset(params.assetId);
+    if (asset.get("type") === "script") {
+      throw new Error("Use the script text writer for script assets: " + params.assetId);
+    }
+    const filename = String(
+      params.filename || asset.get("file.filename") || asset.get("name") || "asset.bin"
+    );
+    const bytes = bytesFromBase64(String(params.base64 || ""));
+    const form = new FormData();
+    form.append("filename", filename);
+    form.append(
+      "file",
+      new Blob([bytes], { type: params.mime || "application/octet-stream" }),
+      filename
+    );
+    const branchId =
+      (window.config && window.config.self && window.config.self.branch && window.config.self.branch.id) ||
+      (window.config && window.config.branch && window.config.branch.id);
+    if (branchId) form.append("branchId", String(branchId));
+    const headers = {};
+    const accessToken = window.editor.api.globals.accessToken;
+    if (accessToken) headers.Authorization = "Bearer " + accessToken;
+    const response = await fetch("/api/assets/" + encodeURIComponent(String(asset.get("id"))), {
+      method: "PUT",
+      headers,
+      body: form
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body.error) {
+      throw new Error(body.error || "Failed to update asset file.");
+    }
+    return {
+      assetId: String(asset.get("id")),
+      filename,
+      size: bytes.length,
+      response: body
+    };
+  }
+
   async function writeScriptText(params) {
     const asset = requireEditorAsset(params.assetId);
     if (asset.get("type") !== "script") {
@@ -681,6 +764,103 @@
     };
   }
 
+  function plainAssetJson(asset) {
+    if (!asset) return null;
+    if (typeof asset.json === "function") return asset.json();
+    if (asset.observer && typeof asset.observer.json === "function") return asset.observer.json();
+    return null;
+  }
+
+  function collectAssetReferences(assets, value, ids, depth = 0) {
+    if (!value || typeof value !== "object" || depth > 100) return;
+    for (const [key, child] of Object.entries(value)) {
+      if (["id", "path", "uniqueId", "scope", "testTemplate"].includes(key)) continue;
+      if (Number.isInteger(child)) {
+        const referenced = assets.get(Number(child));
+        const id = String(child);
+        if (referenced && !ids.has(id)) {
+          ids.add(id);
+          collectAssetReferences(assets, plainAssetJson(referenced), ids, depth + 1);
+        }
+      } else if (child && typeof child === "object") {
+        collectAssetReferences(assets, child, ids, depth + 1);
+      }
+    }
+  }
+
+  function templateScriptNames(templateData) {
+    const names = new Set();
+    for (const entity of Object.values((templateData && templateData.entities) || {})) {
+      const scripts = entity && entity.components && entity.components.script &&
+        entity.components.script.scripts;
+      for (const name of Object.keys(scripts || {})) names.add(name);
+    }
+    return [...names];
+  }
+
+  function templateChildren(templateData) {
+    const ids = new Set();
+    for (const entity of Object.values((templateData && templateData.entities) || {})) {
+      const attributes = entity && entity.components && entity.components.script &&
+        entity.components.script.scripts &&
+        entity.components.script.scripts.sdsTinyRootHandler &&
+        entity.components.script.scripts.sdsTinyRootHandler.attributes;
+      if (attributes && attributes.type === "testTemplate" && Number.isInteger(attributes.testTemplate)) {
+        ids.add(String(attributes.testTemplate));
+      }
+    }
+    return [...ids];
+  }
+
+  function collectTemplateDependencies(params) {
+    if (!window.editor || !window.editor.api || !window.editor.api.globals) {
+      throw new Error("Template builds require a ready PlayCanvas Editor target.");
+    }
+    const assets = window.editor.api.globals.assets;
+    const template = assets.get(Number(params.assetId));
+    if (!template || template.get("type") !== "template") {
+      throw new Error("Template asset not found: " + params.assetId);
+    }
+    const templateJson = plainAssetJson(template);
+    if (!templateJson || !templateJson.data) {
+      throw new Error("Template asset has no serializable data: " + params.assetId);
+    }
+
+    const ids = new Set();
+    collectAssetReferences(assets, templateJson.data, ids);
+    const scripts = [];
+    for (const name of templateScriptNames(templateJson.data)) {
+      const scriptAsset =
+        (typeof assets.getAssetForScript === "function" && assets.getAssetForScript(name)) ||
+        (window.editor.assets && typeof window.editor.assets.getAssetForScript === "function" &&
+          window.editor.assets.getAssetForScript(name)) ||
+        assets.list().find((asset) =>
+          asset.get("type") === "script" &&
+          (asset.get("name") === name || asset.get("data.scripts." + name) !== undefined)
+        );
+      if (!scriptAsset) continue;
+      const scriptJson = plainAssetJson(scriptAsset);
+      const filename = scriptJson && scriptJson.file && scriptJson.file.filename;
+      if (
+        name.startsWith("sds") ||
+        String(filename || (scriptJson && scriptJson.name) || "").startsWith("sds")
+      ) continue;
+      ids.add(String(scriptAsset.get("id")));
+      scripts.push({ name, assetId: String(scriptAsset.get("id")) });
+    }
+
+    return {
+      template: templateJson,
+      assets: [...ids].map((id) => plainAssetJson(assets.get(Number(id)))).filter(Boolean),
+      scripts,
+      childTemplateIds: templateChildren(templateJson.data),
+      projectUrl: window.config && window.config.project && window.config.project.id
+        ? "https://playcanvas.com/project/" + window.config.project.id + "/overview"
+        : null,
+      sceneUrl: location.href
+    };
+  }
+
   function withTimeout(promise, timeoutMs) {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`Timed out after ${timeoutMs}ms.`)), timeoutMs);
@@ -695,6 +875,187 @@
         }
       );
     });
+  }
+
+  function daemonRequest(path, method, body, timeoutMs = 15000) {
+    const id = "daemon-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        daemonWaiters.delete(id);
+        reject(new Error("No response from the local pcbridge daemon."));
+      }, timeoutMs);
+      daemonWaiters.set(id, { resolve, reject, timer });
+      window.postMessage({
+        channel: CHANNEL,
+        side: "main",
+        type: "daemon-request",
+        id,
+        path,
+        method,
+        body: body || {}
+      }, "*");
+    });
+  }
+
+  function selectedAssetStateFromEditor() {
+    if (!window.editor) return { known: false, asset: null };
+    try {
+      const items = window.editor.call && window.editor.call("selector:items");
+      if (Array.isArray(items)) return { known: true, asset: items[0] || null };
+    } catch {
+      // Fall through to the public selection API.
+    }
+    const selection = window.editor.api && window.editor.api.globals &&
+      window.editor.api.globals.selection;
+    const items = selection && (
+      (Array.isArray(selection.items) && selection.items) ||
+      (typeof selection.list === "function" && selection.list()) ||
+      (typeof selection.get === "function" && selection.get())
+    );
+    return Array.isArray(items)
+      ? { known: true, asset: items[0] || null }
+      : { known: false, asset: null };
+  }
+
+  function destroyBuilderPanel() {
+    if (builderPanel && typeof builderPanel.destroy === "function") builderPanel.destroy();
+    builderPanel = null;
+    selectedTemplateId = null;
+    selectedTemplateAsset = null;
+  }
+
+  function builderPanelIsAttached(layout) {
+    if (!builderPanel || builderPanel.destroyed === true) return false;
+    if (builderPanel.dom && typeof builderPanel.dom.isConnected === "boolean") {
+      return builderPanel.dom.isConnected;
+    }
+    if ("parent" in builderPanel) return builderPanel.parent === layout;
+    return true;
+  }
+
+  function appendRow(pcui, container, labelText, control) {
+    const row = new pcui.Container();
+    row.flex = true;
+    row.flexDirection = "row";
+    row.append(new pcui.Label({ text: labelText }));
+    row.append(control);
+    container.append(row);
+  }
+
+  function showBuilderPanel(asset) {
+    const type = asset && typeof asset.get === "function" ? asset.get("type") : null;
+    const id = asset && typeof asset.get === "function" ? String(asset.get("id")) : null;
+    if (type !== "template" || !id) {
+      destroyBuilderPanel();
+      return;
+    }
+    const pcui = window.pcui;
+    const layout = window.editor && window.editor.call && window.editor.call("layout.attributes");
+    if (!pcui || !pcui.Container || !pcui.Button || !pcui.Label || !pcui.TextInput || !layout) return;
+    if (builderPanel && selectedTemplateId === id && builderPanelIsAttached(layout)) return;
+    destroyBuilderPanel();
+
+    const projectId = window.config && window.config.project && window.config.project.id
+      ? String(window.config.project.id)
+      : "project";
+    const suffixKey = `pcbridge:builder:${id}:suffix`;
+    const prefixKey = `pcbridge:builder:${projectId}:prefix`;
+    const container = new pcui.Container();
+    container.flex = true;
+    container.flexDirection = "column";
+    if (container.class && typeof container.class.add === "function") {
+      container.class.add("pcbridge-tiny-builder");
+    }
+    container.append(new pcui.Label({ text: "pcbridge Tiny Builder" }));
+    const prefixInput = new pcui.TextInput({ value: localStorage.getItem(prefixKey) || "" });
+    const suffixInput = new pcui.TextInput({ value: localStorage.getItem(suffixKey) || "" });
+    if (typeof prefixInput.on === "function") {
+      prefixInput.on("change", () => localStorage.setItem(prefixKey, String(prefixInput.value || "")));
+      suffixInput.on("change", () => localStorage.setItem(suffixKey, String(suffixInput.value || "")));
+    }
+    appendRow(pcui, container, "上传目录", prefixInput);
+    appendRow(pcui, container, "文件后缀", suffixInput);
+    const pathLabel = new pcui.Label({ text: localStorage.getItem(`pcbridge:builder:${id}:url`) || "" });
+    appendRow(pcui, container, "引用路径", pathLabel);
+    const buildButton = new pcui.Button({ text: "构建并上传到 S3" });
+    const copyButton = new pcui.Button({ text: "复制引用路径" });
+    const logLabel = new pcui.Label({ text: "从项目 .env 或工作区 .env 读取 S3 配置" });
+    copyButton.on("click", () => {
+      if (pathLabel.text) void navigator.clipboard.writeText(pathLabel.text);
+    });
+    buildButton.on("click", async () => {
+      buildButton.enabled = false;
+      try {
+        let job = await daemonRequest("/builder/jobs", "POST", {
+          templateAssetId: id,
+          suffix: String(suffixInput.value || ""),
+          prefix: String(prefixInput.value || "")
+        });
+        while (job && job.state !== "completed" && job.state !== "error") {
+          logLabel.text = job.message || job.state;
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          job = await daemonRequest(
+            "/builder/jobs/" + encodeURIComponent(job.id),
+            "GET",
+            {},
+            30000
+          );
+        }
+        if (!job || job.state === "error") {
+          throw new Error((job && job.error) || "Template build failed.");
+        }
+        pathLabel.text = job.publicUrl || "";
+        localStorage.setItem(`pcbridge:builder:${id}:url`, pathLabel.text);
+        logLabel.text = job.message || "上传完成";
+      } catch (error) {
+        logLabel.text = "构建失败: " + String((error && error.message) || error);
+      } finally {
+        buildButton.enabled = true;
+      }
+    });
+    container.append(buildButton);
+    container.append(copyButton);
+    container.append(logLabel);
+    layout.append(container);
+    builderPanel = container;
+    selectedTemplateId = id;
+    selectedTemplateAsset = asset;
+  }
+
+  function scheduleBuilderPanelRefresh(asset) {
+    if (builderRefreshTimer !== null) clearTimeout(builderRefreshTimer);
+    builderRefreshTimer = setTimeout(() => {
+      builderRefreshTimer = null;
+      const selection = selectedAssetStateFromEditor();
+      if (selection.known) showBuilderPanel(selection.asset);
+      else showBuilderPanel(asset || selectedTemplateAsset);
+    }, 150);
+  }
+
+  function installBuilderPanel() {
+    if (!location.pathname.startsWith("/editor") || typeof setInterval !== "function") return;
+    let subscribed = false;
+    setInterval(() => {
+      if (!window.editor || !window.editor.api || !window.editor.api.globals) return;
+      if (!subscribed) {
+        subscribed = true;
+        const refresh = (asset) => scheduleBuilderPanelRefresh(asset);
+        const legacy = window.editor.selection;
+        if (legacy && typeof legacy.on === "function") {
+          legacy.on("add", refresh);
+          legacy.on("remove", () => refresh());
+        }
+        const selection = window.editor.api.globals.selection;
+        if (selection && typeof selection.on === "function") {
+          selection.on("add", refresh);
+          selection.on("remove", () => refresh());
+          selection.on("change", () => refresh());
+        }
+      }
+      const selection = selectedAssetStateFromEditor();
+      if (selection.known) showBuilderPanel(selection.asset);
+      else if (selectedTemplateAsset) showBuilderPanel(selectedTemplateAsset);
+    }, 1000);
   }
 
   async function evalInPage(params, requestId) {
@@ -985,8 +1346,11 @@
     if (method === "bridge:uploadAsset") return uploadAsset(params || {});
     if (method === "bridge:focusViewport") return focusViewport(params || {});
     if (method === "bridge:workspaceSnapshot") return workspaceSnapshot();
+    if (method === "bridge:collectTemplateDependencies") return collectTemplateDependencies(params || {});
     if (method === "bridge:readAssetText") return readAssetText(params || {});
     if (method === "bridge:readAssetFile") return readAssetFile(params || {});
+    if (method === "bridge:readAssetResource") return readAssetResource(params || {});
+    if (method === "bridge:writeAssetFile") return writeAssetFile(params || {});
     if (method === "bridge:writeScriptText") return writeScriptText(params || {});
     throw new Error(`Unknown bridge method: ${method}`);
   }
@@ -995,6 +1359,15 @@
     if (event.source !== window) return;
     const message = event.data;
     if (!message || message.channel !== CHANNEL || message.side !== "isolated") return;
+    if (message.type === "daemon-response" && message.id) {
+      const waiter = daemonWaiters.get(message.id);
+      if (!waiter) return;
+      daemonWaiters.delete(message.id);
+      clearTimeout(waiter.timer);
+      if (message.ok) waiter.resolve(message.data);
+      else waiter.reject(message.error || new Error("Local daemon request failed."));
+      return;
+    }
     if (message.type !== "request") return;
 
     const startedAt = performance.now();
@@ -1027,5 +1400,6 @@
     }
   });
 
+  installBuilderPanel();
   window.postMessage({ channel: CHANNEL, side: "main", type: "ready" }, "*");
 })();

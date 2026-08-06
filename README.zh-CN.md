@@ -13,7 +13,7 @@ npm install -g playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-下文命令包含仓库版 `0.4.2` 的尚未发布改动。在该版本发布前，npm 的 `latest`（截至
+下文命令包含仓库版 `0.5.0` 的尚未发布改动。在该版本发布前，npm 的 `latest`（截至
 2026-08-04 为 `0.3.0`）不包含这里列出的全部命令；测试本轮新能力时请使用 GitHub 安装。
 
 如果要测试尚未发布的改动，也可以直接从这个 GitHub 仓库安装：
@@ -104,10 +104,10 @@ pcbridge daemon start
 
 ```text
 1552681-pcbridge-test/
-├── pcbridge.project.json
-├── assets/       # 与 PlayCanvas 文件夹结构对应，脚本自动双向同步
-├── tmp/          # 临时脚本、清单、截图和冲突副本
-└── .pcbridge/    # 内部资源索引，请勿手动修改
+├── pcbridge.project.json # 项目信息和供 agent 读取的资源目录
+├── assets/       # 与 PlayCanvas 文件夹结构对应，所有文件内容自动双向同步
+├── tmp/          # 构建产物、缓存、冲突、截图和远端删除隔离副本
+└── .pcbridge/    # 内部同步状态，请勿手动修改
 ```
 
 查看或手动刷新工作区：
@@ -119,9 +119,49 @@ pcbridge workspace sync --target editor:<sceneId>
 pcbridge workspace pull --target editor:<sceneId> --asset <assetId>
 ```
 
-脚本内容保持双向同步。资源的新建、移动、重命名和删除仍应使用 pcbridge 结构化命令；
-图片、模型和音频等文件只建立索引，需要时用 `workspace pull` 懒下载。检测到本地与远端
-同时修改时不会覆盖任一版本，冲突副本写入 `tmp/conflicts/`。
+脚本、图片、模型、音频等文件内容都保持双向同步。首次建立镜像会下载项目文件；之后每轮
+刷新只读取完整 Asset 元数据，并用 PlayCanvas MD5 与本地缓存的 size/mtime/MD5 判断变化，
+不会重复全量传输文件内容。本地单边修改会上传，远端单边修改会下载；同时修改时不会覆盖
+任一版本，文本和二进制冲突副本都写入 `tmp/conflicts/`。资源的新建、移动、重命名和删除
+仍应使用 pcbridge 结构化命令；`workspace pull` 可用于显式重新拉取单个文件。
+
+schema v2 的 `pcbridge.project.json` 会记录每个 asset 的 id、类型、PlayCanvas 文件夹、相对
+项目根目录的 `assets/...` 文件路径、是否已下载，以及远端、本地和同步基线 MD5。agent 可以
+直接读取这些信息，但其中的 `assets` 对象由 pcbridge 管理。已有 schema v1 隐藏索引会自动
+迁移，并保留为 `.pcbridge/asset-index.v1.json` 以便回退。已有资源时收到的空快照会被忽略；
+非空但缩小的快照必须连续出现两次，文件才会被移动到 `tmp/trash/remote/`。
+
+## Template 构建与 S3 上传
+
+选中 PlayCanvas Template Asset 后，Attributes 面板会出现 **pcbridge Tiny Builder**。点击
+**构建并上传到 S3** 后，网页只负责收集 Template、递归 Asset 引用、挂载脚本和子 Template；
+daemon 会核对工作区 MD5，缺失或远端更新的文件才会下载到工作区，然后直接并发上传对象，
+不再生成 ZIP。生成的 `tinyapp.json` 和 `gamescript.js` 保存在 `tmp/builds/`，变体和字体附加
+贴图缓存于 `tmp/cache/assets/`。
+
+在 daemon 启动目录创建 `.env` 作为工作区默认配置，也可以在单个项目目录创建 `.env`；
+项目配置按字段覆盖工作区配置。不要提交含密钥的 `.env`：
+
+```dotenv
+PCBRIDGE_S3_ENDPOINT=https://s3.example.com
+PCBRIDGE_S3_REGION=us-east-1
+PCBRIDGE_S3_BUCKET=my-bucket
+PCBRIDGE_S3_ACCESS_KEY_ID=your-access-key
+PCBRIDGE_S3_SECRET_ACCESS_KEY=your-secret-key
+# PCBRIDGE_S3_SESSION_TOKEN=
+PCBRIDGE_S3_PUBLIC_BASE_URL=https://cdn.example.com
+PCBRIDGE_S3_PREFIX=assets
+PCBRIDGE_S3_FORCE_PATH_STYLE=false
+```
+
+以上配置使用 AWS S3 标准客户端，适用于 Amazon S3、阿里云 OSS、腾讯云 COS、Cloudflare
+R2 等兼容服务；自定义服务是否需要 path-style URL 由
+`PCBRIDGE_S3_FORCE_PATH_STYLE` 决定。也可以从 CLI 发起和查看任务：
+
+```bash
+pcbridge builder start --target editor:<sceneId> --asset <templateAssetId> --suffix '-${time}'
+pcbridge builder status --job <jobId>
+```
 
 CLI 的脚本、JSON、上传文件和截图路径默认必须位于对应项目工作区内。只有明确需要使用
 外部文件时才使用 `--allow-external-path`。
@@ -146,6 +186,7 @@ CLI 提供分层 help，方便 agent 只加载当前需要的命令面：
 pcbridge help
 pcbridge help core
 pcbridge help workspace
+pcbridge help builder
 pcbridge help frontend
 pcbridge help target
 pcbridge help entity

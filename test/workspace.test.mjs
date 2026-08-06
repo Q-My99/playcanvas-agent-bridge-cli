@@ -1,29 +1,31 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { WorkspaceManager, safeAssetName, safeWorkspaceName } from "../dist/workspace/manager.js";
 
-function sha256(value) {
-  return import("node:crypto").then(({ createHash }) =>
-    createHash("sha256").update(value).digest("hex")
-  );
+function hash(value, algorithm = "md5") {
+  return createHash(algorithm).update(value).digest("hex");
 }
 
-test("workspace creates a project mirror, syncs scripts, and lazily pulls binaries", async (t) => {
+test("workspace creates a project mirror and synchronizes scripts and binary assets", async (t) => {
   const tmpBase = join(process.cwd(), "tmp");
   await mkdir(tmpBase, { recursive: true });
   const root = await mkdtemp(join(tmpBase, "workspace-test-"));
   t.after(() => rm(root, { recursive: true, force: true }));
 
   let remoteText = "const version = 1;\n";
-  let remoteHash = "remote-file-v1";
+  let remoteHash = hash(remoteText);
   let scriptName = "New Asset~11";
   let scriptFileReady = false;
   let includeTemporaryFolder = true;
+  let emptySnapshot = false;
+  const temporaryText = "const temporary = true;\n";
   const writes = [];
+  let binaryReads = 0;
   const snapshot = () => ({
-    assets: [
+    assets: emptySnapshot ? [] : [
       { id: 10, name: "Scripts", type: "folder", path: [] },
       {
         id: 11,
@@ -40,9 +42,18 @@ test("workspace creates a project mirror, syncs scripts, and lazily pulls binari
         name: "logo",
         type: "texture",
         path: [20],
-        file: { filename: "logo.png", hash: "texture-v1", size: 4 },
+        file: { filename: "logo.png", hash: hash(Buffer.from([1, 2, 3, 4])), size: 4 },
       },
-      ...(includeTemporaryFolder ? [{ id: 30, name: "Temporary", type: "folder", path: [] }] : []),
+      ...(includeTemporaryFolder ? [
+        { id: 30, name: "Temporary", type: "folder", path: [] },
+        {
+          id: 31,
+          name: "temporary.js",
+          type: "script",
+          path: [30],
+          file: { filename: "temporary.js", hash: hash(temporaryText), size: temporaryText.length },
+        },
+      ] : []),
     ],
   });
 
@@ -52,15 +63,19 @@ test("workspace creates a project mirror, syncs scripts, and lazily pulls binari
     requestTarget: async (_target, method, params) => {
       if (method === "bridge:workspaceSnapshot") return { ok: true, data: snapshot() };
       if (method === "bridge:readAssetText") {
+        if (String(params.assetId) === "31") {
+          return { ok: true, data: { assetId: "31", filename: "temporary.js", text: temporaryText } };
+        }
         return { ok: true, data: { assetId: "11", filename: "controller.js", text: remoteText } };
       }
       if (method === "bridge:writeScriptText") {
         remoteText = String(params.text);
-        remoteHash = `remote-file-${writes.length + 2}`;
+        remoteHash = hash(remoteText);
         writes.push(remoteText);
         return { ok: true, data: { assetId: "11", parsed: true } };
       }
       if (method === "bridge:readAssetFile") {
+        binaryReads += 1;
         return { ok: true, data: { assetId: "21", filename: "logo.png", base64: "AQIDBA==" } };
       }
       throw new Error(`Unexpected method ${method}`);
@@ -97,15 +112,42 @@ test("workspace creates a project mirror, syncs scripts, and lazily pulls binari
   assert.equal(await readFile(scriptPath, "utf8"), remoteText);
   await assert.rejects(access(temporaryScriptPath));
   const manifest = JSON.parse(await readFile(join(projectDirectory, "pcbridge.project.json"), "utf8"));
+  assert.equal(manifest.schemaVersion, 2);
   assert.equal(manifest.project.id, "1552681");
   assert.equal(manifest.activeBranch.id, "99");
+  assert.equal(manifest.assets["11"].file.path, "assets/Scripts/controller.js");
+  assert.equal(manifest.assets["11"].file.hash.algorithm, "md5");
+  assert.equal(manifest.assets["11"].file.hash.matches, true);
+  assert.equal(manifest.assets["21"].file.present, true);
+  assert.equal(manifest.assets["21"].file.hash.matches, true);
+  assert.deepEqual(
+    Array.from(await readFile(join(projectDirectory, "assets", "Textures", "logo.png"))),
+    [1, 2, 3, 4],
+  );
+  assert.equal(binaryReads, 1);
 
   await writeFile(scriptPath, "const version = 2;\n");
   await manager.syncTarget(target);
   assert.equal(writes.at(-1), "const version = 2;\n");
+  assert.equal(manager.statusForTarget(target).state, "local-change");
+  const pendingManifest = JSON.parse(
+    await readFile(join(projectDirectory, "pcbridge.project.json"), "utf8"),
+  );
+  assert.equal(pendingManifest.assets["11"].state, "local-change");
+  assert.equal(pendingManifest.assets["11"].file.hash.matches, false);
+  await manager.syncTarget(target);
+  assert.equal(manager.statusForTarget(target).state, "synced");
+  assert.equal(binaryReads, 1, "unchanged local binary should reuse cached size/mtime and MD5");
+  const manifestPath = join(projectDirectory, "pcbridge.project.json");
+  const stableManifest = await readFile(manifestPath, "utf8");
+  const stableManifestMtime = (await stat(manifestPath)).mtimeMs;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  await manager.syncTarget(target);
+  assert.equal(await readFile(manifestPath, "utf8"), stableManifest);
+  assert.equal((await stat(manifestPath)).mtimeMs, stableManifestMtime);
 
   remoteText = "const version = 3;\n";
-  remoteHash = "remote-file-v3";
+  remoteHash = hash(remoteText);
   await manager.syncTarget(target);
   assert.equal(await readFile(scriptPath, "utf8"), remoteText);
 
@@ -115,14 +157,47 @@ test("workspace creates a project mirror, syncs scripts, and lazily pulls binari
     Array.from(await readFile(join(projectDirectory, "assets", "Textures", "logo.png"))),
     [1, 2, 3, 4],
   );
+  const pulledManifest = JSON.parse(
+    await readFile(join(projectDirectory, "pcbridge.project.json"), "utf8"),
+  );
+  assert.equal(pulledManifest.assets["21"].file.hash.matches, true);
+  assert.equal(pulledManifest.assets["21"].file.present, true);
+
+  emptySnapshot = true;
+  await manager.syncTarget(target);
+  assert.equal(await readFile(scriptPath, "utf8"), remoteText);
+  assert.match(manager.statusForTarget(target).lastWarning, /Ignored an empty PlayCanvas asset snapshot/);
+  const guardedManifest = JSON.parse(
+    await readFile(join(projectDirectory, "pcbridge.project.json"), "utf8"),
+  );
+  assert.ok(guardedManifest.assets["11"]);
+  emptySnapshot = false;
 
   includeTemporaryFolder = false;
   await manager.syncTarget(target);
+  await access(join(projectDirectory, "assets", "Temporary"));
+  assert.match(manager.statusForTarget(target).lastWarning, /Deferred 2 possible remote deletions/);
+  await manager.syncTarget(target);
   await assert.rejects(access(join(projectDirectory, "assets", "Temporary")));
+  const trashBatches = await readdir(join(projectDirectory, "tmp", "trash", "remote"));
+  assert.equal(trashBatches.length, 1);
+  await access(join(
+    projectDirectory,
+    "tmp",
+    "trash",
+    "remote",
+    trashBatches[0],
+    "31-temporary.js",
+  ));
+  assert.deepEqual(
+    (await readdir(join(projectDirectory, "tmp", "conflicts")))
+      .filter((name) => name.startsWith("remote-deleted-")),
+    [],
+  );
 
   await writeFile(scriptPath, "const version = 4;\n");
   remoteText = "const version = 5;\n";
-  remoteHash = "remote-file-v5";
+  remoteHash = hash(remoteText);
   await manager.syncTarget(target);
   const status = manager.statusForTarget(target);
   assert.equal(status.state, "conflict");
@@ -134,9 +209,196 @@ test("workspace creates a project mirror, syncs scripts, and lazily pulls binari
   assert.equal(conflicts, remoteText);
 });
 
+test("workspace uses the MD5 baseline for binary upload, download, and conflict copies", async (t) => {
+  const tmpBase = join(process.cwd(), "tmp");
+  await mkdir(tmpBase, { recursive: true });
+  const root = await mkdtemp(join(tmpBase, "workspace-binary-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  let remote = Buffer.from([1, 2, 3]);
+  const uploads = [];
+  const snapshot = () => ({
+    assets: [
+      { id: 10, name: "Textures", type: "folder", path: [] },
+      {
+        id: 11,
+        name: "image",
+        type: "texture",
+        path: [10],
+        file: { filename: "image.png", hash: hash(remote), size: remote.length },
+      },
+    ],
+  });
+  const manager = new WorkspaceManager({
+    rootDir: root,
+    refreshIntervalMs: 0,
+    requestTarget: async (_target, method, params) => {
+      if (method === "bridge:workspaceSnapshot") return { ok: true, data: snapshot() };
+      if (method === "bridge:readAssetFile") {
+        return {
+          ok: true,
+          data: { assetId: "11", filename: "image.png", base64: remote.toString("base64") },
+        };
+      }
+      if (method === "bridge:writeAssetFile") {
+        remote = Buffer.from(String(params.base64), "base64");
+        uploads.push(remote);
+        return { ok: true, data: { assetId: "11", filename: "image.png" } };
+      }
+      throw new Error(`Unexpected method ${method}`);
+    },
+  });
+  t.after(() => manager.close());
+  const target = {
+    id: "tab:binary",
+    clientId: "client-binary",
+    kind: "editor",
+    url: "https://playcanvas.com/editor/scene/2",
+    projectId: "2",
+    projectName: "Binary",
+    sceneId: "2",
+    branchId: "main",
+    ready: true,
+    connected: true,
+    lastSeen: new Date().toISOString(),
+  };
+
+  await manager.handleTarget(target);
+  const projectDirectory = join(root, "2-Binary");
+  const imagePath = join(projectDirectory, "assets", "Textures", "image.png");
+  assert.deepEqual(await readFile(imagePath), Buffer.from([1, 2, 3]));
+
+  await writeFile(imagePath, Buffer.from([4, 5, 6]));
+  await manager.syncTarget(target);
+  assert.deepEqual(uploads.at(-1), Buffer.from([4, 5, 6]));
+  assert.equal(manager.statusForTarget(target).state, "local-change");
+  await manager.syncTarget(target);
+  assert.equal(manager.statusForTarget(target).state, "synced");
+
+  remote = Buffer.from([7, 8, 9]);
+  await manager.syncTarget(target);
+  assert.deepEqual(await readFile(imagePath), remote);
+
+  await writeFile(imagePath, Buffer.from([10, 11, 12]));
+  remote = Buffer.from([13, 14, 15]);
+  await manager.syncTarget(target);
+  assert.equal(manager.statusForTarget(target).state, "conflict");
+  assert.deepEqual(
+    await readFile(join(projectDirectory, "tmp", "conflicts", "11-image.png.local")),
+    Buffer.from([10, 11, 12]),
+  );
+  assert.deepEqual(
+    await readFile(join(projectDirectory, "tmp", "conflicts", "11-image.png.remote")),
+    Buffer.from([13, 14, 15]),
+  );
+});
+
+test("workspace migrates the v1 hidden asset index into the project manifest", async (t) => {
+  const tmpBase = join(process.cwd(), "tmp");
+  await mkdir(tmpBase, { recursive: true });
+  const root = await mkdtemp(join(tmpBase, "workspace-migration-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const projectDirectory = join(root, "44-Legacy-Project");
+  const scriptDirectory = join(projectDirectory, "assets", "Scripts");
+  await mkdir(scriptDirectory, { recursive: true });
+  await mkdir(join(projectDirectory, ".pcbridge"), { recursive: true });
+  const scriptText = "const legacy = true;\n";
+  await writeFile(join(scriptDirectory, "legacy.js"), scriptText);
+  await writeFile(join(projectDirectory, "pcbridge.project.json"), JSON.stringify({
+    schemaVersion: 1,
+    project: { id: "44", name: "Legacy Project" },
+    activeBranch: { id: "main-44", name: "main" },
+    scenes: [],
+    workspace: { createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z" },
+    settings: { sync: { contentMode: "all" }, publish: { prefix: "tiny" } },
+    customMetadata: { keep: true },
+  }));
+  await writeFile(join(projectDirectory, ".pcbridge", "asset-index.json"), JSON.stringify({
+    schemaVersion: 1,
+    projectId: "44",
+    branchId: "main-44",
+    updatedAt: "2026-08-01T00:00:00.000Z",
+    entries: {
+      "101": {
+        id: "101",
+        name: "legacy.js",
+        type: "script",
+        remotePath: ["Scripts"],
+        localPath: "Scripts/legacy.js",
+        filename: "legacy.js",
+        remoteFileHash: hash(scriptText),
+        localHash: hash(scriptText, "sha256"),
+        lastSyncedHash: hash(scriptText, "sha256"),
+        downloaded: true,
+        status: "synced",
+      },
+    },
+  }));
+
+  const methods = [];
+  const manager = new WorkspaceManager({
+    rootDir: root,
+    refreshIntervalMs: 0,
+    requestTarget: async (_target, method) => {
+      methods.push(method);
+      if (method === "bridge:workspaceSnapshot") {
+        return {
+          ok: true,
+          data: {
+            assets: [
+              { id: 100, name: "Scripts", type: "folder", path: [] },
+              {
+                id: 101,
+                name: "legacy.js",
+                type: "script",
+                path: [100],
+                file: { filename: "legacy.js", hash: hash(scriptText), size: scriptText.length },
+              },
+            ],
+          },
+        };
+      }
+      throw new Error(`Unexpected method ${method}`);
+    },
+  });
+  t.after(() => manager.close());
+
+  await manager.handleTarget({
+    id: "tab:44",
+    clientId: "client-44",
+    tabId: 44,
+    kind: "editor",
+    url: "https://playcanvas.com/editor/scene/440",
+    projectId: "44",
+    projectName: "Legacy Project",
+    sceneId: "440",
+    sceneName: "Main",
+    branchId: "main-44",
+    branchName: "main",
+    ready: true,
+    connected: true,
+    lastSeen: new Date().toISOString(),
+  });
+
+  assert.deepEqual(methods, ["bridge:workspaceSnapshot"]);
+  const manifest = JSON.parse(await readFile(join(projectDirectory, "pcbridge.project.json"), "utf8"));
+  assert.equal(manifest.schemaVersion, 2);
+  assert.equal(manifest.assets["101"].file.path, "assets/Scripts/legacy.js");
+  assert.equal(manifest.assets["101"].file.hash.remote, hash(scriptText));
+  assert.equal(manifest.assets["101"].file.hash.local, hash(scriptText));
+  assert.equal(manifest.assets["101"].file.hash.base, hash(scriptText));
+  assert.equal(manifest.assets["101"].file.hash.matches, true);
+  assert.equal(manifest.settings.sync.contentMode, "all");
+  assert.equal(manifest.settings.publish.prefix, "tiny");
+  assert.equal(manifest.customMetadata.keep, true);
+  await access(join(projectDirectory, ".pcbridge", "asset-index.v1.json"));
+  await assert.rejects(access(join(projectDirectory, ".pcbridge", "asset-index.json")));
+});
+
 test("workspace names remove path separators and reserved characters", async () => {
   assert.equal(safeWorkspaceName("  Demo / Project:*  ", "project"), "Demo-Project");
   assert.equal(safeAssetName("Demo Folder / File.js", "asset"), "Demo Folder - File.js");
   assert.equal(safeWorkspaceName("...", "project"), "project");
-  assert.equal((await sha256("same")).length, 64);
+  assert.equal(hash("same").length, 32);
 });

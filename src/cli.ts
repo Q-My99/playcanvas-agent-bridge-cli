@@ -1614,11 +1614,39 @@ async function handleWorkspace(args: Args): Promise<Envelope> {
   return fail("UNKNOWN_COMMAND", `Unknown workspace command: ${subcommand}`);
 }
 
+async function handleBuilder(args: Args): Promise<Envelope> {
+  const subcommand = args._[1] || "status";
+  if (subcommand === "start" || subcommand === "build") {
+    const templateAssetId = flagString(args, "asset") ||
+      flagString(args, "asset-id") ||
+      flagString(args, "id");
+    if (!templateAssetId) {
+      return fail("INVALID_REQUEST", "builder start requires --asset <templateAssetId>.");
+    }
+    return fetchDaemon("/builder/jobs", {
+      method: "POST",
+      body: JSON.stringify({
+        target: flagString(args, "target", "current") || "current",
+        templateAssetId,
+        suffix: flagString(args, "suffix") || "",
+        prefix: flagString(args, "prefix") || "",
+      }),
+    });
+  }
+  if (subcommand === "status") {
+    const jobId = flagString(args, "job") || flagString(args, "id");
+    if (!jobId) return fail("INVALID_REQUEST", "builder status requires --job <jobId>.");
+    return fetchDaemon(`/builder/jobs/${encodeURIComponent(jobId)}`);
+  }
+  return fail("UNKNOWN_COMMAND", `Unknown builder command: ${subcommand}`);
+}
+
 function help(group = "overview"): Envelope {
   const groups: Record<string, string[]> = {
     overview: [
       "pcbridge help core",
       "pcbridge help workspace",
+      "pcbridge help builder",
       "pcbridge help frontend",
       "pcbridge help target",
       "pcbridge help entity",
@@ -1654,6 +1682,12 @@ function help(group = "overview"): Envelope {
       "pcbridge workspace sync --target editor:<sceneId>",
       "pcbridge workspace pull --target editor:<sceneId> --asset <assetId>",
       "The directory where `pcbridge daemon start` runs is the workspace root.",
+    ],
+    builder: [
+      "pcbridge builder start --target editor:<sceneId> --asset <template_asset_id> [--suffix '-${time}'] [--prefix assets]",
+      "pcbridge builder status --job <build_job_id>",
+      "Template assets also show a pcbridge Tiny Builder panel in the PlayCanvas Editor.",
+      "S3 settings come from the project .env, then the workspace-root .env; files upload directly without a ZIP.",
     ],
     frontend: [
       "pcbridge frontend install [latest|playcanvas-editor-v<version>-r<revision>] [--no-activate]",
@@ -1807,6 +1841,8 @@ async function main(): Promise<void> {
       print(await handleTarget(args));
     } else if (command === "workspace") {
       print(await handleWorkspace(args));
+    } else if (command === "builder" || command === "build") {
+      print(await handleBuilder(args));
     } else if (command === "eval") {
       const commandArgs = await readJsonFlag(args, "args-json");
       print(

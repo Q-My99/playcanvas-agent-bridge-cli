@@ -8,17 +8,17 @@ The important product decision: **do not make MCP the core interface**. The core
 
 ## Current Project Progress
 
-Status as of 2026-08-03:
+Status as of 2026-08-05:
 
 - Git repository initialized and pushed to GitHub:
   - `https://github.com/Q-My99/playcanvas-agent-bridge-cli`
   - default branch: `main`
-- Package version is currently `0.4.2`.
+- Package version is currently `0.5.0`.
 - The npm package has been published:
   - package: `playcanvas-agent-bridge-cli`
   - npm latest: `0.3.0`
   - registry: `https://registry.npmjs.org/`
-  - local `0.4.2` workspace/sync and custom Editor frontend changes have not been published to npm yet.
+  - local `0.5.0` workspace/sync, Template builder, and custom Editor frontend changes have not been published to npm yet.
 - npm releases are published by `.github/workflows/npm-publish.yml` using npm Trusted Publishing (OIDC); no long-lived npm token is stored in GitHub.
 - A publish runs only for a stable tag matching `v<major>.<minor>.<patch>` whose commit is on `main`, and the tag must match the synchronized versions in `package.json`, `src/config.ts`, and `extension/manifest.json`.
 - Temporary test files should be written under project-local `./tmp/`, not `/tmp`. The `tmp/` directory is ignored by git.
@@ -39,7 +39,7 @@ Completed implementation:
   - isolated content script for WebSocket connection and postMessage bridge.
   - service worker for tab metadata and generated config loading.
   - auto-connect and reconnect to local daemon.
-  - extension manifest version is synchronized with package version `0.4.2`.
+  - extension manifest version is synchronized with package version `0.5.0`.
   - matches both PlayCanvas Editor pages and PlayCanvas Launch pages.
   - captures page console logs, window errors, and unhandled promise rejections in a bounded in-page ring buffer.
   - probes daemon health before reconnecting WebSockets, uses backoff while offline, and sends target updates only when metadata changes.
@@ -47,10 +47,13 @@ Completed implementation:
 - Workspace mode:
   - the `pcbridge daemon start` working directory is the workspace root.
   - ready Editor targets create `<projectId>-<projectName>/{assets,tmp,.pcbridge}` automatically.
-  - `pcbridge.project.json` stores readable project, branch, and scene metadata.
-  - PlayCanvas folders and all script assets are mirrored locally; existing script content synchronizes in both directions.
-  - images, models, audio, and other file assets are indexed and pulled lazily with `workspace pull`.
-  - simultaneous local and remote script changes are preserved under `tmp/conflicts` instead of overwritten.
+- `pcbridge.project.json` schema v2 stores readable project, branch, scene, and per-asset metadata,
+  including project-relative file paths plus comparable PlayCanvas/local/base MD5 values.
+  - PlayCanvas folders and all file assets are mirrored locally; scripts and binary contents synchronize in both directions.
+  - unchanged binary files reuse cached size/mtime/MD5 state, so periodic syncs do not reread or transfer full contents.
+- simultaneous local and remote text or binary changes are preserved under `tmp/conflicts` instead of overwritten.
+- empty refresh-time asset snapshots are ignored; repeated confirmed remote deletions are quarantined
+  under `tmp/trash/remote` rather than mixed with content conflicts.
   - one local project workspace binds to one active PlayCanvas branch; mismatched branches report a conflict.
   - CLI file inputs and viewport outputs are guarded to the selected project directory unless `--allow-external-path` is explicit.
 - Core CLI commands:
@@ -63,6 +66,12 @@ Completed implementation:
   - `pcbridge install-extension`
   - `pcbridge install-skill --agent codex|claude|cursor|windsurf|all`
   - `pcbridge workspace status|path|sync|pull`
+  - `pcbridge builder start|status`
+- Template builder:
+  - selecting a Template injects a pcbridge Tiny Builder panel in Editor Attributes.
+  - the page collects recursive asset/script/child-Template dependencies.
+  - the daemon fills the workspace cache and uploads files directly with the standard S3 client, without ZIP creation.
+  - project `.env` values override workspace-root `.env` values.
 - Structured entity commands:
   - `entity list`
   - `entity get`
@@ -286,7 +295,7 @@ Verified against a real open PlayCanvas Editor scene:
 
 Known unfinished work:
 
-- Publish local version `0.4.2` to npm only after the user explicitly requests a release.
+- Publish local version `0.5.0` to npm only after the user explicitly requests a release.
 - Create a GitHub tag/release for `v0.2.2` if desired.
 - Add `pcbridge daemon install-service` or another durable service installation flow if needed.
 - Consider structured material texture assignment helpers beyond generic `material patch`:
