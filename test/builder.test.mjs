@@ -94,7 +94,14 @@ test("Template builder uses project env precedence and uploads files directly th
         name: "Texture",
         type: "texture",
         data: {},
-        file: { filename: "texture.png", hash: "5289df737df57326fcdd22597afb1fac", url: "/texture" },
+        file: {
+          filename: "texture.png",
+          hash: "5289df737df57326fcdd22597afb1fac",
+          url: "/texture",
+          variants: {
+            dxt: { filename: "texture-dxt.dds", url: "/texture-dxt" },
+          },
+        },
       },
       {
         id: 4,
@@ -126,9 +133,16 @@ test("Template builder uses project env precedence and uploads files directly th
   const builder = new BuilderManager({
     rootDir: root,
     workspace,
-    requestTarget: async (_target, method) => {
-      assert.equal(method, "bridge:collectTemplateDependencies");
-      return { ok: true, data: descriptor };
+    requestTarget: async (_target, method, params) => {
+      if (method === "bridge:collectTemplateDependencies") {
+        return { ok: true, data: descriptor };
+      }
+      assert.equal(method, "bridge:readAssetResource");
+      assert.equal(params.url, "/texture-dxt");
+      return {
+        ok: true,
+        data: { assetId: "3", filename: "texture-dxt.dds", base64: "BAUG" },
+      };
     },
   });
   const started = builder.start({
@@ -145,8 +159,8 @@ test("Template builder uses project env precedence and uploads files directly th
   const job = await waitForJob(builder, started.id);
   assert.equal(job.state, "completed", job.error);
   assert.equal(job.configSource, "project");
-  assert.equal(job.totalFiles, 3);
-  assert.equal(job.completedFiles, 3);
+  assert.equal(job.totalFiles, 4);
+  assert.equal(job.completedFiles, 4);
   assert.equal(
     job.publicUrl,
     "https://cdn.example.com/tiny/project-prefix/Demo-v1/tinyapp.json",
@@ -156,6 +170,7 @@ test("Template builder uses project env precedence and uploads files directly th
     [
       "/project-bucket/project-prefix/Demo-v1/gamescript.js?x-id=PutObject",
       "/project-bucket/project-prefix/Demo-v1/tinyapp.json?x-id=PutObject",
+      "/project-bucket/project-prefix/Demo-v1/3/texture-dxt.dds?x-id=PutObject",
       "/project-bucket/project-prefix/Demo-v1/3/texture.png?x-id=PutObject",
     ].sort(),
   );
@@ -163,10 +178,14 @@ test("Template builder uses project env precedence and uploads files directly th
   assert.equal(tinyapp.assets["2"].data.shader, "blinn");
   assert.equal(
     tinyapp.assets["3"].file.url,
-    "https://cdn.example.com/tiny/project-prefix/Demo-v1/3/texture.png",
+    "Demo-v1/3/texture.png",
+  );
+  assert.equal(
+    tinyapp.assets["3"].file.variants.dxt.url,
+    "Demo-v1/3/texture-dxt.dds",
   );
   assert.equal(
     tinyapp.scriptUrl,
-    "https://cdn.example.com/tiny/project-prefix/Demo-v1/gamescript.js",
+    "Demo-v1/gamescript.js",
   );
 });
