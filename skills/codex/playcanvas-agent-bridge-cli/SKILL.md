@@ -53,10 +53,10 @@ project-picker and scene Editor navigations; change the remembered mode only thr
 
 ```text
 <workspace root>/<projectId>-<projectName>/
-  pcbridge.project.json
-  assets/       # PlayCanvas folder tree; scripts synchronize automatically
-  tmp/          # task scripts, manifests, captures, and conflict copies
-  .pcbridge/    # internal index and sync state; do not edit
+  pcbridge.project.json # project metadata and agent-readable asset catalog
+  assets/       # PlayCanvas folder tree; all asset file contents synchronize automatically
+  tmp/          # task files, builds, cache, conflicts, captures, and deletion quarantine
+  .pcbridge/    # internal sync state; do not edit
 ```
 
 Use:
@@ -68,9 +68,20 @@ pcbridge workspace sync --target editor:<sceneId>
 pcbridge workspace pull --target editor:<sceneId> --asset <assetId>
 ```
 
-Existing script contents synchronize in both directions. Create, move, rename, and delete assets
-through structured pcbridge commands; do not perform structural changes by moving or deleting
-mirrored local files. Non-script files are indexed but downloaded only with `workspace pull`.
+Existing script and binary asset contents synchronize in both directions. Create, move, rename,
+and delete assets through structured pcbridge commands; do not perform structural changes by moving
+or deleting mirrored local files. `workspace pull` explicitly refreshes one file but is not needed
+for normal synchronization.
+Read `pcbridge.project.json.assets` to resolve asset ids to project-relative `assets/...` paths and
+compare remote, local, and base MD5 values. The catalog is managed by pcbridge; do not edit it to
+request remote asset operations. Confirmed remote deletions are quarantined under
+`tmp/trash/remote/`; `tmp/conflicts/` is reserved for divergent local and remote contents.
+
+Selecting a Template Asset exposes **pcbridge Tiny Builder** in the Attributes panel. It collects
+dependencies, fills the workspace cache, and uploads individual S3 objects without a ZIP. Project
+`.env` overrides workspace-root `.env`; never read or return credential values. CLI equivalents are
+`pcbridge builder start --target editor:<sceneId> --asset <id>` and
+`pcbridge builder status --job <jobId>`.
 
 Local file arguments are restricted to the selected project workspace. Never use
 `--allow-external-path` unless the user explicitly asks to use a known external file.

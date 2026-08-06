@@ -17,8 +17,12 @@ function canvas(id = "application-canvas") {
 
 async function loadMainWorld({
   app,
+  assetsApi,
   editorApp,
+  editorLocation = false,
   exposeEditorApi = false,
+  pcui,
+  selectedAsset,
   visibilityState = "visible",
   splashVisible = false,
 }) {
@@ -50,11 +54,19 @@ async function loadMainWorld({
       return canvas("");
     },
   };
-  const location = {
-    hostname: "launch.playcanvas.com",
-    pathname: "/2558183",
-    href: "https://launch.playcanvas.com/2558183",
-  };
+  const location = editorLocation
+    ? {
+        hostname: "playcanvas.com",
+        pathname: "/editor/scene/2558183",
+        href: "https://playcanvas.com/editor/scene/2558183",
+      }
+    : {
+        hostname: "launch.playcanvas.com",
+        pathname: "/2558183",
+        href: "https://launch.playcanvas.com/2558183",
+      };
+  const intervals = [];
+  const storage = new Map();
   const window = {
     console: { debug() {}, log() {}, info() {}, warn() {}, error() {} },
     document,
@@ -77,12 +89,19 @@ async function loadMainWorld({
       messages.push(message);
     },
     getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+    pcui,
   };
-  if (editorApp || exposeEditorApi) {
+  if (editorApp || exposeEditorApi || selectedAsset) {
     window.editor = {
-      ...(exposeEditorApi ? { api: { globals: {} } } : {}),
+      ...(exposeEditorApi ? { api: { globals: assetsApi ? { assets: assetsApi } : {} } } : {}),
+      ...(assetsApi ? { assets: assetsApi } : {}),
       call(method) {
         if (method === "viewport:app") return editorApp || app;
+        if (method === "selector:items") {
+          const asset = typeof selectedAsset === "function" ? selectedAsset() : selectedAsset;
+          return asset ? [asset] : [];
+        }
+        if (method === "layout.attributes") return pcui && pcui.layout;
         return null;
       },
     };
@@ -96,6 +115,16 @@ async function loadMainWorld({
     performance,
     setTimeout,
     clearTimeout,
+    setInterval: (callback) => {
+      intervals.push(callback);
+      return intervals.length;
+    },
+    clearInterval() {},
+    localStorage: {
+      getItem: (key) => storage.get(key) || null,
+      setItem: (key, value) => storage.set(key, String(value)),
+    },
+    navigator: { clipboard: { writeText: async () => undefined } },
     URLSearchParams,
     Blob,
     FormData,
@@ -128,7 +157,7 @@ async function loadMainWorld({
     return response.data;
   }
 
-  return { call, callRaw };
+  return { call, callRaw, intervals, messages, window };
 }
 
 test("Launch target uses Engine V2 AppBase and reports a stalled hidden lifecycle", async () => {
@@ -299,4 +328,149 @@ test("eval preserves structured page error codes and details", async () => {
   assert.equal(response.ok, false);
   assert.equal(response.error.code, "SCRIPT_PARSE_INVALID");
   assert.equal(response.error.details.parserCompleted, true);
+});
+
+test("Template dependency collection follows asset references and excludes sds scripts", async () => {
+  const asset = (data) => ({
+    get(path) {
+      return path.split(".").reduce((value, key) => value && value[key], data);
+    },
+    json: () => structuredClone(data),
+  });
+  const values = new Map([
+    [1, asset({
+      id: 1,
+      name: "Root Template",
+      type: "template",
+      data: {
+        entities: {
+          root: {
+            components: {
+              render: { material: 2 },
+              script: {
+                scripts: {
+                  mover: { attributes: {} },
+                  sdsWebOnly: { attributes: {} },
+                  sdsTinyRootHandler: {
+                    attributes: { type: "testTemplate", testTemplate: 9 },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    })],
+    [2, asset({ id: 2, name: "Material", type: "material", data: { diffuseMap: 3 }, file: null })],
+    [3, asset({
+      id: 3,
+      name: "Texture",
+      type: "texture",
+      data: {},
+      file: { filename: "texture.png", hash: "abc", url: "/texture.png" },
+    })],
+    [4, asset({
+      id: 4,
+      name: "mover.js",
+      type: "script",
+      data: {},
+      file: { filename: "mover.js", hash: "def", url: "/mover.js" },
+    })],
+    [5, asset({
+      id: 5,
+      name: "sdsWebOnly.js",
+      type: "script",
+      data: {},
+      file: { filename: "sdsWebOnly.js", hash: "ghi", url: "/sds.js" },
+    })],
+    [9, asset({ id: 9, name: "Child", type: "template", data: { entities: {} }, file: null })],
+  ]);
+  const assetsApi = {
+    get: (id) => values.get(Number(id)),
+    list: () => [...values.values()],
+    getAssetForScript(name) {
+      if (name === "mover") return values.get(4);
+      if (name === "sdsWebOnly") return values.get(5);
+      return null;
+    },
+  };
+  const runtime = await loadMainWorld({
+    app: null,
+    assetsApi,
+    exposeEditorApi: true,
+  });
+  const result = await runtime.call("bridge:collectTemplateDependencies", { assetId: "1" });
+  assert.deepEqual(Array.from(result.assets, (item) => item.id).sort(), [2, 3, 4]);
+  assert.deepEqual(Array.from(result.scripts, (item) => item.name), ["mover"]);
+  assert.deepEqual(Array.from(result.childTemplateIds), ["9"]);
+});
+
+test("Template selection injects the pcbridge builder panel into the attributes layout", async () => {
+  class Element {
+    constructor(args = {}) {
+      Object.assign(this, args);
+      this.children = [];
+      this.handlers = new Map();
+      this.class = { add() {} };
+      this.enabled = true;
+    }
+    append(value) {
+      value.parent = this;
+      this.children.push(value);
+    }
+    on(type, handler) { this.handlers.set(type, handler); }
+    destroy() {
+      this.destroyed = true;
+      if (this.parent) {
+        this.parent.children = this.parent.children.filter((child) => child !== this);
+        this.parent = null;
+      }
+    }
+  }
+  const layout = new Element();
+  const pcui = {
+    Container: Element,
+    Button: Element,
+    Label: Element,
+    TextInput: Element,
+    layout,
+  };
+  const selectedAsset = {
+    get(path) {
+      if (path === "id") return 123;
+      if (path === "type") return "template";
+      return null;
+    },
+  };
+  let currentSelection = selectedAsset;
+  const runtime = await loadMainWorld({
+    app: null,
+    editorLocation: true,
+    exposeEditorApi: true,
+    pcui,
+    selectedAsset: () => currentSelection,
+  });
+  const selectionHandlers = new Map();
+  runtime.window.editor.selection = {
+    on(type, handler) { selectionHandlers.set(type, handler); },
+  };
+  assert.equal(runtime.intervals.length, 1);
+  runtime.intervals[0]();
+  assert.equal(layout.children.length, 1);
+  const panel = layout.children[0];
+  assert.equal(panel.children[0].text, "pcbridge Tiny Builder");
+  assert.ok(panel.children.some((item) => item.text === "构建并上传到 S3"));
+
+  currentSelection = null;
+  selectionHandlers.get("remove")();
+  currentSelection = selectedAsset;
+  selectionHandlers.get("add")(selectedAsset);
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  assert.equal(layout.children.length, 1, "a remove/add selection race must not hide the panel");
+
+  layout.children = [];
+  panel.parent = null;
+  runtime.intervals[0]();
+  assert.equal(layout.children.length, 1, "an Inspector rebuild must reattach the panel");
+  assert.notEqual(layout.children[0], panel);
 });

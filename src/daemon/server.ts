@@ -15,6 +15,7 @@ import {
 } from "../frontend/server.js";
 import { TargetRegistry } from "./target-registry.js";
 import { WorkspaceManager } from "../workspace/manager.js";
+import { BuilderManager } from "../builder/manager.js";
 import {
   fail,
   normalizeError,
@@ -57,6 +58,7 @@ export type DaemonServer = {
   registry: TargetRegistry;
   frontend: FrontendServer;
   workspace: WorkspaceManager;
+  builder: BuilderManager;
   close: () => Promise<void>;
   listen: () => Promise<void>;
 };
@@ -181,6 +183,16 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
       timeoutMs,
     }),
   });
+  const builder = new BuilderManager({
+    rootDir: workspace.rootDir,
+    requestTarget: (target, method, params = {}, timeoutMs = 15000) => sendToTarget({
+      target,
+      method,
+      params,
+      timeoutMs,
+    }),
+    workspace,
+  });
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -303,6 +315,47 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
         } catch (error) {
           writeJson(res, 400, fail("WORKSPACE_PULL_FAILED", String(error)));
         }
+        return;
+      }
+
+      if (url.pathname === "/builder/jobs" && req.method === "POST") {
+        if (!requireToken(req)) {
+          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
+          return;
+        }
+        const body = await readBody(req);
+        if (!isJsonObject(body) || typeof body.templateAssetId !== "string") {
+          writeJson(res, 400, fail("INVALID_REQUEST", "Template build requires templateAssetId."));
+          return;
+        }
+        const selector = typeof body.target === "string" ? body.target : "current";
+        const resolved = registry.resolve(selector);
+        if (!resolved.ok) {
+          writeJson(res, 400, fail(resolved.code, resolved.message));
+          return;
+        }
+        const suffix = typeof body.suffix === "string" ? body.suffix : undefined;
+        const prefix = typeof body.prefix === "string" ? body.prefix : undefined;
+        writeJson(
+          res,
+          202,
+          ok(builder.start(resolved.target.info, body.templateAssetId, { suffix, prefix }) as unknown as JsonValue),
+        );
+        return;
+      }
+
+      const builderJobMatch = url.pathname.match(/^\/builder\/jobs\/([^/]+)$/);
+      if (builderJobMatch && req.method === "GET") {
+        if (!requireToken(req)) {
+          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
+          return;
+        }
+        const job = builder.get(decodeURIComponent(builderJobMatch[1]));
+        if (!job) {
+          writeJson(res, 404, fail("BUILD_NOT_FOUND", "Template build job was not found."));
+          return;
+        }
+        writeJson(res, 200, ok(job as unknown as JsonValue));
         return;
       }
 
@@ -442,6 +495,7 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
     registry,
     frontend,
     workspace,
+    builder,
     listen: async () => {
       await new Promise<void>((resolveListen, reject) => {
         server.once("error", reject);

@@ -87,6 +87,7 @@ function fixtureFetch(manifest, archive) {
 
 async function runPopup(initialUrl, statusData, initialPreference = null) {
   const elements = new Map();
+  const intervals = [];
   const updatedUrls = [];
   const runtimeMessages = [];
   let preference = initialPreference;
@@ -150,8 +151,9 @@ async function runPopup(initialUrl, statusData, initialPreference = null) {
         token: "test-token",
       }));
     }
-    if (!statusData) throw new Error("daemon offline");
-    return new Response(JSON.stringify({ ok: true, data: statusData }));
+    const currentStatus = typeof statusData === "function" ? statusData() : statusData;
+    if (!currentStatus) throw new Error("daemon offline");
+    return new Response(JSON.stringify({ ok: true, data: currentStatus }));
   };
   const window = { close: () => undefined };
   const source = await readFile(join(process.cwd(), "extension/popup.js"), "utf8");
@@ -163,11 +165,16 @@ async function runPopup(initialUrl, statusData, initialPreference = null) {
     fetch: fetchMock,
     navigator: { clipboard: { writeText: async () => undefined } },
     Response,
+    setInterval: (callback) => {
+      intervals.push(callback);
+      return intervals.length;
+    },
+    setTimeout,
     window,
   });
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
-  return { elements, runtimeMessages, updatedUrls };
+  return { elements, intervals, runtimeMessages, updatedUrls };
 }
 
 test("frontend releases install, switch, serve, and remove safely", async (t) => {
@@ -351,6 +358,49 @@ test("extension popup preserves Editor URLs and always allows returning to offic
   );
   assert.equal(rememberedCustom.elements.get("use-custom").disabled, true);
   assert.equal(rememberedCustom.elements.get("use-official").disabled, false);
+});
+
+test("extension popup refreshes workspace sync status while it remains open", async () => {
+  let state = "syncing";
+  const popup = await runPopup(
+    "https://playcanvas.com/editor/scene/2558608",
+    () => ({
+      daemon: { version: "0.5.0", targetCount: 1 },
+      target: {
+        connected: true,
+        ready: true,
+        kind: "editor",
+        projectId: "1552681",
+        projectName: "pcbridge-test",
+      },
+      workspace: {
+        available: true,
+        state,
+        projectDirectory: "/workspace/1552681-pcbridge-test",
+        lastSyncedAt: state === "synced" ? new Date().toISOString() : null,
+        progress: state === "syncing" ? {
+          phase: "reconciling",
+          startedAt: new Date().toISOString(),
+          completed: 1,
+          total: 3,
+          assetId: "21",
+          action: "downloading",
+        } : null,
+        counts: { scripts: 3, scriptsSynced: state === "synced" ? 3 : 1, assets: 20 },
+      },
+      frontend: { ready: false, activeRelease: null, server: { listening: false } },
+    }),
+  );
+  assert.equal(popup.elements.get("workspace-status").textContent, "Syncing");
+  assert.equal(
+    popup.elements.get("workspace-note").textContent,
+    "Comparing workspace files 1/3 · downloading #21",
+  );
+
+  state = "synced";
+  await popup.intervals[0]();
+  assert.equal(popup.elements.get("workspace-status").textContent, "Synced");
+  assert.equal(popup.elements.get("metric-scripts").textContent, "3/3");
 });
 
 test("frontend install rejects a checksum mismatch", async (t) => {

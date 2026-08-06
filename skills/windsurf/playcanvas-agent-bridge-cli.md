@@ -15,8 +15,13 @@ with local-loopback permission. If no target is connected, install/reload the un
 
 The daemon start directory is the workspace root. After selecting an explicit target, run
 `pcbridge workspace status --target editor:<sceneId>` and stop if it reports a conflict or sync
-error. Each project is mirrored under `<projectId>-<projectName>/{assets,tmp}`. Script content syncs
-both ways; other asset files are lazy until explicitly pulled.
+error. Each project is mirrored under `<projectId>-<projectName>/{assets,tmp}`. Script and binary
+asset contents synchronize both ways; `workspace pull` explicitly refreshes one file.
+Read `pcbridge.project.json.assets` for asset ids, types, project-relative file paths, presence, and
+remote/local/base MD5 values. Treat that asset catalog as pcbridge-managed. Confirmed remote
+deletions are quarantined under `tmp/trash/remote/`; `tmp/conflicts/` contains content divergence.
+Template selection exposes pcbridge Tiny Builder for direct S3 object uploads; project `.env`
+overrides workspace-root `.env`.
 
 For the optional published Editor build, use `pcbridge frontend install latest`, verify it with
 `pcbridge frontend status`, and switch custom/official mode from the extension popup.

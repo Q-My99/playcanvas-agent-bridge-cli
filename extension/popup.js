@@ -83,27 +83,11 @@ async function switchFrontend(active, url, custom, projectId) {
   window.close();
 }
 
-async function main() {
-  const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const url = active && active.url ? new URL(active.url) : null;
-  const isEditor = isEditorUrl(url);
-  const isLaunch = Boolean(url && url.hostname === "launch.playcanvas.com");
-  const customMode = Boolean(isEditor && url.searchParams.has("use_local_frontend"));
-  const config = await loadConfig();
-  const status = await loadStatus(config, active && active.id);
+function renderStatus(status, context) {
+  const { isEditor, isLaunch, customMode, rememberedMode } = context;
   const target = status && status.target;
   const workspace = status && status.workspace;
   const frontend = status && status.frontend;
-  const projectId = (target && target.projectId) || projectIdFromUrl(url);
-  const frontendPreference = isEditor
-    ? await sendRuntimeMessage({
-        type: "pcbridge:getFrontendPreference",
-        tabId: active && active.id,
-        url: url && url.toString(),
-        projectId
-      })
-    : null;
-  const rememberedMode = frontendPreference && frontendPreference.mode;
 
   const overallStatus = document.getElementById("overall-status");
   const daemonStatus = document.getElementById("daemon-status");
@@ -149,6 +133,7 @@ async function main() {
     syncing: ["Syncing", "warning"],
     synced: ["Synced", "success"],
     "local-change": ["Local changes", "warning"],
+    "remote-change": ["Remote changes", "warning"],
     conflict: ["Conflict", "danger"],
     error: ["Sync error", "danger"],
     unavailable: ["Unavailable", "neutral"]
@@ -167,7 +152,25 @@ async function main() {
     document.getElementById("metric-assets").textContent = String(counts.assets || 0);
     document.getElementById("metric-lazy").textContent = String(counts.lazyAssets || 0);
     document.getElementById("metric-conflicts").textContent = String(counts.conflicts || 0);
-    workspaceNote.textContent = workspace.lastError || relativeTime(workspace.lastSyncedAt);
+    const phaseLabels = {
+      snapshot: "Reading asset snapshot",
+      reconciling: "Comparing workspace files",
+      persisting: "Saving project catalog"
+    };
+    const progress = workspace.progress;
+    const actionLabels = {
+      comparing: "checking",
+      downloading: "downloading",
+      uploading: "uploading",
+      conflict: "saving conflict"
+    };
+    const progressText = progress && progress.phase === "reconciling" && Number.isFinite(progress.total)
+      ? `${phaseLabels.reconciling} ${progress.completed || 0}/${progress.total || 0}` +
+        (progress.assetId ? ` · ${actionLabels[progress.action] || "checking"} #${progress.assetId}` : "")
+      : progress && phaseLabels[progress.phase];
+    workspaceNote.textContent = workspace.lastError || workspace.lastWarning ||
+      progressText ||
+      relativeTime(workspace.lastSyncedAt);
     workspaceNote.classList.toggle("error", Boolean(workspace.lastError));
   } else {
     workspacePath.textContent = workspace && workspace.rootDirectory
@@ -197,6 +200,36 @@ async function main() {
 
   useCustom.disabled = !isEditor || !serverReady || rememberedMode === "custom" || (!rememberedMode && customMode);
   useOfficial.disabled = !isEditor || rememberedMode === "official" || (!rememberedMode && !customMode);
+}
+
+async function main() {
+  const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const url = active && active.url ? new URL(active.url) : null;
+  const isEditor = isEditorUrl(url);
+  const isLaunch = Boolean(url && url.hostname === "launch.playcanvas.com");
+  const customMode = Boolean(isEditor && url.searchParams.has("use_local_frontend"));
+  const config = await loadConfig();
+  let status = await loadStatus(config, active && active.id);
+  let projectId = (status && status.target && status.target.projectId) || projectIdFromUrl(url);
+  const frontendPreference = isEditor
+    ? await sendRuntimeMessage({
+        type: "pcbridge:getFrontendPreference",
+        tabId: active && active.id,
+        url: url && url.toString(),
+        projectId
+      })
+    : null;
+  const context = {
+    isEditor,
+    isLaunch,
+    customMode,
+    rememberedMode: frontendPreference && frontendPreference.mode
+  };
+  renderStatus(status, context);
+
+  const copyPath = document.getElementById("copy-path");
+  const useCustom = document.getElementById("use-custom");
+  const useOfficial = document.getElementById("use-official");
   useCustom.addEventListener("click", () => switchFrontend(active, url, true, projectId));
   useOfficial.addEventListener("click", () => switchFrontend(active, url, false, projectId));
   copyPath.addEventListener("click", async () => {
@@ -206,6 +239,12 @@ async function main() {
     copyPath.textContent = "Copied";
     setTimeout(() => { copyPath.textContent = "Copy"; }, 1000);
   });
+
+  setInterval(async () => {
+    status = await loadStatus(config, active && active.id);
+    projectId = (status && status.target && status.target.projectId) || projectIdFromUrl(url);
+    renderStatus(status, context);
+  }, 1000);
 }
 
 main().catch((error) => {

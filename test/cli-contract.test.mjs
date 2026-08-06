@@ -42,6 +42,13 @@ test("known CLI commands return a non-zero exit code for failed envelopes", () =
   const body = JSON.parse(result.stdout);
   assert.equal(body.ok, false);
   assert.equal(body.error.code, "INVALID_REQUEST");
+
+  const builder = spawnSync(process.execPath, ["dist/cli.js", "builder", "start"], {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  });
+  assert.equal(builder.status, 1, builder.stderr);
+  assert.equal(JSON.parse(builder.stdout).error.code, "INVALID_REQUEST");
 });
 
 test("mutation timeouts and target focus selectors are validated before RPC", () => {

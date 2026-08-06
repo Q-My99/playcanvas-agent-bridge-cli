@@ -45,9 +45,11 @@ async function waitFor(predicate, message) {
   assert.fail(message);
 }
 
-async function loadBridgeWorlds() {
+async function loadBridgeWorlds({ fetchImpl } = {}) {
   const listeners = new Map();
   const sockets = [];
+  const pageMessages = [];
+  const runtimeRequests = [];
   const window = {
     console: { debug() {}, log() {}, info() {}, warn() {}, error() {} },
     document: {
@@ -69,6 +71,7 @@ async function loadBridgeWorlds() {
       listeners.set(type, values);
     },
     postMessage(message) {
+      pageMessages.push(message);
       const event = { source: window, data: message };
       for (const listener of listeners.get("message") || []) void listener(event);
     },
@@ -110,11 +113,13 @@ async function loadBridgeWorlds() {
       lastError: null,
       getManifest: () => ({ version: "test" }),
       sendMessage(message, callback) {
+        runtimeRequests.push(message);
         const responses = {
           "pcbridge:applyFrontendPreference": {},
           "pcbridge:getConfig": { host: "127.0.0.1", port: 17329, token: "test" },
           "pcbridge:getTabInfo": { tabId: 1, windowId: 1 },
           "pcbridge:probeDaemon": { reachable: true },
+          "pcbridge:daemonRequest": { ok: true, data: { id: "build-1", state: "queued" } },
           "pcbridge:rememberProjectContext": { ok: true },
         };
         callback(responses[message.type] || null);
@@ -137,6 +142,8 @@ async function loadBridgeWorlds() {
     URLSearchParams,
     Blob,
     FormData,
+    fetch: fetchImpl || fetch,
+    Response,
     Uint8Array,
     Uint8ClampedArray,
     WeakSet,
@@ -154,10 +161,13 @@ async function loadBridgeWorlds() {
   socket.dispatch("open");
   await settleExtensionTasks();
   socket.sent.length = 0;
+  socket.pageMessages = pageMessages;
+  socket.runtimeRequests = runtimeRequests;
+  socket.window = window;
   return socket;
 }
 
-async function loadServiceWorker() {
+async function loadServiceWorker(fetchImpl = fetch) {
   const runtimeMessages = createEvent();
   const tabUpdates = createEvent();
   const tabRemovals = createEvent();
@@ -185,7 +195,7 @@ async function loadServiceWorker() {
     },
   };
   const source = await readFile(join(process.cwd(), "extension/service-worker.js"), "utf8");
-  vm.runInNewContext(source, { URL, chrome, fetch, console, Response });
+  vm.runInNewContext(source, { URL, chrome, fetch: fetchImpl, console, Response });
 
   async function sendMessage(message, sender = {}) {
     return new Promise((resolve) => {
@@ -248,6 +258,76 @@ test("structured main-world errors keep details through isolated WebSocket forwa
     message: "template state is unknown",
     details: { stateUnknown: true, completedEntityIds: ["one"] },
   });
+});
+
+test("isolated bridge forwards Template builder jobs through the extension background", async () => {
+  const socket = await loadBridgeWorlds({
+    fetchImpl: async () => { throw new Error("the isolated page must not fetch the daemon"); },
+  });
+  socket.window.postMessage({
+    channel: "playcanvas-agent-bridge",
+    side: "main",
+    type: "daemon-request",
+    id: "builder-request",
+    path: "/builder/jobs",
+    method: "POST",
+    body: { templateAssetId: "123" },
+  });
+  const response = await waitFor(
+    () => socket.pageMessages.find((message) =>
+      message.type === "daemon-response" && message.id === "builder-request"
+    ),
+    "isolated bridge did not return the daemon response",
+  );
+  assert.equal(response.ok, true);
+  const request = socket.runtimeRequests.find((item) => item.type === "pcbridge:daemonRequest");
+  assert.deepEqual(JSON.parse(JSON.stringify(request)), {
+    type: "pcbridge:daemonRequest",
+    path: "/builder/jobs",
+    method: "POST",
+    body: {
+      templateAssetId: "123",
+      target: "tab:1",
+    },
+  });
+});
+
+test("extension background authenticates Template builder requests to the local daemon", async () => {
+  const requests = [];
+  const extension = await loadServiceWorker(async (url, options) => {
+    if (url === "chrome-extension://test/config.json") {
+      return new Response(JSON.stringify({ host: "127.0.0.1", port: 17329, token: "test" }), {
+        status: 200,
+      });
+    }
+    requests.push({ url, options });
+    return new Response(JSON.stringify({
+      ok: true,
+      data: { id: "build-1", state: "queued" },
+    }), { status: 202, headers: { "Content-Type": "application/json" } });
+  });
+  const response = await extension.sendMessage({
+    type: "pcbridge:daemonRequest",
+    path: "/builder/jobs",
+    method: "POST",
+    body: { templateAssetId: "123" },
+  }, { tab: { id: 41 } });
+  assert.equal(response.ok, true);
+  assert.equal(requests[0].url, "http://127.0.0.1:17329/builder/jobs");
+  assert.equal(requests[0].options.headers["X-PCBridge-Token"], "test");
+  assert.deepEqual(JSON.parse(requests[0].options.body), {
+    templateAssetId: "123",
+    target: "tab:41",
+  });
+  const blocked = await extension.sendMessage({
+    type: "pcbridge:daemonRequest",
+    path: "/rpc",
+    method: "POST",
+    body: {},
+  }, { tab: { id: 41 } });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.error.code, "UNSUPPORTED_DAEMON_REQUEST");
+  assert.equal(requests.length, 1);
 });
 
 test("extension remembers frontend mode per project and applies it to project and scene URLs", async () => {

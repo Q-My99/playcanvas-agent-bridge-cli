@@ -140,10 +140,67 @@
     });
   }
 
+  async function callDaemon(path, method, body) {
+    const allowed =
+      (path === "/builder/jobs" && method === "POST") ||
+      (/^\/builder\/jobs\/[^/]+$/.test(path) && method === "GET");
+    if (!allowed) throw new Error("Unsupported pcbridge browser request.");
+    const payload = body && typeof body === "object" ? { ...body } : {};
+    if (method === "POST" && !payload.target && Number.isInteger(tabInfo.tabId)) {
+      payload.target = "tab:" + tabInfo.tabId;
+    }
+    const response = await requestRuntime({
+      type: "pcbridge:daemonRequest",
+      path,
+      method,
+      body: payload
+    });
+    if (!response) throw new Error("pcbridge extension background service is unavailable.");
+    if (!response.ok) {
+      const error = new Error(
+        (response.error && response.error.message) || "pcbridge daemon request failed."
+      );
+      if (response.error && response.error.code) error.code = response.error.code;
+      if (response.error && response.error.details !== undefined) {
+        error.details = response.error.details;
+      }
+      throw error;
+    }
+    return response.data;
+  }
+
+  async function handleDaemonRequest(message) {
+    try {
+      const data = await callDaemon(message.path, message.method || "GET", message.body || {});
+      window.postMessage({
+        channel: CHANNEL,
+        side: "isolated",
+        type: "daemon-response",
+        id: message.id,
+        ok: true,
+        data
+      }, "*");
+    } catch (error) {
+      window.postMessage({
+        channel: CHANNEL,
+        side: "isolated",
+        type: "daemon-response",
+        id: message.id,
+        ok: false,
+        error: serializeError(error)
+      }, "*");
+    }
+  }
+
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
     const message = event.data;
     if (!message || message.channel !== CHANNEL || message.side !== "main") return;
+
+    if (message.type === "daemon-request" && message.id) {
+      void handleDaemonRequest(message);
+      return;
+    }
 
     if (message.type === "ready") {
       sendTargetUpdate().catch((error) => {

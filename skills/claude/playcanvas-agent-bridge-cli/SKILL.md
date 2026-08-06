@@ -53,17 +53,27 @@ Workspace layout:
 
 ```text
 <workspace root>/<projectId>-<projectName>/
-  pcbridge.project.json
-  assets/       # remote folder tree and synchronized scripts
-  tmp/          # task scripts, manifests, captures, and conflict copies
+  pcbridge.project.json # project metadata and agent-readable asset catalog
+  assets/       # remote folder tree and synchronized asset file contents
+  tmp/          # task files, builds, cache, conflicts, captures, and deletion quarantine
   .pcbridge/    # internal state; do not edit
 ```
 
-Existing script contents synchronize in both directions. Use structured commands for asset create,
-move, rename, and delete operations. Other asset files remain lazy until
-`pcbridge workspace pull --target editor:<sceneId> --asset <assetId>` is requested. Local file
+Existing script and binary asset contents synchronize in both directions. Use structured commands
+for asset create, move, rename, and delete operations. `pcbridge workspace pull --target
+editor:<sceneId> --asset <assetId>` explicitly refreshes one file. Local file
 arguments must stay inside the selected project workspace. Do not use `--allow-external-path`
 unless the user explicitly asks to use a known external file.
+Read `pcbridge.project.json.assets` to resolve asset ids to project-relative `assets/...` paths and
+compare remote, local, and base MD5 values. Do not edit the managed asset catalog to request remote
+operations. Remote deletions are quarantined under `tmp/trash/remote/`, while true content
+divergence remains under `tmp/conflicts/`.
+
+Selecting a Template Asset exposes **pcbridge Tiny Builder** in the Attributes panel. It collects
+dependencies, fills the workspace cache, and uploads individual S3 objects without a ZIP. Project
+`.env` overrides workspace-root `.env`; never expose credential values. CLI equivalents are
+`pcbridge builder start --target editor:<sceneId> --asset <id>` and
+`pcbridge builder status --job <jobId>`.
 
 Use structured commands for small, known Editor operations:
 
