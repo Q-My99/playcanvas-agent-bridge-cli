@@ -13,7 +13,7 @@ npm install -g playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-下文命令跟随仓库版 `0.5.1`。npm 安装的是最新稳定版本；测试尚未发布的改动时请使用
+下文命令跟随仓库版 `0.5.2`。npm 安装的是最新稳定版本；测试尚未发布的改动时请使用
 GitHub 安装。
 
 如果要测试尚未发布的改动，也可以直接从这个 GitHub 仓库安装：
@@ -119,11 +119,18 @@ pcbridge workspace sync --target editor:<sceneId>
 pcbridge workspace pull --target editor:<sceneId> --asset <assetId>
 ```
 
-脚本、图片、模型、音频等文件内容都保持双向同步。首次建立镜像会下载项目文件；之后每轮
-刷新只读取完整 Asset 元数据，并用 PlayCanvas MD5 与本地缓存的 size/mtime/MD5 判断变化，
-不会重复全量传输文件内容。本地单边修改会上传，远端单边修改会下载；同时修改时不会覆盖
-任一版本，文本和二进制冲突副本都写入 `tmp/conflicts/`。资源的新建、移动、重命名和删除
-仍应使用 pcbridge 结构化命令；`workspace pull` 可用于显式重新拉取单个文件。
+脚本默认实时同步到本地；图片、模型、音频、字体等二进制资源默认只同步 Asset 元数据，
+不会在首次建立镜像时下载文件内容。需要本地文件时使用 `workspace pull`，或由 Tiny Builder
+在构建实际依赖时按需拉取。已经存在于 `assets/` 的本地二进制文件会保留并参与双向同步。
+刷新只读取完整 Asset 元数据，并用 PlayCanvas MD5 与本地缓存的 size/mtime/MD5 判断变化。
+本地修改会自动上传，远端修改会按基线判断并下载；同时修改时不会覆盖任一版本，文本和二进制
+冲突副本都写入 `tmp/conflicts/`。
+
+daemon 会监控项目 `assets/` 目录：本地新增文件会上传到对应目录，由 PlayCanvas 自行判断资源
+类型并完成导入，然后重新读取远端 Asset 列表；本地目录会自动映射为 PlayCanvas Folder。
+本地重命名和移动会保持同一个 Asset ID，并同步远端名称和目录。删除本地文件只视为清理本地
+缓存，不会删除 PlayCanvas 远端 Asset；远端删除仍会隔离到 `tmp/trash/remote/`。`tmp/` 下的
+构建、缓存和 agent 临时文件完全不参与 workspace 同步。
 
 schema v2 的 `pcbridge.project.json` 会记录每个 asset 的 id、类型、PlayCanvas 文件夹、相对
 项目根目录的 `assets/...` 文件路径、是否已下载，以及远端、本地和同步基线 MD5。agent 可以

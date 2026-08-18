@@ -143,6 +143,7 @@
   async function callDaemon(path, method, body) {
     const allowed =
       (path === "/builder/jobs" && method === "POST") ||
+      (path === "/workspace/sync" && method === "POST") ||
       (/^\/builder\/jobs\/[^/]+$/.test(path) && method === "GET");
     if (!allowed) throw new Error("Unsupported pcbridge browser request.");
     const payload = body && typeof body === "object" ? { ...body } : {};

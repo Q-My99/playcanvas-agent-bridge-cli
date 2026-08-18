@@ -20,7 +20,7 @@ npm install -g github:Q-My99/playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-The commands documented below track repository version `0.5.1`. npm installs the latest stable
+The commands documented below track repository version `0.5.2`. npm installs the latest stable
 release; use the GitHub install when testing changes that have not been released yet.
 
 One-shot with npx:
@@ -105,7 +105,7 @@ When a ready Editor connects, pcbridge creates `<projectId>-<projectName>/` auto
 ```text
 1552681-pcbridge-test/
 ├── pcbridge.project.json # project metadata plus the agent-readable asset catalog
-├── assets/       # PlayCanvas folder mirror with bidirectional file-content sync
+├── assets/       # PlayCanvas folder mirror; scripts eager, binary assets lazy
 ├── tmp/          # builds, cache, conflicts, captures, and quarantined remote deletions
 └── .pcbridge/    # internal sync state; do not edit
 ```
@@ -119,12 +119,15 @@ pcbridge workspace sync --target editor:<sceneId>
 pcbridge workspace pull --target editor:<sceneId> --asset <assetId>
 ```
 
-Scripts, images, models, audio, and other asset files synchronize in both directions. The initial
-mirror downloads project files. Later refreshes read the complete Asset metadata snapshot but reuse
-cached local size/mtime/MD5 values and transfer file content only when it is missing or changed.
-A local-only edit uploads, a remote-only edit downloads, and concurrent edits preserve both text or
-binary copies under `tmp/conflicts/`. Create, move, rename, and delete assets through structured
-pcbridge commands; `workspace pull` remains available for an explicit single-file refresh.
+Scripts are eagerly mirrored and kept close to real time. Images, models, audio, fonts, and other
+binary assets are lazy: refresh records the Asset metadata and PlayCanvas MD5 without downloading
+file contents. Use `workspace pull`, or let Tiny Builder fetch the dependencies needed for a build.
+Existing binary files under `assets/` are retained and remain bidirectional. Local edits upload,
+remote edits download according to the sync baseline, and concurrent edits preserve both copies under
+`tmp/conflicts/`. New local files are uploaded into their matching folder and PlayCanvas decides the
+imported type; local folders are created remotely. Renames and moves preserve the Asset ID. Deleting
+a local file only clears the local cache and never deletes the remote Asset. The `tmp/` tree is
+agent-owned and excluded from workspace synchronization.
 
 `pcbridge.project.json` schema v2 stores every asset id, type, PlayCanvas folder, project-relative
 `assets/...` file path, download presence, and the remote/local/base MD5 values. Agents may read

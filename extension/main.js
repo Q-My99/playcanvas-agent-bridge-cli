@@ -13,6 +13,8 @@
   let builderRefreshTimer = null;
   let selectedTemplateId = null;
   let selectedTemplateAsset = null;
+  let workspaceEventsInstalled = false;
+  let workspaceSyncTimer = null;
 
   function formatLogArg(value) {
     if (typeof value === "string") return value;
@@ -511,6 +513,8 @@
       id: get("id"),
       name: get("name"),
       type: get("type"),
+      source: get("source") || false,
+      source_asset_id: get("source_asset_id") || null,
       path,
       folder: Array.isArray(path) && path.length ? path[path.length - 1] : null,
       tags: get("tags") || [],
@@ -619,6 +623,30 @@
     };
   }
 
+  function scheduleWorkspaceSync() {
+    if (workspaceSyncTimer) clearTimeout(workspaceSyncTimer);
+    workspaceSyncTimer = setTimeout(() => {
+      workspaceSyncTimer = null;
+      void daemonRequest("/workspace/sync", "POST", {}, 60000).catch(() => undefined);
+    }, 250);
+  }
+
+  function installWorkspaceEvents() {
+    if (workspaceEventsInstalled || !window.editor?.api?.globals?.assets) return;
+    const assets = window.editor.api.globals.assets;
+    workspaceEventsInstalled = true;
+    const observe = (asset) => {
+      if (!asset || typeof asset.on !== "function") return;
+      for (const event of ["file:hash:set", "file:filename:set", "path:set", "name:set"]) {
+        try { asset.on(event, scheduleWorkspaceSync); } catch { /* optional observer event */ }
+      }
+    };
+    for (const asset of assets.list()) observe(asset);
+    for (const event of ["add", "remove", "move", "load:all"]) {
+      try { assets.on(event, (asset) => { observe(asset); scheduleWorkspaceSync(); }); } catch { /* optional assets event */ }
+    }
+  }
+
   async function readAssetText(params) {
     const asset = requireEditorAsset(params.assetId);
     if (asset.get("type") !== "script") {
@@ -721,6 +749,30 @@
       size: bytes.length,
       response: body
     };
+  }
+
+  async function renameAsset(params) {
+    const asset = requireEditorAsset(params.assetId);
+    const assets = window.editor.api.globals.assets;
+    const folderResult = await resolveFolder(assets, params);
+    const filename = String(params.filename || asset.get("file.filename") || asset.get("name") || "asset.bin");
+    const name = String(params.name || filename);
+    await new Promise((resolve, reject) => {
+      const error = window.editor.call("assets:rename", asset.observer, name, (callbackError) => {
+        if (callbackError) reject(new Error(String(callbackError)));
+        else resolve();
+      });
+      if (error) reject(new Error(String(error)));
+    });
+    if (typeof window.editor.call === "function" && Object.prototype.hasOwnProperty.call(params, "folder")) {
+      const error = window.editor.call(
+        "assets:fs:move",
+        [asset.observer],
+        folderResult.folder ? folderResult.folder.observer : null
+      );
+      if (error) throw new Error(String(error));
+    }
+    return { asset: readAsset(asset), createdFolders: folderResult.created.map(readAsset) };
   }
 
   async function writeScriptText(params) {
@@ -1257,22 +1309,22 @@
   async function uploadAsset(params) {
     if (!params.base64) throw new Error("base64 file content is required.");
     if (!params.name) throw new Error("name is required.");
-    if (!params.type) throw new Error("type is required.");
 
     const assets = window.editor.api.globals.assets;
     const folderResult = await resolveFolder(assets, params);
     const blob = new Blob([bytesFromBase64(params.base64)], {
       type: params.mime || "application/octet-stream"
     });
-    const asset = await assets.upload(
-      {
+    const uploadData = {
         name: params.name,
-        type: params.type,
         folder: folderResult.folder || undefined,
         filename: params.filename || params.name,
         file: blob,
         preload: params.preload !== false
-      },
+    };
+    if (params.type) uploadData.type = params.type;
+    const asset = await assets.upload(
+      uploadData,
       null
     );
     return {
@@ -1345,12 +1397,16 @@
     if (method === "bridge:clearLogs") return clearLogs();
     if (method === "bridge:uploadAsset") return uploadAsset(params || {});
     if (method === "bridge:focusViewport") return focusViewport(params || {});
-    if (method === "bridge:workspaceSnapshot") return workspaceSnapshot();
+    if (method === "bridge:workspaceSnapshot") {
+      installWorkspaceEvents();
+      return workspaceSnapshot();
+    }
     if (method === "bridge:collectTemplateDependencies") return collectTemplateDependencies(params || {});
     if (method === "bridge:readAssetText") return readAssetText(params || {});
     if (method === "bridge:readAssetFile") return readAssetFile(params || {});
     if (method === "bridge:readAssetResource") return readAssetResource(params || {});
     if (method === "bridge:writeAssetFile") return writeAssetFile(params || {});
+    if (method === "bridge:renameAsset") return renameAsset(params || {});
     if (method === "bridge:writeScriptText") return writeScriptText(params || {});
     throw new Error(`Unknown bridge method: ${method}`);
   }

@@ -15,8 +15,14 @@ with local-loopback permission. If no target is connected, install/reload the un
 
 The daemon start directory is the workspace root. After selecting an explicit target, run
 `pcbridge workspace status --target editor:<sceneId>` and stop if it reports a conflict or sync
-error. Each project is mirrored under `<projectId>-<projectName>/{assets,tmp}`. Script and binary
-asset contents synchronize both ways; `workspace pull` explicitly refreshes one file.
+error. Each project is mirrored under `<projectId>-<projectName>/{assets,tmp}`. Prefer local
+operations for file-backed Assets: edit scripts under `assets/`; create files/folders there to
+upload through PlayCanvas processing; rename or move locally to preserve the remote Asset ID.
+Deleting locally only clears the cache, never the remote Asset. Scripts are eager and binaries are
+lazy; use `workspace pull` before editing a missing binary. Edit source GLBs, not generated
+Model/Container/material derivatives. `tmp/` is never synchronized. After local writes, poll
+`workspace status` until `synced`; a brief `local-change` is expected. If it does not converge,
+run one `workspace sync` and inspect status plus `tmp/conflicts/`.
 Read `pcbridge.project.json.assets` for asset ids, types, project-relative file paths, presence, and
 remote/local/base MD5 values. Treat that asset catalog as pcbridge-managed. Confirmed remote
 deletions are quarantined under `tmp/trash/remote/`; `tmp/conflicts/` contains content divergence.
@@ -30,7 +36,8 @@ Editor navigations; change the remembered choice only through the popup.
 
 Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help target|workspace|frontend|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
 
-Use structured commands for small, known Editor operations:
+Use structured commands for scene structure, Asset metadata, explicit transfers, and verification.
+For normal file-content changes, prefer editing the tracked local file under `assets/`:
 
 ```bash
 pcbridge entity list --target editor:<sceneId> --limit 50
@@ -62,7 +69,8 @@ pcbridge logs get --target launch:<sceneId> --limit 100
 pcbridge logs get --target launch:<sceneId> --level error
 ```
 
-Put generated assets under `AI Agent Bridge/<task name>/Textures`, `Materials`, and `Scripts`.
+Put final file-backed assets under `assets/AI Agent Bridge/<task name>/...`; keep disposable
+generation files under `tmp/<task name>/`.
 
 Use `pcbridge launch diagnose` and `pcbridge launch wait-ready --focus` before runtime assertions.
 Launch `lifecycleReady` is a best-effort heuristic based on an owned graphics canvas/context,
@@ -81,6 +89,10 @@ Capture records the current canvas, defaults to `--max-width 1200`, and does not
 
 For large eval installs, use `pcbridge eval --target editor:<sceneId> --file ./install.js --args-json ./install-args.json --timeout-ms 120000`.
 
-For large tasks, choose an explicit target from `pcbridge targets`, keep generated files and captures under the project `tmp/` directory, upload batches with `asset upload-many`, edit tracked scripts under `assets/`, and capture the viewport after smoke tests. Local file arguments must remain inside the workspace; never use `--allow-external-path` without explicit user approval. If repeated manual glue appears, improve the CLI or this rule.
+For large tasks, choose an explicit target, confirm the workspace is `synced`, keep disposable files
+and captures under `tmp/`, and put final scripts, textures, models, and audio directly under
+`assets/`. Wait for sync before scene writes or runtime tests. Use `asset upload-many` only when
+explicit import settings or a non-watched path is required. Local file arguments must remain inside
+the workspace; never use `--allow-external-path` without explicit user approval.
 
 Do not pre-place runtime-generated content just to prove a game exists. Keep procedural maps, pickups, enemies, and VFX in the runtime script, with only a small durable Editor root and helper entities when needed. If Editor entities must be created, use structured commands and small `entity create-many` batches with read-back verification; large eval scripts that create many entities in a tight loop can briefly show objects and then lose them from the Editor data model.

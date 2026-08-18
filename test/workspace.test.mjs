@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { WorkspaceManager, safeAssetName, safeWorkspaceName } from "../dist/workspace/manager.js";
@@ -118,13 +118,9 @@ test("workspace creates a project mirror and synchronizes scripts and binary ass
   assert.equal(manifest.assets["11"].file.path, "assets/Scripts/controller.js");
   assert.equal(manifest.assets["11"].file.hash.algorithm, "md5");
   assert.equal(manifest.assets["11"].file.hash.matches, true);
-  assert.equal(manifest.assets["21"].file.present, true);
-  assert.equal(manifest.assets["21"].file.hash.matches, true);
-  assert.deepEqual(
-    Array.from(await readFile(join(projectDirectory, "assets", "Textures", "logo.png"))),
-    [1, 2, 3, 4],
-  );
-  assert.equal(binaryReads, 1);
+  assert.equal(manifest.assets["21"].file.present, false);
+  assert.equal(manifest.assets["21"].file.hash.matches, null);
+  assert.equal(binaryReads, 0);
 
   await writeFile(scriptPath, "const version = 2;\n");
   await manager.syncTarget(target);
@@ -137,7 +133,7 @@ test("workspace creates a project mirror and synchronizes scripts and binary ass
   assert.equal(pendingManifest.assets["11"].file.hash.matches, false);
   await manager.syncTarget(target);
   assert.equal(manager.statusForTarget(target).state, "synced");
-  assert.equal(binaryReads, 1, "unchanged local binary should reuse cached size/mtime and MD5");
+  assert.equal(binaryReads, 0, "unchanged lazy binary should not be downloaded");
   const manifestPath = join(projectDirectory, "pcbridge.project.json");
   const stableManifest = await readFile(manifestPath, "utf8");
   const stableManifestMtime = (await stat(manifestPath)).mtimeMs;
@@ -209,6 +205,82 @@ test("workspace creates a project mirror and synchronizes scripts and binary ass
   assert.equal(conflicts, remoteText);
 });
 
+test("workspace accepts a remote script edit immediately after a local upload", async (t) => {
+  const tmpBase = join(process.cwd(), "tmp");
+  await mkdir(tmpBase, { recursive: true });
+  const root = await mkdtemp(join(tmpBase, "workspace-script-race-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const initialText = "const initial = true;\n";
+  const localText = initialText + 'var testSyncProp = "test local to remote";\n';
+  const remoteEditedText = localText + 'var testSyncProp2 = "test remote to local";\n';
+  let remoteText = initialText;
+  let advertisedHash = hash(initialText);
+  const manager = new WorkspaceManager({
+    rootDir: root,
+    refreshIntervalMs: 0,
+    localChangeDebounceMs: 60000,
+    requestTarget: async (_target, method, params) => {
+      if (method === "bridge:workspaceSnapshot") {
+        return {
+          ok: true,
+          data: {
+            assets: [{
+              id: 11,
+              name: "race.js",
+              type: "script",
+              path: [],
+              file: { filename: "race.js", hash: advertisedHash, size: remoteText.length },
+            }],
+          },
+        };
+      }
+      if (method === "bridge:readAssetText") {
+        return { ok: true, data: { assetId: "11", filename: "race.js", text: remoteText } };
+      }
+      if (method === "bridge:writeScriptText") {
+        remoteText = String(params.text);
+        // Deliberately leave advertisedHash stale to reproduce the Editor
+        // observer lag seen immediately after a local upload.
+        return { ok: true, data: { assetId: "11", parsed: true } };
+      }
+      throw new Error(`Unexpected method ${method}`);
+    },
+  });
+  t.after(() => manager.close());
+  const target = {
+    id: "tab:script-race",
+    clientId: "client-script-race",
+    kind: "editor",
+    url: "https://playcanvas.com/editor/scene/5",
+    projectId: "5",
+    projectName: "Script Race",
+    sceneId: "5",
+    branchId: "main",
+    ready: true,
+    connected: true,
+    lastSeen: new Date().toISOString(),
+  };
+
+  await manager.handleTarget(target);
+  const scriptPath = join(root, "5-Script-Race", "assets", "race.js");
+  await writeFile(scriptPath, localText);
+  await manager.syncTarget(target);
+  assert.equal(manager.statusForTarget(target).state, "local-change");
+
+  remoteText = remoteEditedText;
+  advertisedHash = hash(remoteEditedText);
+  await manager.syncTarget(target);
+
+  assert.equal(await readFile(scriptPath, "utf8"), remoteEditedText);
+  assert.equal(manager.statusForTarget(target).state, "synced");
+  const manifest = JSON.parse(
+    await readFile(join(root, "5-Script-Race", "pcbridge.project.json"), "utf8"),
+  );
+  assert.equal(manifest.assets["11"].file.hash.base, hash(remoteEditedText));
+  assert.equal(manifest.assets["11"].state, "synced");
+});
+
 test("workspace uses the MD5 baseline for binary upload, download, and conflict copies", async (t) => {
   const tmpBase = join(process.cwd(), "tmp");
   await mkdir(tmpBase, { recursive: true });
@@ -266,6 +338,8 @@ test("workspace uses the MD5 baseline for binary upload, download, and conflict 
   await manager.handleTarget(target);
   const projectDirectory = join(root, "2-Binary");
   const imagePath = join(projectDirectory, "assets", "Textures", "image.png");
+  await assert.rejects(access(imagePath));
+  await manager.pullAsset(target, "11");
   assert.deepEqual(await readFile(imagePath), Buffer.from([1, 2, 3]));
 
   await writeFile(imagePath, Buffer.from([4, 5, 6]));
@@ -291,6 +365,172 @@ test("workspace uses the MD5 baseline for binary upload, download, and conflict 
     await readFile(join(projectDirectory, "tmp", "conflicts", "11-image.png.remote")),
     Buffer.from([13, 14, 15]),
   );
+});
+
+test("workspace preserves an uploaded Asset id when a local binary is renamed", async (t) => {
+  const tmpBase = join(process.cwd(), "tmp");
+  await mkdir(tmpBase, { recursive: true });
+  const root = await mkdtemp(join(tmpBase, "workspace-rename-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const content = Buffer.from([1, 3, 3, 7]);
+  let remoteName = null;
+  let uploadCount = 0;
+  let renameCount = 0;
+  const snapshot = () => ({
+    assets: [
+      { id: 10, name: "Textures", type: "folder", path: [] },
+      ...(remoteName ? [{
+        id: 11,
+        name: remoteName,
+        type: "texture",
+        source: true,
+        path: [10],
+        file: { filename: "photo.png", hash: hash(content), size: content.length },
+      }] : []),
+    ],
+  });
+  const manager = new WorkspaceManager({
+    rootDir: root,
+    refreshIntervalMs: 0,
+    localChangeDebounceMs: 60000,
+    requestTarget: async (_target, method, params) => {
+      if (method === "bridge:workspaceSnapshot") return { ok: true, data: snapshot() };
+      if (method === "bridge:uploadAsset") {
+        uploadCount += 1;
+        remoteName = String(params.filename);
+        return { ok: true, data: { asset: snapshot().assets.at(-1) } };
+      }
+      if (method === "bridge:renameAsset") {
+        renameCount += 1;
+        assert.equal(String(params.assetId), "11");
+        remoteName = String(params.name);
+        return { ok: true, data: { asset: snapshot().assets.at(-1) } };
+      }
+      throw new Error(`Unexpected method ${method}`);
+    },
+  });
+  t.after(() => manager.close());
+  const target = {
+    id: "tab:rename",
+    clientId: "client-rename",
+    kind: "editor",
+    url: "https://playcanvas.com/editor/scene/3",
+    projectId: "3",
+    projectName: "Rename",
+    sceneId: "3",
+    branchId: "main",
+    ready: true,
+    connected: true,
+    lastSeen: new Date().toISOString(),
+  };
+
+  await manager.handleTarget(target);
+  const directory = join(root, "3-Rename", "assets", "Textures");
+  const original = join(directory, "photo.png");
+  const renamed = join(directory, "renamed.png");
+  await writeFile(original, content);
+  await manager.syncTarget(target);
+  assert.equal(uploadCount, 1);
+
+  await rename(original, renamed);
+  await manager.syncTarget(target);
+  await manager.syncTarget(target);
+  assert.equal(renameCount, 1);
+  assert.equal(uploadCount, 1);
+  assert.equal(remoteName, "renamed.png");
+  assert.equal(manager.statusForTarget(target).counts.conflicts, 0);
+});
+
+test("workspace ignores GLB-derived Assets instead of re-uploading them", async (t) => {
+  const tmpBase = join(process.cwd(), "tmp");
+  await mkdir(tmpBase, { recursive: true });
+  const root = await mkdtemp(join(tmpBase, "workspace-glb-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const content = Buffer.from("glTF-test");
+  let uploaded = false;
+  let processed = false;
+  let uploadCount = 0;
+  let binaryReads = 0;
+  const snapshot = () => ({
+    assets: [
+      { id: 10, name: "Models", type: "folder", path: [] },
+      ...(uploaded ? [{
+        id: 11,
+        name: "scene.glb",
+        type: "scene",
+        source: true,
+        path: [10],
+        file: { filename: "scene.glb", hash: hash(content), size: content.length },
+      }] : []),
+      ...(processed ? [{
+        id: 12,
+        name: "scene.glb",
+        type: "container",
+        source: false,
+        source_asset_id: 11,
+        path: [10],
+        file: { filename: "scene.glb", hash: hash("processed"), size: 9 },
+      }, {
+        id: 13,
+        name: "scene.glb",
+        type: "model",
+        source: false,
+        source_asset_id: 11,
+        path: [10],
+        file: { filename: "scene.glb", hash: hash("model"), size: 5 },
+      }] : []),
+    ],
+  });
+  const manager = new WorkspaceManager({
+    rootDir: root,
+    refreshIntervalMs: 0,
+    localChangeDebounceMs: 60000,
+    requestTarget: async (_target, method) => {
+      if (method === "bridge:workspaceSnapshot") return { ok: true, data: snapshot() };
+      if (method === "bridge:uploadAsset") {
+        uploadCount += 1;
+        uploaded = true;
+        return { ok: true, data: { asset: snapshot().assets.find((asset) => asset.id === 11) } };
+      }
+      if (method === "bridge:readAssetFile") {
+        binaryReads += 1;
+        throw new Error("Derived GLB assets must remain lazy.");
+      }
+      throw new Error(`Unexpected method ${method}`);
+    },
+  });
+  t.after(() => manager.close());
+  const target = {
+    id: "tab:glb",
+    clientId: "client-glb",
+    kind: "editor",
+    url: "https://playcanvas.com/editor/scene/4",
+    projectId: "4",
+    projectName: "GLB",
+    sceneId: "4",
+    branchId: "main",
+    ready: true,
+    connected: true,
+    lastSeen: new Date().toISOString(),
+  };
+
+  await manager.handleTarget(target);
+  const sourcePath = join(root, "4-GLB", "assets", "Models", "scene.glb");
+  await writeFile(sourcePath, content);
+  await manager.syncTarget(target);
+  processed = true;
+  await manager.syncTarget(target);
+  await manager.syncTarget(target);
+
+  assert.equal(uploadCount, 1);
+  assert.equal(binaryReads, 0);
+  assert.equal(manager.statusForTarget(target).counts.conflicts, 0);
+  const manifest = JSON.parse(await readFile(join(root, "4-GLB", "pcbridge.project.json"), "utf8"));
+  assert.equal(manifest.assets["11"].file.path, "assets/Models/scene.glb");
+  assert.equal(manifest.assets["12"].file, null);
+  assert.equal(manifest.assets["13"].file, null);
 });
 
 test("workspace migrates the v1 hidden asset index into the project manifest", async (t) => {

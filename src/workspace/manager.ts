@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { watch, type FSWatcher } from "node:fs";
 import {
   copyFile,
   lstat,
@@ -19,6 +20,8 @@ const LEGACY_INDEX_FILE = join(".pcbridge", "asset-index.json");
 const LEGACY_INDEX_BACKUP_FILE = join(".pcbridge", "asset-index.v1.json");
 const SYNC_STATE_FILE = join(".pcbridge", "sync-state.json");
 const DEFAULT_REFRESH_INTERVAL_MS = 5000;
+const DEFAULT_LOCAL_CHANGE_DEBOUNCE_MS = 350;
+const PENDING_LOCAL_FILE_TTL_MS = 5 * 60 * 1000;
 
 type RemoteFile = {
   filename?: string;
@@ -32,6 +35,8 @@ type RemoteAsset = {
   type: string;
   path?: Array<string | number>;
   file?: RemoteFile | null;
+  source?: boolean;
+  source_asset_id?: string | number | null;
 };
 
 type AssetIndexEntry = {
@@ -167,6 +172,11 @@ type ProjectRecord = {
   legacyIndexPath: string | null;
   index: AssetIndex;
   syncPromise: Promise<void> | null;
+  pendingLocalFiles: Map<string, {
+    assetId: string;
+    hash: string;
+    createdAt: number;
+  }>;
 };
 
 type TargetRequest = (
@@ -180,6 +190,7 @@ export type WorkspaceManagerOptions = {
   rootDir: string;
   requestTarget: TargetRequest;
   refreshIntervalMs?: number;
+  localChangeDebounceMs?: number;
 };
 
 function hashContent(value: string | Buffer): string {
@@ -238,6 +249,12 @@ function asObject(value: JsonValue): Record<string, JsonValue> {
   return value as Record<string, JsonValue>;
 }
 
+function isDerivedAsset(asset: RemoteAsset): boolean {
+  return asset.source_asset_id !== undefined &&
+    asset.source_asset_id !== null &&
+    asset.source_asset_id !== "";
+}
+
 async function atomicWrite(path: string, value: string | Buffer): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temporary = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
@@ -266,11 +283,15 @@ export class WorkspaceManager {
   #requestTarget: TargetRequest;
   #records = new Map<string, ProjectRecord>();
   #refreshTimer: NodeJS.Timeout | null = null;
+  #watchers = new Map<string, Set<FSWatcher>>();
+  #watchTimers = new Map<string, NodeJS.Timeout>();
+  #localChangeDebounceMs: number;
 
   constructor(options: WorkspaceManagerOptions) {
     this.rootDir = resolve(options.rootDir);
     this.#requestTarget = options.requestTarget;
     const interval = options.refreshIntervalMs ?? DEFAULT_REFRESH_INTERVAL_MS;
+    this.#localChangeDebounceMs = options.localChangeDebounceMs ?? DEFAULT_LOCAL_CHANGE_DEBOUNCE_MS;
     if (interval > 0) {
       this.#refreshTimer = setInterval(() => {
         for (const record of this.#records.values()) {
@@ -289,6 +310,10 @@ export class WorkspaceManager {
     await Promise.all(
       Array.from(this.#records.values(), (record) => record.syncPromise).filter(Boolean),
     );
+    for (const watchers of this.#watchers.values()) for (const watcher of watchers) watcher.close();
+    this.#watchers.clear();
+    for (const timer of this.#watchTimers.values()) clearTimeout(timer);
+    this.#watchTimers.clear();
   }
 
   async handleTarget(info: TargetInfo): Promise<void> {
@@ -315,6 +340,7 @@ export class WorkspaceManager {
     record.projectName = info.projectName;
     record.branchName = info.branchName || record.branchName;
     await this.#writeManifest(record);
+    this.#ensureWatcher(record);
     await this.#sync(record, false);
   }
 
@@ -364,7 +390,9 @@ export class WorkspaceManager {
     record.targetId = info.id;
     record.targetInfo = info;
     record.connected = true;
-    await this.#sync(record, true);
+    // A build only needs the selected dependency metadata and files. Do not
+    // turn lazy binary synchronization back into a full project download.
+    await this.#sync(record, false);
     return this.#status(record);
   }
 
@@ -391,13 +419,20 @@ export class WorkspaceManager {
       if (entry.localPath && !existsSync(this.#assetPath(record, entry.localPath))) {
         await this.#downloadAsset(record, entry);
       }
+      let preparedPath = entry.localPath ? this.#assetPath(record, entry.localPath) : null;
+      let preparedHash = entry.localHash;
+      if (!preparedPath && entry.filename && entry.remoteFileHash) {
+        const cached = await this.#prepareCachedAsset(record, entry);
+        preparedPath = cached.path;
+        preparedHash = cached.hash;
+      }
       assets.push({
         id,
         name: entry.name,
         type: entry.type,
         filename: entry.filename,
-        path: entry.localPath ? this.#assetPath(record, entry.localPath) : null,
-        hash: entry.localHash,
+        path: preparedPath,
+        hash: preparedHash,
       });
     }
     await this.#persist(record);
@@ -486,9 +521,53 @@ export class WorkspaceManager {
       legacyIndexPath: legacyPrimary?.schemaVersion === 1 ? legacyPrimaryPath : null,
       index,
       syncPromise: null,
+      pendingLocalFiles: new Map(),
     };
     this.#records.set(record.projectId, record);
     return record;
+  }
+
+  #ensureWatcher(record: ProjectRecord): void {
+    if (this.#watchers.has(record.projectId)) return;
+    const watchers = new Set<FSWatcher>();
+    this.#watchers.set(record.projectId, watchers);
+    const schedule = (filename: string | Buffer | null | undefined) => {
+      if (!filename) return;
+      const relativeName = toPosixPath(String(filename));
+      if (relativeName.startsWith(".pcbridge/") || relativeName.startsWith("tmp/") || relativeName.includes("/tmp/")) return;
+      const existing = this.#watchTimers.get(record.projectId);
+      if (existing) clearTimeout(existing);
+      const timer = setTimeout(() => {
+        this.#watchTimers.delete(record.projectId);
+        if (record.connected) void this.#sync(record, true);
+      }, this.#localChangeDebounceMs);
+      timer.unref();
+      this.#watchTimers.set(record.projectId, timer);
+    };
+    try {
+      const watcher = watch(record.assetsDirectory, { recursive: true }, (_event, filename) => {
+        schedule(filename);
+      });
+      watcher.on("error", (error) => { record.lastWarning = `Local workspace watcher stopped: ${String(error)}`; });
+      watchers.add(watcher);
+    } catch (error) {
+      // Some Linux Node builds do not support recursive fs.watch. Watch each
+      // existing directory instead; new directories are picked up on sync.
+      const attach = async (directory: string): Promise<void> => {
+        let watcher: FSWatcher;
+        try {
+          watcher = watch(directory, (_event, filename) => schedule(filename));
+        } catch {
+          return;
+        }
+        watchers.add(watcher);
+        let children;
+        try { children = await readdir(directory, { withFileTypes: true }); } catch { return; }
+        await Promise.all(children.filter((child) => child.isDirectory()).map((child) => attach(join(directory, child.name))));
+      };
+      void attach(record.assetsDirectory);
+      record.lastWarning = `Recursive local watcher unavailable; using directory watchers (${String(error)})`;
+    }
   }
 
   async #findProjectDirectory(projectId: string): Promise<string | null> {
@@ -542,7 +621,7 @@ export class WorkspaceManager {
         filename: asset.file?.filename || null,
         remoteFileSize: asset.file?.size ?? null,
         remoteFileHash: asset.file?.hash.remote || null,
-        localHash: present ? asset.file?.hash.local || null : null,
+        localHash: asset.file?.hash.local || null,
         lastSyncedHash: asset.file?.hash.base || null,
         legacyLastSyncedSha256: syncState?.entries?.[id]?.legacyLastSyncedSha256,
         pendingRemoteHash: syncState?.entries?.[id]?.pendingRemoteHash,
@@ -633,7 +712,7 @@ export class WorkspaceManager {
               hash: {
                 algorithm: "md5",
                 remote: entry.remoteFileHash,
-                local: present ? entry.localHash : null,
+                local: entry.localHash,
                 base: entry.lastSyncedHash,
                 matches: entry.remoteFileHash && present && entry.localHash
                   ? entry.remoteFileHash === entry.localHash
@@ -783,6 +862,7 @@ export class WorkspaceManager {
         action: "comparing",
       };
       await this.#applySnapshot(record, assets, force);
+      await this.#uploadUnindexedFiles(record);
       record.lastSyncedAt = new Date().toISOString();
       const entries = Object.values(record.index.entries);
       record.state = entries.some((entry) => entry.status === "conflict")
@@ -803,6 +883,111 @@ export class WorkspaceManager {
       record.syncStartedAt = null;
       record.syncPhase = null;
       record.syncProgress = null;
+    }
+  }
+
+  async #uploadUnindexedFiles(record: ProjectRecord): Promise<void> {
+    const now = Date.now();
+    for (const [path, pending] of record.pendingLocalFiles) {
+      if (now - pending.createdAt > PENDING_LOCAL_FILE_TTL_MS) record.pendingLocalFiles.delete(path);
+    }
+    const known = new Set(
+      Object.values(record.index.entries)
+        .map((entry) => entry.localPath ? toPosixPath(entry.localPath) : null)
+        .filter(Boolean),
+    );
+    for (const path of record.pendingLocalFiles.keys()) known.add(path);
+    const files: string[] = [];
+    const visit = async (directory: string, relativeDirectory: string): Promise<void> => {
+      let children;
+      try {
+        children = await readdir(directory, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const child of children) {
+        if (child.name.startsWith(".") || child.name === "tmp") continue;
+        const relativePath = relativeDirectory ? join(relativeDirectory, child.name) : child.name;
+        const path = join(directory, child.name);
+        if (child.isDirectory()) await visit(path, relativePath);
+        else if (child.isFile() && !known.has(toPosixPath(relativePath))) files.push(relativePath);
+      }
+    };
+    await visit(record.assetsDirectory, "");
+    for (const relativePath of files) {
+      const path = this.#assetPath(record, relativePath);
+      const content = await readFile(path);
+      const contentHash = hashContent(content);
+      const normalizedPath = toPosixPath(relativePath);
+      const parts = relativePath.split(/[\\/]/g);
+      const filename = parts.pop() || "asset.bin";
+      const folder = parts.join("/");
+      const renamed = Object.values(record.index.entries).find((entry) =>
+        entry.type !== "folder" && entry.localPath && !existsSync(this.#assetPath(record, entry.localPath)) &&
+        entry.localHash === contentHash,
+      );
+      if (renamed) {
+        const renameResponse = await this.#requestTarget(
+          record.targetId,
+          "bridge:renameAsset",
+          {
+            assetId: renamed.id,
+            name: filename,
+            filename,
+            folder,
+          },
+          60000,
+        );
+        if (renameResponse.ok) {
+          record.pendingLocalFiles.set(normalizedPath, {
+            assetId: renamed.id,
+            hash: contentHash,
+            createdAt: Date.now(),
+          });
+          const refresh = await this.#requestTarget(record.targetId, "bridge:workspaceSnapshot", {}, 60000);
+          if (refresh.ok) {
+            const snapshot = asObject(refresh.data);
+            const refreshedAssets = Array.isArray(snapshot.assets) ? snapshot.assets as unknown as RemoteAsset[] : [];
+            if (refreshedAssets.length) await this.#applySnapshot(record, refreshedAssets, false);
+          }
+          continue;
+        }
+      }
+      const response = await this.#requestTarget(
+        record.targetId,
+        "bridge:uploadAsset",
+        {
+          name: filename,
+          filename,
+          folder,
+          base64: content.toString("base64"),
+        },
+        120000,
+      );
+      if (!response.ok) {
+        record.lastWarning = `Failed to upload local file ${relativePath}: ${response.error.message}`;
+        continue;
+      }
+      const data = asObject(response.data);
+      const uploaded = data.asset;
+      if (uploaded && typeof uploaded === "object" && !Array.isArray(uploaded)) {
+        const uploadedId = (uploaded as Record<string, JsonValue>).id;
+        if (uploadedId !== undefined && uploadedId !== null) {
+          record.pendingLocalFiles.set(normalizedPath, {
+            assetId: String(uploadedId),
+            hash: contentHash,
+            createdAt: Date.now(),
+          });
+        }
+        const refresh = await this.#requestTarget(record.targetId, "bridge:workspaceSnapshot", {}, 60000);
+        if (refresh.ok) {
+          const snapshot = asObject(refresh.data);
+          const refreshedAssets = Array.isArray(snapshot.assets)
+            ? snapshot.assets as unknown as RemoteAsset[]
+            : [];
+          if (refreshedAssets.length) await this.#applySnapshot(record, refreshedAssets, false);
+        }
+      }
     }
   }
 
@@ -875,7 +1060,11 @@ export class WorkspaceManager {
 
     const previous = record.index.entries;
     const next: Record<string, AssetIndexEntry> = {};
-    for (const asset of assets) {
+    const staleDerivedPaths: Array<{ id: string; path: string }> = [];
+    const orderedAssets = [...assets].sort((left, right) =>
+      Number(isDerivedAsset(left)) - Number(isDerivedAsset(right)),
+    );
+    for (const asset of orderedAssets) {
       const id = String(asset.id);
       const parentIds = (asset.path || []).map(String);
       const parent = parentIds.length ? folderPaths.get(parentIds[parentIds.length - 1]) || [] : [];
@@ -899,8 +1088,10 @@ export class WorkspaceManager {
         continue;
       }
 
+      const derived = isDerivedAsset(asset);
       const remoteFilename = asset.file?.filename || (asset.type === "script" ? asset.name : null);
-      const localName = remoteFilename ? allocateName(parent, remoteFilename, id) : null;
+      const localFilename = asset.source && asset.name ? asset.name : remoteFilename;
+      const localName = !derived && localFilename ? allocateName(parent, localFilename, id) : null;
       const localPath = localName ? join(...parent, localName) : null;
       const old = previous[id];
       const entry: AssetIndexEntry = {
@@ -935,7 +1126,19 @@ export class WorkspaceManager {
         await mkdir(dirname(newPath), { recursive: true });
         if (!existsSync(newPath)) await rename(oldPath, newPath);
       }
-      if (asset.type === "script" && localPath) {
+      if (derived) {
+        // PlayCanvas generated Model/Container/Texture assets are outputs of a
+        // source import (for example GLB). They are remote catalog entries,
+        // not local source files and must never be uploaded back.
+        entry.localPath = null;
+        entry.downloaded = false;
+        entry.localHash = null;
+        entry.localFileSize = undefined;
+        entry.localMtimeMs = undefined;
+        entry.status = "indexed";
+        delete entry.error;
+        if (old?.localPath) staleDerivedPaths.push({ id, path: old.localPath });
+      } else if (asset.type === "script" && localPath) {
         await this.#reconcileScript(record, entry, old, force);
       } else if (localPath) {
         await this.#reconcileBinary(record, entry, old);
@@ -944,6 +1147,23 @@ export class WorkspaceManager {
     }
 
     const deletionBatch = new Date().toISOString().replaceAll(":", "-");
+    const activeLocalPaths = new Set(
+      Object.values(next).map((entry) => entry.localPath).filter(Boolean),
+    );
+    for (const stale of staleDerivedPaths) {
+      if (activeLocalPaths.has(stale.path)) continue;
+      const source = this.#assetPath(record, stale.path);
+      if (!existsSync(source)) continue;
+      const destination = join(
+        record.tmpDirectory,
+        "trash",
+        "derived",
+        deletionBatch,
+        `${stale.id}-${safeWorkspaceName(basename(stale.path), `asset-${stale.id}`)}`,
+      );
+      await mkdir(dirname(destination), { recursive: true });
+      await rename(source, destination);
+    }
     for (const [id, old] of Object.entries(previous)) {
       if (next[id] || !old.localPath || !existsSync(this.#assetPath(record, old.localPath))) continue;
       const source = this.#assetPath(record, old.localPath);
@@ -977,6 +1197,12 @@ export class WorkspaceManager {
       updatedAt: new Date().toISOString(),
       entries: next,
     };
+    for (const [path, pending] of record.pendingLocalFiles) {
+      const entry = next[pending.assetId];
+      if (entry?.localPath && toPosixPath(entry.localPath) === path) {
+        record.pendingLocalFiles.delete(path);
+      }
+    }
   }
 
   async #localFileSnapshot(
@@ -1056,6 +1282,28 @@ export class WorkspaceManager {
     return { path, size: remote.content.byteLength, hash: remote.hash };
   }
 
+  async #prepareCachedAsset(
+    record: ProjectRecord,
+    entry: AssetIndexEntry,
+  ): Promise<{ path: string; hash: string }> {
+    if (!entry.filename) throw new Error(`Asset ${entry.id} has no cacheable filename.`);
+    const path = join(
+      record.tmpDirectory,
+      "cache",
+      "assets",
+      safeAssetName(entry.id, "asset"),
+      safeAssetName(entry.filename, "file.bin"),
+    );
+    if (existsSync(path)) {
+      const content = await readFile(path);
+      const hash = hashContent(content);
+      if (!entry.remoteFileHash || hash === entry.remoteFileHash) return { path, hash };
+    }
+    const remote = await this.#readRemoteAsset(record, entry);
+    await atomicWrite(path, remote.content);
+    return { path, hash: remote.hash };
+  }
+
   async #uploadBinary(
     record: ProjectRecord,
     entry: AssetIndexEntry,
@@ -1124,7 +1372,11 @@ export class WorkspaceManager {
     const baseline = old?.lastSyncedHash || null;
     const advertisedRemoteHash = entry.remoteFileHash;
     if (!local) {
-      await this.#downloadAsset(record, entry);
+      // Binary assets are lazy. Keep the catalog and remote hash locally, and
+      // only fetch bytes through workspace pull or a Template build.
+      entry.downloaded = false;
+      entry.status = "indexed";
+      delete entry.error;
       return;
     }
 
@@ -1230,6 +1482,49 @@ export class WorkspaceManager {
       localHash === old.pendingRemoteHash &&
       advertisedRemoteHash !== old.pendingRemoteHash
     ) {
+      if (record.syncProgress) {
+        record.syncProgress.assetId = entry.id;
+        record.syncProgress.action = "downloading";
+      }
+      const response = await this.#requestTarget(
+        record.targetId,
+        "bridge:readAssetText",
+        { assetId: entry.id },
+        30000,
+      );
+      if (!response.ok) {
+        entry.localHash = localHash;
+        entry.pendingRemoteHash = old.pendingRemoteHash;
+        entry.downloaded = true;
+        entry.status = "local-change";
+        entry.error = response.error.message;
+        return;
+      }
+      const data = asObject(response.data);
+      const pendingRemoteContent = typeof data.text === "string" ? data.text : "";
+      const pendingRemoteHash = hashContent(pendingRemoteContent);
+      entry.remoteFileHash = pendingRemoteHash;
+      if (pendingRemoteHash === old.pendingRemoteHash) {
+        entry.localHash = localHash;
+        entry.lastSyncedHash = localHash;
+        entry.downloaded = true;
+        entry.status = "synced";
+        delete entry.legacyLastSyncedSha256;
+        delete entry.pendingRemoteHash;
+        delete entry.error;
+        return;
+      }
+      if (pendingRemoteHash !== baseline) {
+        await atomicWrite(path, pendingRemoteContent);
+        entry.localHash = pendingRemoteHash;
+        entry.lastSyncedHash = pendingRemoteHash;
+        entry.downloaded = true;
+        entry.status = "synced";
+        delete entry.legacyLastSyncedSha256;
+        delete entry.pendingRemoteHash;
+        delete entry.error;
+        return;
+      }
       entry.localHash = localHash;
       entry.pendingRemoteHash = old.pendingRemoteHash;
       entry.downloaded = true;
@@ -1272,14 +1567,9 @@ export class WorkspaceManager {
     const data = asObject(response.data);
     const remoteContent = typeof data.text === "string" ? data.text : "";
     const remoteHash = hashContent(remoteContent);
-    if (advertisedRemoteHash && advertisedRemoteHash !== remoteHash) {
-      entry.localHash = localHash;
-      entry.status = "error";
-      entry.error =
-        `Remote script ${entry.id} changed while it was being read: ` +
-        `expected ${advertisedRemoteHash}, received ${remoteHash}.`;
-      return;
-    }
+    // The Editor observer can lag behind the asset file endpoint immediately
+    // after a save. The text response is authoritative for this reconciliation
+    // pass; the next snapshot will catch up to its hash.
     entry.remoteFileHash = remoteHash;
 
     if (localContent === null) {

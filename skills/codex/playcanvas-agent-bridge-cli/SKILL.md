@@ -43,8 +43,8 @@ project-picker and scene Editor navigations; change the remembered mode only thr
    runtime verification; use `tab:<id>` when either selector is ambiguous.
 2. Run `pcbridge workspace status --target editor:<sceneId>`. Do not write while it reports a conflict or sync error.
 3. Use layered help to load only the command group you need: `pcbridge help`, then `pcbridge help core|workspace|frontend|target|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
-4. Keep temporary scripts, JSON manifests, uploads, and captures inside the selected project workspace.
-5. Use structured commands for small, known operations that map cleanly to one Editor action.
+4. Edit asset file contents locally under the selected project's `assets/` tree and let the daemon synchronize them. Keep temporary files, manifests, and captures under `tmp/`, which is not synchronized.
+5. Use structured commands for scene structure and non-file Asset operations that map cleanly to one Editor action.
 6. Use `pcbridge eval` for exploratory API inspection, custom Editor/Engine workflows, Launch runtime debugging, and large multi-step scene edits where one script is clearer than many CLI calls.
 7. Return compact JSON from snippets. Never return raw `editor`, `Entity`, `Asset`, `entities.root`, or app objects.
 8. Use PlayCanvas history options for writes when available and verify writes with a read-only command.
@@ -54,8 +54,8 @@ project-picker and scene Editor navigations; change the remembered mode only thr
 ```text
 <workspace root>/<projectId>-<projectName>/
   pcbridge.project.json # project metadata and agent-readable asset catalog
-  assets/       # PlayCanvas folder tree; all asset file contents synchronize automatically
-  tmp/          # task files, builds, cache, conflicts, captures, and deletion quarantine
+  assets/       # PlayCanvas folder tree; scripts eager, binary file contents lazy
+  tmp/          # agent files, builds, cache, conflicts, captures, and deletion quarantine; never synchronized
   .pcbridge/    # internal sync state; do not edit
 ```
 
@@ -68,10 +68,20 @@ pcbridge workspace sync --target editor:<sceneId>
 pcbridge workspace pull --target editor:<sceneId> --asset <assetId>
 ```
 
-Existing script and binary asset contents synchronize in both directions. Create, move, rename,
-and delete assets through structured pcbridge commands; do not perform structural changes by moving
-or deleting mirrored local files. `workspace pull` explicitly refreshes one file but is not needed
-for normal synchronization.
+Prefer local file operations for file-backed Assets:
+
+- Edit existing scripts directly under `assets/`; the watcher uploads them to PlayCanvas.
+- Create files and folders under `assets/` to upload them into the matching remote folder. Let PlayCanvas infer and process the Asset type.
+- Rename or move a local file to rename or move the same remote Asset ID.
+- Deleting a local file only removes the local lazy cache. It does not delete the remote Asset; use `pcbridge asset delete --id <id>` only when remote deletion is explicitly intended.
+- Scripts are downloaded eagerly. Binary files are lazy; run `workspace pull --asset <id>` before modifying a remote binary that is not present locally.
+- PlayCanvas-generated derivatives such as GLB Model/Container/material outputs are catalog-only. Edit the source GLB, not a derivative.
+
+After a local edit, allow the watcher to react, then poll `workspace status` until it reports
+`synced`. A brief yellow `local-change` is expected. Do not declare completion or alternate to
+remote editing while the same file is pending. If it does not converge, run one explicit
+`workspace sync`, inspect `lastError`, `lastWarning`, and `tmp/conflicts/`, and do not overwrite
+a conflict automatically.
 Read `pcbridge.project.json.assets` to resolve asset ids to project-relative `assets/...` paths and
 compare remote, local, and base MD5 values. The catalog is managed by pcbridge; do not edit it to
 request remote asset operations. Confirmed remote deletions are quarantined under
@@ -133,7 +143,8 @@ Use exactly one of `--asset-id` and `--script-name`. The name form is for a Scri
 by a bundle or runtime asset and therefore lacking a standalone script asset id. Verify such a
 script in Launch; explicit script reordering is not yet a dedicated command.
 
-Work with assets and scripts:
+Work with asset metadata, explicit transfers, and script verification. For ordinary file-content
+edits, prefer editing the tracked local file under `assets/` over `script set-text` or re-uploading it:
 
 ```bash
 pcbridge asset list --target editor:<sceneId> --type script --limit 50
@@ -204,13 +215,13 @@ authoritative.
 
 ## Asset Organization
 
-Create task-scoped remote folders before uploading generated assets. Keep local generated files
-under the project `tmp/` directory until they are uploaded:
+Create synchronized files directly under a task-scoped path in the project `assets/` tree. Keep
+intermediate or disposable generation files under `tmp/` so the watcher does not upload them:
 
 ```text
-AI Agent Bridge/<task name>/Textures
-AI Agent Bridge/<task name>/Materials
-AI Agent Bridge/<task name>/Scripts
+assets/AI Agent Bridge/<task name>/Textures
+assets/AI Agent Bridge/<task name>/Models
+assets/AI Agent Bridge/<task name>/Scripts
 ```
 
 Use stable names that describe the asset purpose. Avoid dumping generated files at the project root.
@@ -221,12 +232,12 @@ For multi-asset or game-sized tasks:
 
 1. Choose an explicit target from `pcbridge targets`, preferably `editor:<sceneId>` for writes or
    `launch:<sceneId>` for tests; use `tab:<id>` to resolve ambiguity.
-2. Confirm `workspace status`, then create task files under `<project>/tmp/<task name>/`.
-3. Put PlayCanvas assets under `AI Agent Bridge/<task name>/{Textures,Materials,Scripts,Templates}`.
-4. Use `pcbridge asset upload-many --json ./upload-manifest.json` for batches. In the manifest, each item needs `file` and may include `key`, `name`, `filename`, `type`, `mime`, `folder`, `folderId`, and `preload`. Relative `file` paths resolve from the manifest file; `key` is returned for later argument mapping but is not sent to PlayCanvas.
-5. Use `pcbridge script upsert --target editor:<sceneId> --filename <name>.js --file ./script.js --folder "AI Agent Bridge/<task name>/Scripts" --parse --wait` for repeatable script creation or update.
+2. Confirm `workspace status` is `synced`. Put disposable generation inputs under `<project>/tmp/<task name>/`.
+3. Put final scripts, textures, models, audio, and other file-backed Assets under `<project>/assets/AI Agent Bridge/<task name>/...`; create or edit them locally and wait for synchronization.
+4. Use `asset upload-many` only when explicit upload settings or a non-watched source path is required. Do not upload a file again when it is already tracked under `assets/`.
+5. For an existing script, edit its local file. Use `script parse` after synchronization when parse verification is needed; reserve `script upsert --parse --wait` for recovery or workflows that intentionally bypass the mirror.
 6. Use `pcbridge eval --target editor:<sceneId> --file ./install.js --args-json ./args.json --timeout-ms 120000` for large scene installation scripts. The JSON object is available as `command.args`; increase `--timeout-ms` instead of splitting a coherent install script just to avoid the default 15s timeout.
-7. Verify with read-only commands, a small smoke-test eval, and a capture under `<project>/tmp/captures/`.
+7. Wait for `workspace status` to become `synced`, then verify with read-only commands, a small smoke-test eval, and a capture under `<project>/tmp/captures/`.
 
 If repeated manual glue is needed across tasks, improve the CLI or this skill rather than continuing to hand-roll brittle shell/script sequences.
 
