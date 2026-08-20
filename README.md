@@ -20,7 +20,7 @@ npm install -g github:Q-My99/playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-The commands documented below track repository version `0.5.3`. npm installs the latest stable
+The commands documented below track repository version `0.6.0`. npm installs the latest stable
 release; use the GitHub install when testing changes that have not been released yet.
 
 One-shot with npx:
@@ -29,6 +29,67 @@ One-shot with npx:
 npx playcanvas-agent-bridge-cli doctor
 npx playcanvas-agent-bridge-cli install-skill --agent all
 ```
+
+## Update pcbridge components
+
+The CLI/daemon, installed agent skills, generated Chrome extension, and optional custom Editor
+frontend are separate local components. Updating one does not update the others automatically.
+
+### Update the CLI, daemon, and agent skills
+
+First stop the running daemon with **Ctrl+C in the terminal where it was started**. There is no
+`pcbridge daemon stop` command. Remember that terminal's working directory because it is the
+workspace root and must be reused when the daemon starts again.
+
+```bash
+npm install -g playcanvas-agent-bridge-cli@latest
+pcbridge version
+pcbridge install-skill --agent all
+cd /the/same/workspace/root
+pcbridge daemon start
+```
+
+Installing the npm package replaces the CLI files, but an already-running daemon remains the old
+in-memory version until it is restarted. Installed Codex, Claude, Cursor, and Windsurf skills are
+also copies, so rerun `install-skill`; start a new agent task/session if the client has already
+loaded the old skill.
+
+### Update the Chrome extension
+
+After updating the CLI, regenerate the unpacked extension directory:
+
+```bash
+pcbridge install-extension --no-open
+```
+
+Then complete these **manual Chrome steps**:
+
+1. Open `chrome://extensions`.
+2. Find **PlayCanvas Agent Bridge** and click **Reload**. Loading it again is unnecessary when the
+   existing entry already points to `~/.pcbridge/extension`.
+3. If the extension is not installed, enable Developer Mode, click **Load unpacked**, and select the
+   directory printed by `pcbridge install-extension`.
+4. Refresh every open PlayCanvas Editor and Launch tab.
+5. After restarting the daemon, run `pcbridge doctor` and confirm the generated and connected
+   extension versions match the CLI.
+
+Updating npm alone does not refresh `~/.pcbridge/extension`, and rewriting that directory does not
+make Chrome reload an unpacked extension automatically.
+
+### Update the custom PlayCanvas Editor frontend
+
+The custom frontend has its own release lifecycle and is not bundled with the CLI or extension:
+
+```bash
+pcbridge frontend update
+pcbridge frontend status
+```
+
+`frontend update` downloads, verifies, and activates the latest published frontend by default. A
+running daemon resolves the active release for each request, so a frontend-only update does not
+require a daemon restart. The **manual step is to refresh the PlayCanvas Editor tab**. If the project
+is currently using the official frontend, open the extension popup and choose **Use custom
+frontend**. Previously downloaded frontend releases remain installed until explicitly removed.
 
 ## Install the Chrome extension
 
@@ -105,9 +166,9 @@ When a ready Editor connects, pcbridge creates `<projectId>-<projectName>/` auto
 ```text
 1552681-pcbridge-test/
 ├── pcbridge.project.json # project metadata plus the agent-readable asset catalog
-├── assets/       # PlayCanvas folder mirror; scripts eager, binary assets lazy
+├── assets/       # collision-safe projection of the PlayCanvas folder tree
 ├── tmp/          # builds, cache, conflicts, captures, and quarantined remote deletions
-└── .pcbridge/    # internal sync state; do not edit
+└── .pcbridge/    # internal sync state and content-addressed object cache; do not edit
 ```
 
 Inspect or refresh the workspace with:
@@ -129,10 +190,21 @@ imported type; local folders are created remotely. Renames and moves preserve th
 a local file only clears the local cache and never deletes the remote Asset. The `tmp/` tree is
 agent-owned and excluded from workspace synchronization.
 
-`pcbridge.project.json` schema v2 stores every asset id, type, PlayCanvas folder, project-relative
-`assets/...` file path, download presence, and the remote/local/base MD5 values. Agents may read
-this catalog directly; the `assets` object is managed by pcbridge. An existing schema-v1 hidden
-asset index is migrated automatically and retained as `.pcbridge/asset-index.v1.json` for rollback.
+PlayCanvas may create source and generated Assets with the same display name, for example a source
+GLB plus Container/Model outputs or a font plus generated atlas files. The manifest keeps the remote
+display `folder` separate from the unique local `projectionPath`. The real `file.filename` is used
+when possible; only collisions receive `.__pc_<type>_<assetId>` before the extension. Source and
+standalone projections are writable. Generated derivatives are lazy and read-only: pulling or
+building them stores immutable bytes under `.pcbridge/objects/<assetId>/<md5>/`, and a local edit or
+move is quarantined under `tmp/conflicts/` before the projection is restored.
+
+`pcbridge.project.json` schema v3 records `origin` (`source`, `derived`, or `standalone`), advertised
+and observed remote file metadata, the effective MD5, and local presence/writability/current/base
+hashes. Texture variants, additional font maps, and similar build-only files are listed under
+`local.resources`; they are read-only managed files beside the primary Asset projection. Agents may
+read this catalog directly; the `assets` object is managed by pcbridge. Existing
+schema-v1 and schema-v2 state is migrated automatically; the v1 hidden index is retained as
+`.pcbridge/asset-index.v1.json` for rollback.
 An empty snapshot received while indexed assets exist is ignored, and a non-empty shrinking
 snapshot must repeat before files are moved to `tmp/trash/remote/`.
 
@@ -140,10 +212,14 @@ snapshot must repeat before files are moved to `tmp/trash/remote/`.
 
 Selecting a PlayCanvas Template Asset adds a **pcbridge Tiny Builder** section to the Attributes
 panel. **Build and upload to S3** collects recursive Asset references, attached scripts, and child
-Templates in the page. The daemon validates the workspace MD5 cache, downloads only missing or
-remote-updated files, and uploads objects concurrently without creating a ZIP. Generated
-`tinyapp.json` and `gamescript.js` files live under `tmp/builds/`; variants and additional font maps
-are cached under `tmp/cache/assets/`.
+Templates in the page. The daemon materializes every dependency under `assets/`: an existing local
+file is reused when it matches the effective remote MD5, while a missing or remote-updated file is
+synchronized from PlayCanvas first. Texture variants and additional font maps are stored beside the
+primary Asset as managed read-only resources, not under `tmp/cache/assets/`. The internal
+`.pcbridge/objects/` cache avoids repeat downloads, and uploads run concurrently without creating a
+ZIP. Attached non-`sds*` scripts are merged, transpiled to ES5 with Babel, and conservatively
+compressed with Terser while preserving function and class names. Only generated `tinyapp.json`
+and `gamescript.js` files live under `tmp/builds/`.
 
 Create `.env` in the directory where the daemon starts for workspace defaults, or in a project
 directory for per-project values. Project values override workspace values field by field. Do not
@@ -163,7 +239,10 @@ PCBRIDGE_S3_FORCE_PATH_STYLE=false
 
 The implementation uses the standard AWS S3 client and supports Amazon S3, Alibaba OSS, Tencent
 COS, Cloudflare R2, and other compatible providers. Set `PCBRIDGE_S3_FORCE_PATH_STYLE` when the
-provider requires path-style addressing. Builds can also be started and inspected from the CLI:
+provider requires path-style addressing. Bucket-prefixed OSS endpoints such as
+`https://my-bucket.oss-cn-shanghai.aliyuncs.com` are normalized before the SDK applies the bucket,
+and uploads use a fixed `Content-MD5` instead of streaming checksum trailers. Builds can also be
+started and inspected from the CLI:
 
 ```bash
 pcbridge builder start --target editor:<sceneId> --asset <templateAssetId> --suffix '-${time}'

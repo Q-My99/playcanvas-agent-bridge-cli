@@ -8,15 +8,15 @@ The important product decision: **do not make MCP the core interface**. The core
 
 ## Current Project Progress
 
-Status as of 2026-08-07:
+Status as of 2026-08-20:
 
 - Git repository initialized and pushed to GitHub:
   - `https://github.com/Q-My99/playcanvas-agent-bridge-cli`
   - default branch: `main`
-- Package version is currently `0.5.3`.
+- Package version is currently `0.6.0`.
 - The npm package has been published:
   - package: `playcanvas-agent-bridge-cli`
-  - npm latest: `0.5.3`
+  - npm latest: `0.6.0`
   - registry: `https://registry.npmjs.org/`
 - npm releases are published by `.github/workflows/npm-publish.yml` using npm Trusted Publishing (OIDC); no long-lived npm token is stored in GitHub.
 - A publish runs only for a stable tag matching `v<major>.<minor>.<patch>` whose commit is on `main`, and the tag must match the synchronized versions in `package.json`, `src/config.ts`, and `extension/manifest.json`.
@@ -38,7 +38,7 @@ Completed implementation:
   - isolated content script for WebSocket connection and postMessage bridge.
   - service worker for tab metadata and generated config loading.
   - auto-connect and reconnect to local daemon.
-  - extension manifest version is synchronized with package version `0.5.3`.
+  - extension manifest version is synchronized with package version `0.6.0`.
   - matches both PlayCanvas Editor pages and PlayCanvas Launch pages.
   - captures page console logs, window errors, and unhandled promise rejections in a bounded in-page ring buffer.
   - probes daemon health before reconnecting WebSockets, uses backoff while offline, and sends target updates only when metadata changes.
@@ -46,9 +46,13 @@ Completed implementation:
 - Workspace mode:
   - the `pcbridge daemon start` working directory is the workspace root.
   - ready Editor targets create `<projectId>-<projectName>/{assets,tmp,.pcbridge}` automatically.
-- `pcbridge.project.json` schema v2 stores readable project, branch, scene, and per-asset metadata,
-  including project-relative file paths plus comparable PlayCanvas/local/base MD5 values.
-  - PlayCanvas folders and all file assets are mirrored locally; scripts and binary contents synchronize in both directions.
+- `pcbridge.project.json` schema v3 separates remote display paths from collision-safe local
+  projections and records source/derived/standalone origin, advertised/observed/effective remote
+  metadata, local writability/presence, and comparable current/base MD5 values.
+  - source and standalone projections are writable; generated derived projections are lazy,
+    read-only, content-addressed under `.pcbridge/objects`, and never uploaded back.
+  - PlayCanvas folders and file Assets are cataloged locally; scripts are eager and binary contents
+    are materialized lazily while writable projections remain bidirectional.
   - unchanged binary files reuse cached size/mtime/MD5 state, so periodic syncs do not reread or transfer full contents.
 - simultaneous local and remote text or binary changes are preserved under `tmp/conflicts` instead of overwritten.
 - empty refresh-time asset snapshots are ignored; repeated confirmed remote deletions are quarantined
@@ -69,7 +73,9 @@ Completed implementation:
 - Template builder:
   - selecting a Template injects a pcbridge Tiny Builder panel in Editor Attributes.
   - the page collects recursive asset/script/child-Template dependencies.
-  - the daemon fills the workspace cache and uploads files directly with the standard S3 client, without ZIP creation.
+  - the daemon materializes all primary and auxiliary dependency files under `assets/`, using
+    `.pcbridge/objects` only as an internal content cache, then uploads directly with the standard
+    S3 client without ZIP creation.
   - project `.env` values override workspace-root `.env` values.
 - Structured entity commands:
   - `entity list`

@@ -13,21 +13,40 @@ pcbridge targets
 Run `pcbridge daemon start` only for `DAEMON_NOT_LISTENING`; for `LOOPBACK_ACCESS_DENIED`, retry
 with local-loopback permission. If no target is connected, install/reload the unpacked extension.
 
+Updates are component-specific. For an explicit update request, have the user stop the foreground
+daemon with Ctrl+C and remember its workspace-root directory; there is no `daemon stop`. Run
+`npm install -g playcanvas-agent-bridge-cli@latest`, verify `pcbridge version`, then rerun
+`pcbridge install-skill --agent all`. Regenerate the extension with
+`pcbridge install-extension --no-open`; the user must manually click **Reload** in
+`chrome://extensions` and refresh Editor/Launch tabs. Restart the daemon from the original workspace
+root and verify `pcbridge doctor`. Update the independently published Editor build with
+`pcbridge frontend update` and `frontend status`; a frontend-only update needs no daemon restart,
+but the Editor tab must be refreshed and custom mode selected in the popup when necessary. Do not
+claim completion before these manual steps are confirmed.
+
 The daemon start directory is the workspace root. After selecting an explicit target, run
 `pcbridge workspace status --target editor:<sceneId>` and stop if it reports a conflict or sync
 error. Each project is mirrored under `<projectId>-<projectName>/{assets,tmp}`. Prefer local
 operations for file-backed Assets: edit scripts under `assets/`; create files/folders there to
 upload through PlayCanvas processing; rename or move locally to preserve the remote Asset ID.
 Deleting locally only clears the cache, never the remote Asset. Scripts are eager and binaries are
-lazy; use `workspace pull` before editing a missing binary. Edit source GLBs, not generated
-Model/Container/material derivatives. `tmp/` is never synchronized. After local writes, poll
+lazy; use `workspace pull` before editing a missing binary. Generated GLB Model/Container/material
+Assets and font atlases are lazy, read-only projections: edit the source Asset. Derivative edits or
+moves are quarantined, restored from `.pcbridge/objects`, and never uploaded. `tmp/` is never
+synchronized. After local writes, poll
 `workspace status` until `synced`; a brief `local-change` is expected. If it does not converge,
 run one `workspace sync` and inspect status plus `tmp/conflicts/`.
-Read `pcbridge.project.json.assets` for asset ids, types, project-relative file paths, presence, and
-remote/local/base MD5 values. Treat that asset catalog as pcbridge-managed. Confirmed remote
+Read schema-v3 `pcbridge.project.json.assets`: `folder` is the remote display path,
+`projectionPath` is the unique local path, and `origin`/`remoteFile`/`local` describe role,
+effective metadata, presence, writability, and hashes. Only collisions gain
+`.__pc_<type>_<assetId>`. Treat that asset catalog as pcbridge-managed. Confirmed remote
 deletions are quarantined under `tmp/trash/remote/`; `tmp/conflicts/` contains content divergence.
 Template selection exposes pcbridge Tiny Builder for direct S3 object uploads; project `.env`
-overrides workspace-root `.env`.
+overrides workspace-root `.env`. A build materializes every primary dependency plus texture
+variants and additional font maps under the Asset's remote folder in `assets/`, then uploads only
+those projected files. Schema-v3 `local.resources` records the managed read-only auxiliary files;
+`.pcbridge/objects` is only an internal content cache. New builds do not use `tmp/cache/assets/`,
+and compatible files left there by older versions are migrated into `assets/` when needed.
 
 For the optional published Editor build, use `pcbridge frontend install latest`, verify it with
 `pcbridge frontend status`, and switch custom/official mode from the extension popup.

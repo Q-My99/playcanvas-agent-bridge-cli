@@ -13,7 +13,7 @@ npm install -g playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-下文命令跟随仓库版 `0.5.3`。npm 安装的是最新稳定版本；测试尚未发布的改动时请使用
+下文命令跟随仓库版 `0.6.0`。npm 安装的是最新稳定版本；测试尚未发布的改动时请使用
 GitHub 安装。
 
 如果要测试尚未发布的改动，也可以直接从这个 GitHub 仓库安装：
@@ -29,6 +29,64 @@ pcbridge install-skill --agent all
 npx playcanvas-agent-bridge-cli doctor
 npx playcanvas-agent-bridge-cli install-skill --agent all
 ```
+
+## 更新 pcbridge 各组件
+
+CLI/daemon、已安装的 Agent 技能、生成的 Chrome 插件和可选的本地 Editor 前端是四个独立的
+本地组件，更新其中一个不会自动更新其他组件。
+
+### 更新 CLI、daemon 和 Agent 技能
+
+先在启动 daemon 的终端中按 **Ctrl+C 手动停止 daemon**。目前没有 `pcbridge daemon stop`
+命令。请记住该终端的工作目录，它就是 workspace 根目录，升级后必须回到同一目录启动。
+
+```bash
+npm install -g playcanvas-agent-bridge-cli@latest
+pcbridge version
+pcbridge install-skill --agent all
+cd /原来的/workspace/根目录
+pcbridge daemon start
+```
+
+npm 全局安装会替换 CLI 文件，但已经运行的 daemon 仍然是内存中的旧版本，必须重启才会生效。
+Codex、Claude、Cursor 和 Windsurf 的技能文件也是安装时复制出去的，因此需要重新执行
+`install-skill`；如果当前 Agent 任务已经加载了旧技能，请新建一个任务或会话再使用新技能。
+
+### 更新 Chrome 插件
+
+CLI 更新完成后，重新生成 unpacked 插件目录：
+
+```bash
+pcbridge install-extension --no-open
+```
+
+然后完成以下 **Chrome 手动操作**：
+
+1. 打开 `chrome://extensions`。
+2. 找到 **PlayCanvas Agent Bridge**，点击 **Reload**。如果现有条目已经指向
+   `~/.pcbridge/extension`，不需要再次 Load unpacked。
+3. 如果插件尚未安装，开启 Developer Mode，点击 **Load unpacked**，选择
+   `pcbridge install-extension` 打印的目录。
+4. 刷新所有已经打开的 PlayCanvas Editor 和 Launch 页面。
+5. daemon 重启后运行 `pcbridge doctor`，确认生成目录中的插件版本、浏览器已连接插件版本和
+   CLI 版本一致。
+
+只更新 npm 包不会更新 `~/.pcbridge/extension`；重新写入插件目录后，Chrome 也不会自动 reload
+unpacked 插件。
+
+### 更新 PlayCanvas 本地前端
+
+本地前端使用独立的 Release，不会随 CLI 或插件一起更新：
+
+```bash
+pcbridge frontend update
+pcbridge frontend status
+```
+
+`frontend update` 默认会下载、校验并激活最新发布版。如果 daemon 已经运行，它会在每次请求时
+读取当前激活版本，因此只更新前端不需要重启 daemon；**用户仍然必须刷新 PlayCanvas Editor
+页面**。如果当前项目正在使用官方前端，请打开插件 popup，点击 **Use custom frontend**。
+旧的本地前端版本会继续保留，除非显式执行 `frontend remove`。
 
 ## 安装 Chrome 插件
 
@@ -105,9 +163,9 @@ pcbridge daemon start
 ```text
 1552681-pcbridge-test/
 ├── pcbridge.project.json # 项目信息和供 agent 读取的资源目录
-├── assets/       # 与 PlayCanvas 文件夹结构对应，所有文件内容自动双向同步
+├── assets/       # PlayCanvas 文件树的碰撞安全本地投影
 ├── tmp/          # 构建产物、缓存、冲突、截图和远端删除隔离副本
-└── .pcbridge/    # 内部同步状态，请勿手动修改
+└── .pcbridge/    # 内部同步状态和内容寻址对象缓存，请勿手动修改
 ```
 
 查看或手动刷新工作区：
@@ -132,19 +190,32 @@ daemon 会监控项目 `assets/` 目录：本地新增文件会上传到对应�
 缓存，不会删除 PlayCanvas 远端 Asset；远端删除仍会隔离到 `tmp/trash/remote/`。`tmp/` 下的
 构建、缓存和 agent 临时文件完全不参与 workspace 同步。
 
-schema v2 的 `pcbridge.project.json` 会记录每个 asset 的 id、类型、PlayCanvas 文件夹、相对
-项目根目录的 `assets/...` 文件路径、是否已下载，以及远端、本地和同步基线 MD5。agent 可以
-直接读取这些信息，但其中的 `assets` 对象由 pcbridge 管理。已有 schema v1 隐藏索引会自动
-迁移，并保留为 `.pcbridge/asset-index.v1.json` 以便回退。已有资源时收到的空快照会被忽略；
+PlayCanvas 可能生成同名的源 Asset 和派生 Asset，例如源 GLB 与 Container/Model，或字体源文件
+与字体图集。manifest 会把网页端显示路径 `folder` 和本地唯一路径 `projectionPath` 分开记录。
+本地优先使用真实的 `file.filename`；只有名称碰撞时，才会在扩展名前加入
+`.__pc_<type>_<assetId>`。source 和 standalone 投影可写；derived 投影按需下载且只读，内容会
+缓存到 `.pcbridge/objects/<assetId>/<md5>/`。修改或移动 derived 投影时，本地副本会隔离到
+`tmp/conflicts/`，随后从对象缓存恢复正确内容，不会反向上传到 PlayCanvas。
+
+schema v3 的 `pcbridge.project.json` 会记录 `origin`（`source`、`derived` 或 `standalone`）、
+PlayCanvas 声明和实际观察到的文件元数据、最终采用的 MD5，以及本地是否存在、是否可写、当前
+和同步基线 MD5。贴图 variant、字体附加图集等仅在构建中使用的文件记录在 `local.resources`
+中，并作为主 Asset 同目录下的只读受管文件。agent 可以直接读取这些信息，但 `assets` 对象由
+pcbridge 管理。schema v1
+和 v2 会自动迁移；v1 隐藏索引仍保留为 `.pcbridge/asset-index.v1.json` 以便回退。已有资源时
+收到的空快照会被忽略；
 非空但缩小的快照必须连续出现两次，文件才会被移动到 `tmp/trash/remote/`。
 
 ## Template 构建与 S3 上传
 
 选中 PlayCanvas Template Asset 后，Attributes 面板会出现 **pcbridge Tiny Builder**。点击
 **构建并上传到 S3** 后，网页只负责收集 Template、递归 Asset 引用、挂载脚本和子 Template；
-daemon 会核对工作区 MD5，缺失或远端更新的文件才会下载到工作区，然后直接并发上传对象，
-不再生成 ZIP。生成的 `tinyapp.json` 和 `gamescript.js` 保存在 `tmp/builds/`，变体和字体附加
-贴图缓存于 `tmp/cache/assets/`。
+daemon 会把全部依赖物化到 `assets/`：本地文件与有效远端 MD5 一致时直接复用，不存在或远端
+已更新时先从 PlayCanvas 同步。贴图 variant 和字体附加图集会作为主 Asset 同目录下的只读
+受管资源保存，不再写入 `tmp/cache/assets/`；`.pcbridge/objects/` 仅作为避免重复下载的内部
+对象缓存。随后并发上传对象，不生成 ZIP；只有 `tinyapp.json` 和 `gamescript.js` 保存在
+`tmp/builds/`。挂载的非 `sds*` 脚本会先合并，再由 Babel 转换为 ES5，并由 Terser 做保守
+压缩；函数名和类名会保留，避免破坏脚本注册和运行时反射。
 
 在 daemon 启动目录创建 `.env` 作为工作区默认配置，也可以在单个项目目录创建 `.env`；
 项目配置按字段覆盖工作区配置。不要提交含密钥的 `.env`：
@@ -163,7 +234,10 @@ PCBRIDGE_S3_FORCE_PATH_STYLE=false
 
 以上配置使用 AWS S3 标准客户端，适用于 Amazon S3、阿里云 OSS、腾讯云 COS、Cloudflare
 R2 等兼容服务；自定义服务是否需要 path-style URL 由
-`PCBRIDGE_S3_FORCE_PATH_STYLE` 决定。也可以从 CLI 发起和查看任务：
+`PCBRIDGE_S3_FORCE_PATH_STYLE` 决定。若 OSS endpoint 已包含 bucket 前缀，例如
+`https://my-bucket.oss-cn-shanghai.aliyuncs.com`，pcbridge 会先规范化 endpoint，避免 SDK 再次
+拼接 bucket；上传使用固定 `Content-MD5`，不会发送流式 checksum trailer。也可以从 CLI
+发起和查看任务：
 
 ```bash
 pcbridge builder start --target editor:<sceneId> --asset <templateAssetId> --suffix '-${time}'

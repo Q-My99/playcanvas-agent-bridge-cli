@@ -37,6 +37,27 @@ frontend modes. Load focused help with `pcbridge help frontend`.
 The popup remembers that choice per PlayCanvas project and applies it automatically on later
 project-picker and scene Editor navigations; change the remembered mode only through the popup.
 
+## Updating pcbridge
+
+Treat the CLI/daemon, installed agent skill, generated Chrome extension, and custom Editor frontend
+as separate components. When the user asks to update pcbridge:
+
+1. Ask the user to stop the foreground daemon with Ctrl+C; there is no `daemon stop` command. Record
+   its working directory so it can restart from the same workspace root.
+2. Run `npm install -g playcanvas-agent-bridge-cli@latest`, verify `pcbridge version`, and reinstall
+   copied skills with `pcbridge install-skill --agent all`.
+3. Run `pcbridge install-extension --no-open`. The user must click **Reload** for PlayCanvas Agent
+   Bridge in `chrome://extensions` and refresh open Editor/Launch tabs; rewriting the unpacked
+   directory is not enough.
+4. Restart `pcbridge daemon start` from the original workspace root and verify with `pcbridge doctor`.
+5. Update the independently published Editor build with `pcbridge frontend update`, then verify
+   `frontend status`. A frontend-only update does not require daemon restart, but the user must
+   refresh the Editor tab and select **Use custom frontend** in the popup when currently in official
+   mode.
+
+Do not claim an update is complete until required Chrome reload, page refresh, and daemon restart
+steps have been acknowledged or verified.
+
 ## Workflow
 
 1. Run `pcbridge targets`. Use `editor:<sceneId>` for Editor writes and `launch:<sceneId>` for
@@ -54,9 +75,9 @@ project-picker and scene Editor navigations; change the remembered mode only thr
 ```text
 <workspace root>/<projectId>-<projectName>/
   pcbridge.project.json # project metadata and agent-readable asset catalog
-  assets/       # PlayCanvas folder tree; scripts eager, binary file contents lazy
+  assets/       # collision-safe projection of the PlayCanvas folder tree
   tmp/          # agent files, builds, cache, conflicts, captures, and deletion quarantine; never synchronized
-  .pcbridge/    # internal sync state; do not edit
+  .pcbridge/    # internal sync state and object cache; do not edit
 ```
 
 Use:
@@ -75,21 +96,26 @@ Prefer local file operations for file-backed Assets:
 - Rename or move a local file to rename or move the same remote Asset ID.
 - Deleting a local file only removes the local lazy cache. It does not delete the remote Asset; use `pcbridge asset delete --id <id>` only when remote deletion is explicitly intended.
 - Scripts are downloaded eagerly. Binary files are lazy; run `workspace pull --asset <id>` before modifying a remote binary that is not present locally.
-- PlayCanvas-generated derivatives such as GLB Model/Container/material outputs are catalog-only. Edit the source GLB, not a derivative.
+- PlayCanvas-generated derivatives such as GLB Model/Container/material outputs and font atlases are lazy, read-only projections. Edit the source Asset, not a derivative. A local derivative edit or move is quarantined under `tmp/conflicts/`, restored from `.pcbridge/objects`, and never uploaded.
 
 After a local edit, allow the watcher to react, then poll `workspace status` until it reports
 `synced`. A brief yellow `local-change` is expected. Do not declare completion or alternate to
 remote editing while the same file is pending. If it does not converge, run one explicit
 `workspace sync`, inspect `lastError`, `lastWarning`, and `tmp/conflicts/`, and do not overwrite
 a conflict automatically.
-Read `pcbridge.project.json.assets` to resolve asset ids to project-relative `assets/...` paths and
-compare remote, local, and base MD5 values. The catalog is managed by pcbridge; do not edit it to
-request remote asset operations. Confirmed remote deletions are quarantined under
+Read schema-v3 `pcbridge.project.json.assets` to resolve Asset IDs. `folder` is the remote display
+path; `projectionPath` is the unique local path. Inspect `origin`, `remoteFile`, and `local` for the
+source/derived role, advertised/observed/effective MD5, presence, writability, and current/base MD5.
+Only collision paths gain `.__pc_<type>_<assetId>`. The catalog is managed by pcbridge; do not edit it
+to request remote asset operations. Confirmed remote deletions are quarantined under
 `tmp/trash/remote/`; `tmp/conflicts/` is reserved for divergent local and remote contents.
 
 Selecting a Template Asset exposes **pcbridge Tiny Builder** in the Attributes panel. It collects
-dependencies, fills the workspace cache, and uploads individual S3 objects without a ZIP. Project
-`.env` overrides workspace-root `.env`; never read or return credential values. CLI equivalents are
+dependencies, materializes missing or remote-updated primary files, texture variants, and additional
+font maps under `assets/`, then uploads individual S3 objects without a ZIP. `local.resources` in the
+schema-v3 manifest identifies managed read-only auxiliary files; `.pcbridge/objects` is only the
+internal content cache. Project `.env` overrides workspace-root `.env`; never read or return
+credential values. CLI equivalents are
 `pcbridge builder start --target editor:<sceneId> --asset <id>` and
 `pcbridge builder status --job <jobId>`.
 

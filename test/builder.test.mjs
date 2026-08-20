@@ -1,9 +1,23 @@
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { BuilderManager } from "../dist/builder/manager.js";
+import { BuilderManager, normalizeS3Endpoint } from "../dist/builder/manager.js";
+
+test("S3 endpoint normalization removes a duplicated bucket hostname", () => {
+  assert.equal(
+    normalizeS3Endpoint(
+      "https://tiny-app.oss-cn-shanghai.aliyuncs.com",
+      "tiny-app",
+    ),
+    "https://oss-cn-shanghai.aliyuncs.com",
+  );
+  assert.equal(
+    normalizeS3Endpoint("https://oss-cn-shanghai.aliyuncs.com", "tiny-app"),
+    "https://oss-cn-shanghai.aliyuncs.com",
+  );
+});
 
 async function listen(server) {
   await new Promise((resolve, reject) => {
@@ -32,16 +46,25 @@ test("Template builder uses project env precedence and uploads files directly th
   const assetDirectory = join(projectDirectory, "assets");
   await mkdir(assetDirectory, { recursive: true });
   const texturePath = join(assetDirectory, "texture.png");
+  const textureVariantPath = join(assetDirectory, "texture-dxt.dds");
   const scriptPath = join(assetDirectory, "mover.js");
   await writeFile(texturePath, Buffer.from([1, 2, 3]));
-  await writeFile(scriptPath, "pc.createScript('mover');\n");
+  const modernScript = [
+    'const Mover = pc.createScript("mover");',
+    "Mover.prototype.initialize = function () {",
+    "  const doubled = [1, 2, 3].map((value) => value * 2);",
+    '  this.summary = `values:${doubled.join(",")}`;',
+    "};",
+    "",
+  ].join("\n");
+  await writeFile(scriptPath, modernScript);
 
   const requests = [];
   const handleRequest = (req, res) => {
     const chunks = [];
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
-      requests.push({ method: req.method, url: req.url, body: Buffer.concat(chunks) });
+      requests.push({ method: req.method, url: req.url, headers: req.headers, body: Buffer.concat(chunks) });
       res.writeHead(200, { ETag: '"test"' });
       res.end();
     });
@@ -129,6 +152,22 @@ test("Template builder uses project env precedence and uploads files directly th
         ],
       };
     },
+    async prepareAssetResources(_info, resources) {
+      assert.deepEqual(resources, [{
+        assetId: "3",
+        filename: "texture-dxt.dds",
+        url: "/texture-dxt",
+        hash: undefined,
+      }]);
+      await writeFile(textureVariantPath, Buffer.from([4, 5, 6]));
+      return [{
+        assetId: "3",
+        filename: "texture-dxt.dds",
+        url: "/texture-dxt",
+        path: textureVariantPath,
+        hash: "b4a3ba90641372b4e4eaa841a5a400ec",
+      }];
+    },
   };
   const builder = new BuilderManager({
     rootDir: root,
@@ -137,12 +176,7 @@ test("Template builder uses project env precedence and uploads files directly th
       if (method === "bridge:collectTemplateDependencies") {
         return { ok: true, data: descriptor };
       }
-      assert.equal(method, "bridge:readAssetResource");
-      assert.equal(params.url, "/texture-dxt");
-      return {
-        ok: true,
-        data: { assetId: "3", filename: "texture-dxt.dds", base64: "BAUG" },
-      };
+      throw new Error(`Unexpected method ${method} with ${JSON.stringify(params)}`);
     },
   });
   const started = builder.start({
@@ -174,18 +208,37 @@ test("Template builder uses project env precedence and uploads files directly th
       "/project-bucket/project-prefix/Demo-v1/3/texture.png?x-id=PutObject",
     ].sort(),
   );
+  assert.ok(requests.every((request) => request.headers["content-md5"]));
+  assert.ok(requests.every((request) => !request.headers["x-amz-trailer"]));
+  const gameScriptRequest = requests.find((request) =>
+    request.url.includes("/Demo-v1/gamescript.js?"),
+  );
+  assert.ok(gameScriptRequest);
+  const gameScript = gameScriptRequest.body.toString("utf8");
+  assert.doesNotMatch(gameScript, /\b(?:const|let)\b/);
+  assert.doesNotMatch(gameScript, /=>/);
+  assert.doesNotMatch(gameScript, /`/);
+  assert.doesNotMatch(gameScript, /\/\/-----script:/);
+  assert.ok(gameScript.length < modernScript.length);
   const tinyapp = JSON.parse(await readFile(job.outputPath, "utf8"));
   assert.equal(tinyapp.assets["2"].data.shader, "blinn");
   assert.equal(
     tinyapp.assets["3"].file.url,
     "Demo-v1/3/texture.png",
   );
+  assert.equal(tinyapp.assets["3"].file.size, 3);
   assert.equal(
     tinyapp.assets["3"].file.variants.dxt.url,
     "Demo-v1/3/texture-dxt.dds",
   );
   assert.equal(
+    tinyapp.assets["3"].file.variants.dxt.hash,
+    "b4a3ba90641372b4e4eaa841a5a400ec",
+  );
+  assert.equal(
     tinyapp.scriptUrl,
     "Demo-v1/gamescript.js",
   );
+  await access(textureVariantPath);
+  await assert.rejects(access(join(projectDirectory, "tmp", "cache", "assets")));
 });

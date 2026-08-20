@@ -1,15 +1,22 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, extname, join } from "node:path";
+import { extname, join } from "node:path";
 import {
   PutObjectCommand,
   S3Client,
   type PutObjectCommandInput,
 } from "@aws-sdk/client-s3";
+import { transformAsync } from "@babel/core";
+import presetEnv from "@babel/preset-env";
 import { parse as parseEnv } from "dotenv";
+import { minify } from "terser";
 import type { Envelope, JsonValue, TargetInfo } from "../shared/protocol.js";
-import type { WorkspaceManager } from "../workspace/manager.js";
+import type {
+  PreparedWorkspaceResource,
+  WorkspaceManager,
+  WorkspaceResourceRequest,
+} from "../workspace/manager.js";
 
 type TargetRequest = (
   target: string,
@@ -37,6 +44,7 @@ type AssetJson = {
   file?: null | {
     filename?: string;
     hash?: string;
+    size?: number;
     url?: string;
     variants?: Record<string, {
       filename?: string;
@@ -128,6 +136,52 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+export async function compileGameScript(code: string): Promise<string> {
+  const transformed = await transformAsync(code, {
+    babelrc: false,
+    configFile: false,
+    sourceType: "script",
+    comments: false,
+    presets: [[presetEnv, {
+      targets: { ie: "11" },
+      modules: false,
+      useBuiltIns: false,
+    }]],
+  });
+  if (!transformed?.code) throw new Error("Babel produced no ES5 game script output.");
+
+  const compressed = await minify(transformed.code, {
+    ecma: 5,
+    compress: { arrows: false },
+    mangle: true,
+    keep_classnames: true,
+    keep_fnames: true,
+    format: {
+      comments: false,
+      ecma: 5,
+    },
+  });
+  if (!compressed.code) throw new Error("Terser produced no compressed game script output.");
+  return `${compressed.code}\n`;
+}
+
+async function mapWithConcurrency<T, R>(
+  values: T[],
+  limit: number,
+  operation: (value: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < values.length) {
+      const index = cursor++;
+      results[index] = await operation(values[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, values.length) }, () => worker()));
+  return results;
+}
+
 function envValue(env: Record<string, string>, ...names: string[]): string | undefined {
   for (const name of names) {
     const value = env[name];
@@ -170,6 +224,10 @@ function timestamp(): string {
     `${part(date.getHours())}_${part(date.getMinutes())}_${part(date.getSeconds())}`;
 }
 
+function workspaceResourceKey(assetId: string, filename: string): string {
+  return `${assetId}\0${filename.normalize("NFKC").toLocaleLowerCase()}`;
+}
+
 function contentType(path: string): string {
   const types: Record<string, string> = {
     ".bin": "application/octet-stream",
@@ -195,6 +253,19 @@ function contentType(path: string): string {
 function publicObjectUrl(base: string, key: string): string {
   const encoded = key.split("/").map(encodeURIComponent).join("/");
   return `${base.replace(/\/$/, "")}/${encoded}`;
+}
+
+export function normalizeS3Endpoint(endpoint: string | undefined, bucket: string): string | undefined {
+  if (!endpoint) return undefined;
+  try {
+    const parsed = new URL(endpoint);
+    const bucketPrefix = `${bucket.toLowerCase()}.`;
+    if (!parsed.hostname.toLowerCase().startsWith(bucketPrefix)) return endpoint;
+    parsed.hostname = parsed.hostname.slice(bucketPrefix.length);
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return endpoint;
+  }
 }
 
 function sanitizeAsset(asset: AssetJson): AssetJson {
@@ -251,7 +322,8 @@ async function loadS3Settings(rootDir: string, projectDirectory: string): Promis
   return {
     client: new S3Client({
       region,
-      endpoint,
+      endpoint: normalizeS3Endpoint(endpoint, bucket),
+      requestChecksumCalculation: "WHEN_REQUIRED",
       forcePathStyle: booleanValue(
         envValue(env, "PCBRIDGE_S3_FORCE_PATH_STYLE", "S3_FORCE_PATH_STYLE"),
         false,
@@ -345,47 +417,6 @@ export class BuilderManager {
     return descriptorFrom(response.data);
   }
 
-  async #cacheRemoteFile(
-    info: TargetInfo,
-    projectDirectory: string,
-    assetId: string,
-    filename: string,
-    url: string,
-    expectedHash?: string,
-  ): Promise<{ path: string; hash: string }> {
-    const path = join(
-      projectDirectory,
-      "tmp",
-      "cache",
-      "assets",
-      safeSegment(assetId, "asset"),
-      safeSegment(filename, "file.bin"),
-    );
-    if (existsSync(path)) {
-      const content = await readFile(path);
-      const hash = md5(content);
-      if (!expectedHash || hash === expectedHash) return { path, hash };
-    }
-    const response = await this.#requestTarget(
-      info.id,
-      "bridge:readAssetResource",
-      { assetId, url },
-      120000,
-    );
-    if (!response.ok) throw new Error(response.error.message);
-    const data = response.data as Record<string, JsonValue>;
-    const base64 = typeof data.base64 === "string" ? data.base64 : "";
-    if (!base64) throw new Error(`Asset ${assetId} resource ${filename} returned no data.`);
-    const content = Buffer.from(base64, "base64");
-    const hash = md5(content);
-    if (expectedHash && hash !== expectedHash) {
-      throw new Error(`Asset ${assetId} resource ${filename} did not match its PlayCanvas MD5.`);
-    }
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, content);
-    return { path, hash };
-  }
-
   async #run(job: BuildJob): Promise<void> {
     let activeClient: S3Client | null = null;
     try {
@@ -408,6 +439,45 @@ export class BuilderManager {
       }
       const prepared = await this.#workspace.prepareAssetFiles(job.info, [...allAssetIds]);
       const preparedById = new Map(prepared.assets.map((asset) => [asset.id, asset]));
+      const resourceRequests = new Map<string, WorkspaceResourceRequest>();
+      for (const descriptor of descriptors.values()) {
+        for (const asset of descriptor.assets) {
+          const id = String(asset.id);
+          for (const variant of Object.values(asset.file?.variants || {})) {
+            if (!variant.url || !variant.filename) continue;
+            resourceRequests.set(workspaceResourceKey(id, variant.filename), {
+              assetId: id,
+              filename: variant.filename,
+              url: variant.url,
+              hash: variant.hash,
+            });
+          }
+          const fontMaps = asset.type === "font" && Array.isArray(asset.data?.info &&
+            (asset.data.info as Record<string, unknown>).maps)
+            ? (asset.data!.info as Record<string, unknown>).maps as unknown[]
+            : [];
+          if (!asset.file?.url || !asset.file.filename || fontMaps.length <= 1) continue;
+          for (let index = 1; index < fontMaps.length; index += 1) {
+            const filename = asset.file.filename.replace(/(\.[^.]*)$/, `${index}$1`);
+            const url = asset.file.url.replace(/(\.[^.]*)$/, `${index}$1`);
+            resourceRequests.set(workspaceResourceKey(id, filename), {
+              assetId: id,
+              filename,
+              url,
+            });
+          }
+        }
+      }
+      const preparedResources = await this.#workspace.prepareAssetResources(
+        job.info,
+        [...resourceRequests.values()],
+      );
+      const preparedResourceByKey = new Map<string, PreparedWorkspaceResource>(
+        preparedResources.map((resource) => [
+          workspaceResourceKey(resource.assetId, resource.filename),
+          resource,
+        ]),
+      );
       const settings = await loadS3Settings(this.rootDir, prepared.projectDirectory);
       activeClient = settings.client;
       job.configSource = settings.source;
@@ -464,32 +534,33 @@ export class BuilderManager {
           if (output.file && local?.path && local.filename) {
             const relativeUrl = `${buildName}/${id}/${safeSegment(local.filename, `asset-${id}`)}`;
             const key = `${prefix}/${relativeUrl}`;
+            const hash = local.hash || md5(await readFile(local.path));
+            const fileInfo = await stat(local.path);
             output.file.url = relativeUrl;
+            output.file.hash = hash;
+            output.file.size = fileInfo.size;
             uploads.set(key, {
               key,
               path: local.path,
               contentType: contentType(local.path),
-              hash: local.hash || md5(await readFile(local.path)),
+              hash,
             });
           }
           for (const variant of Object.values(output.file?.variants || {})) {
             if (!variant.url || !variant.filename) continue;
-            const cached = await this.#cacheRemoteFile(
-              job.info,
-              prepared.projectDirectory,
-              id,
-              variant.filename,
-              variant.url,
-              variant.hash,
-            );
+            const resource = preparedResourceByKey.get(workspaceResourceKey(id, variant.filename));
+            if (!resource) {
+              throw new Error(`Asset ${id} resource ${variant.filename} was not prepared.`);
+            }
             const relativeUrl = `${buildName}/${id}/${safeSegment(variant.filename, "variant.bin")}`;
             const key = `${prefix}/${relativeUrl}`;
             variant.url = relativeUrl;
+            variant.hash = resource.hash;
             uploads.set(key, {
               key,
-              path: cached.path,
-              contentType: contentType(cached.path),
-              hash: cached.hash,
+              path: resource.path,
+              contentType: contentType(resource.path),
+              hash: resource.hash,
             });
           }
           const fontMaps = asset.type === "font" && Array.isArray(asset.data?.info &&
@@ -500,19 +571,16 @@ export class BuilderManager {
             for (let index = 1; index < fontMaps.length; index += 1) {
               const filename = originalFilename.replace(/(\.[^.]*)$/, `${index}$1`);
               const url = originalFileUrl.replace(/(\.[^.]*)$/, `${index}$1`);
-              const cached = await this.#cacheRemoteFile(
-                job.info,
-                prepared.projectDirectory,
-                id,
-                filename,
-                url,
-              );
+              const resource = preparedResourceByKey.get(workspaceResourceKey(id, filename));
+              if (!resource) {
+                throw new Error(`Asset ${id} resource ${filename} was not prepared.`);
+              }
               const key = `${prefix}/${buildName}/${id}/${safeSegment(filename, `font-map-${index}`)}`;
               uploads.set(key, {
                 key,
-                path: cached.path,
-                contentType: contentType(cached.path),
-                hash: cached.hash,
+                path: resource.path,
+                contentType: contentType(resource.path),
+                hash: resource.hash,
               });
             }
           }
@@ -528,8 +596,9 @@ export class BuilderManager {
           scriptText += "\n";
         }
         if (scriptText.trim()) {
+          const gameScript = await compileGameScript(scriptText);
           const scriptPath = join(buildRoot, "gamescript.js");
-          await writeFile(scriptPath, scriptText);
+          await writeFile(scriptPath, gameScript);
           const relativeUrl = `${buildName}/gamescript.js`;
           const key = `${prefix}/${relativeUrl}`;
           rootData.scriptUrl = relativeUrl;
@@ -537,7 +606,7 @@ export class BuilderManager {
             key,
             path: scriptPath,
             contentType: contentType(scriptPath),
-            hash: md5(scriptText),
+            hash: md5(gameScript),
           });
         }
 
@@ -561,28 +630,23 @@ export class BuilderManager {
       job.totalFiles = uploads.size;
       const uploadFiles = [...uploads.values()];
       this.#update(job, { state: "uploading", message: `Uploading 0/${uploadFiles.length} files` });
-      const concurrency = Math.min(4, Math.max(1, uploadFiles.length));
-      let cursor = 0;
-      const worker = async () => {
-        while (cursor < uploadFiles.length) {
-          const file = uploadFiles[cursor++];
-          const info = await stat(file.path);
-          const input: PutObjectCommandInput = {
-            Bucket: settings.bucket,
-            Key: file.key,
-            Body: createReadStream(file.path),
-            ContentLength: info.size,
-            ContentType: file.contentType,
-            Metadata: { "pcbridge-md5": file.hash },
-          };
-          await settings.client.send(new PutObjectCommand(input));
-          job.completedFiles += 1;
-          this.#update(job, {
-            message: `Uploading ${job.completedFiles}/${uploadFiles.length} files`,
-          });
-        }
-      };
-      await Promise.all(Array.from({ length: concurrency }, () => worker()));
+      await mapWithConcurrency(uploadFiles, 4, async (file) => {
+        const info = await stat(file.path);
+        const input: PutObjectCommandInput = {
+          Bucket: settings.bucket,
+          Key: file.key,
+          Body: createReadStream(file.path),
+          ContentLength: info.size,
+          ContentMD5: Buffer.from(file.hash, "hex").toString("base64"),
+          ContentType: file.contentType,
+          Metadata: { "pcbridge-md5": file.hash },
+        };
+        await settings.client.send(new PutObjectCommand(input));
+        job.completedFiles += 1;
+        this.#update(job, {
+          message: `Uploading ${job.completedFiles}/${uploadFiles.length} files`,
+        });
+      });
       this.#update(job, {
         state: "completed",
         message: `Uploaded ${uploadFiles.length} files`,
