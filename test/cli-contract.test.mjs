@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import { diagnoseDaemonConnection } from "../dist/cli.js";
 import { normalizeError } from "../dist/shared/protocol.js";
@@ -66,4 +68,42 @@ test("mutation timeouts and target focus selectors are validated before RPC", ()
   });
   assert.equal(focus.status, 1);
   assert.equal(JSON.parse(focus.stdout).error.code, "INVALID_REQUEST");
+});
+
+test("install-skill supports one agent under a custom parent directory", async (t) => {
+  const tmpBase = join(process.cwd(), "tmp");
+  await mkdir(tmpBase, { recursive: true });
+  const root = await mkdtemp(join(tmpBase, "install-skill-path-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const cliPath = join(process.cwd(), "dist", "cli.js");
+
+  const codex = spawnSync(
+    process.execPath,
+    [cliPath, "install-skill", "--agent", "codex", "--path", "custom skills"],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.equal(codex.status, 0, codex.stderr);
+  const codexTarget = join(root, "custom skills", "playcanvas-agent-bridge-cli");
+  assert.equal(JSON.parse(codex.stdout).data[0].path, codexTarget);
+  await access(join(codexTarget, "SKILL.md"));
+
+  const cursorParent = join(root, "project", ".cursor", "rules");
+  const cursor = spawnSync(
+    process.execPath,
+    [cliPath, "install-skill", "--agent", "cursor", "--path", cursorParent],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.equal(cursor.status, 0, cursor.stderr);
+  const cursorTarget = join(cursorParent, "playcanvas-agent-bridge-cli.mdc");
+  assert.equal(JSON.parse(cursor.stdout).data[0].path, cursorTarget);
+  await access(cursorTarget);
+
+  const all = spawnSync(
+    process.execPath,
+    [cliPath, "install-skill", "--agent", "all", "--path", join(root, "all")],
+    { cwd: root, encoding: "utf8" },
+  );
+  assert.equal(all.status, 1, all.stderr);
+  assert.equal(JSON.parse(all.stdout).error.code, "INVALID_REQUEST");
+  await assert.rejects(access(join(root, "all")));
 });

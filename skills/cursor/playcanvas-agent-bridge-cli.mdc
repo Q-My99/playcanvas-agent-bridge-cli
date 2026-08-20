@@ -17,18 +17,22 @@ pcbridge targets
 Run `pcbridge daemon start` only for `DAEMON_NOT_LISTENING`; for `LOOPBACK_ACCESS_DENIED`, retry
 with local-loopback permission. If no target appears, ask the user to install/reload the extension.
 
-Updates are component-specific. For an explicit update request, have the user stop the foreground
-daemon with Ctrl+C and remember its workspace-root directory; there is no `daemon stop`. Run
+Updates are component-specific. For an explicit update request, record the workspace root from
+`pcbridge daemon status`. Run
 `npm install -g playcanvas-agent-bridge-cli@latest`, verify `pcbridge version`, then rerun
-`pcbridge install-skill --agent all`. Regenerate the extension with
+`pcbridge install-skill --agent all`. For a custom or project-local parent directory, use
+`pcbridge install-skill --agent <one-agent> --path <parent-directory>`; it appends the standard
+artifact name and cannot be combined with `--agent all`. Regenerate the extension with
 `pcbridge install-extension --no-open`; the user must manually click **Reload** in
-`chrome://extensions` and refresh Editor/Launch tabs. Restart the daemon from the original workspace
-root and verify `pcbridge doctor`. Update the independently published Editor build with
+`chrome://extensions` and refresh Editor/Launch tabs. Run `pcbridge daemon restart --workspace
+<original-root>` and verify `pcbridge doctor`. A daemon version without authenticated shutdown must
+be stopped once with Ctrl+C before starting the updated daemon. Update the independently published Editor build with
 `pcbridge frontend update` and `frontend status`; a frontend-only update needs no daemon restart,
 but the Editor tab must be refreshed and custom mode selected in the popup when necessary. Do not
 claim completion before these manual steps are confirmed.
 
-The daemon start directory is the workspace root. After selecting an explicit target, run
+The current directory is the default workspace root; `daemon start/restart --workspace <directory>`
+selects it explicitly, and `daemon stop` stops the authenticated daemon. After selecting a target, run
 `pcbridge workspace status --target editor:<sceneId>` and do not write while it reports a conflict
 or sync error. Project files live under `<projectId>-<projectName>/{assets,tmp}`. Prefer local
 operations for file-backed Assets: edit scripts under `assets/`; create files/folders there to

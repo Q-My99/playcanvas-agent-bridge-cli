@@ -13,7 +13,7 @@ npm install -g playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-下文命令跟随仓库版 `0.6.0`。npm 安装的是最新稳定版本；测试尚未发布的改动时请使用
+下文命令跟随仓库版 `0.6.1`。npm 安装的是最新稳定版本；测试尚未发布的改动时请使用
 GitHub 安装。
 
 如果要测试尚未发布的改动，也可以直接从这个 GitHub 仓库安装：
@@ -37,18 +37,18 @@ CLI/daemon、已安装的 Agent 技能、生成的 Chrome 插件和可选的本�
 
 ### 更新 CLI、daemon 和 Agent 技能
 
-先在启动 daemon 的终端中按 **Ctrl+C 手动停止 daemon**。目前没有 `pcbridge daemon stop`
-命令。请记住该终端的工作目录，它就是 workspace 根目录，升级后必须回到同一目录启动。
-
 ```bash
 npm install -g playcanvas-agent-bridge-cli@latest
 pcbridge version
 pcbridge install-skill --agent all
-cd /原来的/workspace/根目录
-pcbridge daemon start
+pcbridge daemon restart --workspace /原来的/workspace/根目录
 ```
 
 npm 全局安装会替换 CLI 文件，但已经运行的 daemon 仍然是内存中的旧版本，必须重启才会生效。
+`daemon restart` 会先认证当前 pcbridge 服务，优雅关闭并等待端口释放，再在当前终端启动新
+daemon。它不会因为某个进程占用了配置端口就直接杀掉该进程。从不支持认证关闭的旧版本升级
+时，第一次仍需在旧 daemon 终端按 **Ctrl+C**；完成这次迁移后即可使用 restart 切换和升级。
+
 Codex、Claude、Cursor 和 Windsurf 的技能文件也是安装时复制出去的，因此需要重新执行
 `install-skill`；如果当前 Agent 任务已经加载了旧技能，请新建一个任务或会话再使用新技能。
 
@@ -151,12 +151,25 @@ pcbridge frontend remove playcanvas-editor-v2.28.1-r1
 
 ## 启动桥接
 
-请先进入希望作为本地工作区根目录的位置，再启动 daemon：
+可以使用当前目录作为 workspace 根目录，也可以显式指定目录：
 
 ```bash
 cd /path/to/my-playcanvas-workspace
 pcbridge daemon start
+
+# 在任意目录执行，效果相同
+pcbridge daemon start --workspace /path/to/my-playcanvas-workspace
+
+# 停止当前 daemon 并切换 workspace
+pcbridge daemon restart --workspace /path/to/another-workspace
+
+# 优雅停止经过认证的 pcbridge daemon
+pcbridge daemon stop
 ```
+
+`daemon restart` 和 `daemon stop` 都会先校验带 token 的 `/health` 响应。token 不匹配或端口上
+不是 pcbridge 服务时，命令会报错且不会终止占用端口的进程。`start` 和 `restart` 都以前台
+方式运行，日志仍然直接显示在终端中，也仍然可以使用 **Ctrl+C** 停止。
 
 连接 ready 的 Editor 后，pcbridge 会自动创建 `<projectId>-<projectName>/` 工程目录：
 
@@ -429,6 +442,18 @@ pcbridge install-skill --agent cursor
 pcbridge install-skill --agent windsurf
 pcbridge install-skill --agent all
 ```
+
+使用 `--path` 可以把单个 Agent 的 skill 或 rule 安装到自定义父目录。相对路径从当前工作目录
+解析；pcbridge 会自动追加标准目录名或文件名，因此不会清空用户传入的父目录：
+
+```bash
+pcbridge install-skill --agent codex --path "D:\AgentConfig\skills"
+pcbridge install-skill --agent cursor --path ./.cursor/rules
+```
+
+以上命令分别生成 `D:\AgentConfig\skills\playcanvas-agent-bridge-cli\` 和
+`.cursor/rules/playcanvas-agent-bridge-cli.mdc`。Windows 路径包含空格时必须使用引号。
+由于不同 Agent 的产物布局不同，`--agent all --path ...` 会被拒绝；自定义位置时请逐个安装。
 
 安装位置：
 

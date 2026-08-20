@@ -360,6 +360,9 @@ export class BuilderManager {
   #requestTarget: TargetRequest;
   #workspace: WorkspaceManager;
   #jobs = new Map<string, BuildJob>();
+  #activeRuns = new Set<Promise<void>>();
+  #activeClients = new Set<S3Client>();
+  #closing = false;
 
   constructor(options: BuilderOptions) {
     this.rootDir = options.rootDir;
@@ -368,6 +371,7 @@ export class BuilderManager {
   }
 
   start(info: TargetInfo, templateAssetId: string, options: TemplateBuildOptions = {}): BuildJobStatus {
+    if (this.#closing) throw new Error("Tiny Builder is stopping with the daemon.");
     const now = new Date().toISOString();
     const job: BuildJob = {
       id: `build_${randomUUID()}`,
@@ -388,8 +392,16 @@ export class BuilderManager {
     };
     this.#jobs.set(job.id, job);
     while (this.#jobs.size > 100) this.#jobs.delete(this.#jobs.keys().next().value!);
-    void this.#run(job);
+    const run = this.#run(job);
+    this.#activeRuns.add(run);
+    void run.finally(() => this.#activeRuns.delete(run));
     return this.#publicJob(job);
+  }
+
+  async close(): Promise<void> {
+    this.#closing = true;
+    for (const client of this.#activeClients) client.destroy();
+    await Promise.allSettled(this.#activeRuns);
   }
 
   get(jobId: string): BuildJobStatus | null {
@@ -420,6 +432,7 @@ export class BuilderManager {
   async #run(job: BuildJob): Promise<void> {
     let activeClient: S3Client | null = null;
     try {
+      if (this.#closing) throw new Error("Build cancelled because the daemon is stopping.");
       this.#update(job, { state: "collecting", message: "Collecting Template dependencies" });
       const descriptors = new Map<string, TemplateDescriptor>();
       const visit = async (assetId: string, stack: Set<string>): Promise<void> => {
@@ -480,6 +493,8 @@ export class BuilderManager {
       );
       const settings = await loadS3Settings(this.rootDir, prepared.projectDirectory);
       activeClient = settings.client;
+      this.#activeClients.add(activeClient);
+      if (this.#closing) throw new Error("Build cancelled because the daemon is stopping.");
       job.configSource = settings.source;
       const prefix = normalizePrefix(job.options.prefix || settings.defaultPrefix);
       const uploads = new Map<string, UploadFile>();
@@ -631,6 +646,7 @@ export class BuilderManager {
       const uploadFiles = [...uploads.values()];
       this.#update(job, { state: "uploading", message: `Uploading 0/${uploadFiles.length} files` });
       await mapWithConcurrency(uploadFiles, 4, async (file) => {
+        if (this.#closing) throw new Error("Build cancelled because the daemon is stopping.");
         const info = await stat(file.path);
         const input: PutObjectCommandInput = {
           Bucket: settings.bucket,
@@ -660,7 +676,10 @@ export class BuilderManager {
         error: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      activeClient?.destroy();
+      if (activeClient) {
+        this.#activeClients.delete(activeClient);
+        activeClient.destroy();
+      }
     }
   }
 }

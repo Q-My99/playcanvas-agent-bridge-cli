@@ -59,6 +59,7 @@ export type DaemonServer = {
   frontend: FrontendServer;
   workspace: WorkspaceManager;
   builder: BuilderManager;
+  closed: Promise<void>;
   close: () => Promise<void>;
   listen: () => Promise<void>;
 };
@@ -194,6 +195,12 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
     workspace,
   });
 
+  let resolveClosed!: () => void;
+  const closed = new Promise<void>((resolvePromise) => {
+    resolveClosed = resolvePromise;
+  });
+  let closePromise: Promise<void> | null = null;
+
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url || "/", `http://${req.headers.host || `${host}:${port}`}`);
@@ -208,6 +215,7 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
           res,
           200,
           ok({
+            service: "pcbridge-daemon",
             version: VERSION,
             host,
             port: actualPort,
@@ -216,6 +224,27 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
             frontend: frontendStatus as unknown as JsonValue,
           }),
         );
+        return;
+      }
+
+      if (url.pathname === "/shutdown" && req.method === "POST") {
+        if (!requireToken(req)) {
+          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
+          return;
+        }
+        writeJson(res, 200, ok({
+          service: "pcbridge-daemon",
+          stopping: true,
+          version: VERSION,
+          workspaceRoot: workspace.rootDir,
+        }));
+        res.once("finish", () => {
+          setImmediate(() => {
+            void closeDaemon().catch((error) => {
+              log(`daemon shutdown failed: ${String(error)}`);
+            });
+          });
+        });
         return;
       }
 
@@ -487,6 +516,57 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
     });
   });
 
+  function closeDaemon(): Promise<void> {
+    if (closePromise) return closePromise;
+
+    closePromise = (async () => {
+      clearInterval(pingTimer);
+
+      for (const waiter of pending.values()) {
+        clearTimeout(waiter.timer);
+        waiter.resolve(fail("DAEMON_STOPPING", "pcbridge daemon is stopping."));
+      }
+      pending.clear();
+
+      const builderCleanup = await Promise.allSettled([builder.close()]);
+      const cleanupResults = [
+        ...builderCleanup,
+        ...await Promise.allSettled([
+          workspace.close(),
+          frontend.close(),
+        ]),
+      ];
+
+      for (const client of wss.clients) {
+        client.close(1001, "pcbridge daemon is stopping");
+      }
+      const forceCloseTimer = setTimeout(() => {
+        for (const client of wss.clients) client.terminate();
+      }, 250);
+
+      await Promise.all([
+        new Promise<void>((resolveClose) => {
+          wss.close(() => resolveClose());
+        }),
+        new Promise<void>((resolveClose) => {
+          if (!server.listening) {
+            resolveClose();
+            return;
+          }
+          server.close(() => resolveClose());
+        }),
+      ]);
+      clearTimeout(forceCloseTimer);
+
+      const failedCleanup = cleanupResults.find(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (failedCleanup) throw failedCleanup.reason;
+    })().finally(resolveClosed);
+
+    return closePromise;
+  }
+
   return {
     host,
     get port() {
@@ -496,6 +576,7 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
     frontend,
     workspace,
     builder,
+    closed,
     listen: async () => {
       await new Promise<void>((resolveListen, reject) => {
         server.once("error", reject);
@@ -512,14 +593,6 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
         log(`frontend server unavailable: ${String(error)}`);
       }
     },
-    close: async () => {
-      clearInterval(pingTimer);
-      await workspace.close();
-      await frontend.close();
-      await new Promise<void>((resolveClose) => {
-        wss.close();
-        server.close(() => resolveClose());
-      });
-    },
+    close: closeDaemon,
   };
 }

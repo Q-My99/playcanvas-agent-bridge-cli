@@ -26,8 +26,10 @@ pcbridge daemon start
 Do not start a second daemon for `LOOPBACK_ACCESS_DENIED`. That means the current execution
 environment cannot access `127.0.0.1`; retry with local-loopback permission instead.
 
-The directory where `pcbridge daemon start` runs is the workspace root. Choose it intentionally;
-each connected Editor project is mirrored into `<projectId>-<projectName>/` below that directory.
+The directory where `pcbridge daemon start` runs is the default workspace root; use
+`--workspace <directory>` to select it explicitly. Use `pcbridge daemon restart --workspace
+<directory>` to switch roots safely, and `pcbridge daemon stop` to stop the authenticated daemon.
+Each connected Editor project is mirrored into `<projectId>-<projectName>/` below that directory.
 
 If no target appears, tell the user to run `pcbridge install-extension`, load the printed directory in `chrome://extensions`, then refresh the PlayCanvas Editor or Launch tab.
 
@@ -42,14 +44,18 @@ project-picker and scene Editor navigations; change the remembered mode only thr
 Treat the CLI/daemon, installed agent skill, generated Chrome extension, and custom Editor frontend
 as separate components. When the user asks to update pcbridge:
 
-1. Ask the user to stop the foreground daemon with Ctrl+C; there is no `daemon stop` command. Record
-   its working directory so it can restart from the same workspace root.
+1. Record the current workspace root from `pcbridge daemon status`.
 2. Run `npm install -g playcanvas-agent-bridge-cli@latest`, verify `pcbridge version`, and reinstall
    copied skills with `pcbridge install-skill --agent all`.
+   For a custom or project-local parent directory, use
+   `pcbridge install-skill --agent <one-agent> --path <parent-directory>`; `--path` appends the
+   standard artifact name and cannot be combined with `--agent all`.
 3. Run `pcbridge install-extension --no-open`. The user must click **Reload** for PlayCanvas Agent
    Bridge in `chrome://extensions` and refresh open Editor/Launch tabs; rewriting the unpacked
    directory is not enough.
-4. Restart `pcbridge daemon start` from the original workspace root and verify with `pcbridge doctor`.
+4. Run `pcbridge daemon restart --workspace <original-root>` and verify with `pcbridge doctor`.
+   When migrating from a daemon version without authenticated shutdown, ask the user to stop that
+   old daemon once with Ctrl+C, then start the updated daemon with the same `--workspace` value.
 5. Update the independently published Editor build with `pcbridge frontend update`, then verify
    `frontend status`. A frontend-only update does not require daemon restart, but the user must
    refresh the Editor tab and select **Use custom frontend** in the popup when currently in official

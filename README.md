@@ -20,7 +20,7 @@ npm install -g github:Q-My99/playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-The commands documented below track repository version `0.6.0`. npm installs the latest stable
+The commands documented below track repository version `0.6.1`. npm installs the latest stable
 release; use the GitHub install when testing changes that have not been released yet.
 
 One-shot with npx:
@@ -37,22 +37,22 @@ frontend are separate local components. Updating one does not update the others 
 
 ### Update the CLI, daemon, and agent skills
 
-First stop the running daemon with **Ctrl+C in the terminal where it was started**. There is no
-`pcbridge daemon stop` command. Remember that terminal's working directory because it is the
-workspace root and must be reused when the daemon starts again.
-
 ```bash
 npm install -g playcanvas-agent-bridge-cli@latest
 pcbridge version
 pcbridge install-skill --agent all
-cd /the/same/workspace/root
-pcbridge daemon start
+pcbridge daemon restart --workspace /the/workspace/root
 ```
 
 Installing the npm package replaces the CLI files, but an already-running daemon remains the old
-in-memory version until it is restarted. Installed Codex, Claude, Cursor, and Windsurf skills are
-also copies, so rerun `install-skill`; start a new agent task/session if the client has already
-loaded the old skill.
+in-memory version until it is restarted. `daemon restart` authenticates the existing pcbridge
+listener, shuts it down gracefully, waits for the port to be released, and starts the new daemon in
+the current terminal. It never kills an unverified process merely because that process occupies the
+configured port. When upgrading from a version that predates authenticated shutdown, stop that old
+daemon once with **Ctrl+C**, then use `daemon restart` for later switches and upgrades.
+
+Installed Codex, Claude, Cursor, and Windsurf skills are also copies, so rerun `install-skill`;
+start a new agent task/session if the client has already loaded the old skill.
 
 ### Update the Chrome extension
 
@@ -154,12 +154,26 @@ until another installed release is selected.
 
 ## Start the bridge
 
-Change into the directory that should become the local workspace root before starting the daemon:
+Use the current directory as the workspace root, or pass it explicitly:
 
 ```bash
 cd /path/to/my-playcanvas-workspace
 pcbridge daemon start
+
+# Equivalent from any directory
+pcbridge daemon start --workspace /path/to/my-playcanvas-workspace
+
+# Stop the current daemon and switch workspace roots
+pcbridge daemon restart --workspace /path/to/another-workspace
+
+# Gracefully stop the authenticated pcbridge daemon
+pcbridge daemon stop
 ```
+
+`daemon restart` and `daemon stop` first verify the token-protected `/health` response. A token
+mismatch or a non-pcbridge listener fails without terminating the process on that port. Both
+`start` and `restart` run the daemon in the foreground so logs remain visible and **Ctrl+C** still
+works.
 
 When a ready Editor connects, pcbridge creates `<projectId>-<projectName>/` automatically:
 
@@ -438,6 +452,20 @@ pcbridge install-skill --agent cursor
 pcbridge install-skill --agent windsurf
 pcbridge install-skill --agent all
 ```
+
+Use `--path` to install one agent's skill or rule under a custom parent directory. Relative paths
+are resolved from the current working directory, and pcbridge appends the standard directory or
+filename so the parent itself is never cleared:
+
+```bash
+pcbridge install-skill --agent codex --path "D:\AgentConfig\skills"
+pcbridge install-skill --agent cursor --path ./.cursor/rules
+```
+
+These create `D:\AgentConfig\skills\playcanvas-agent-bridge-cli\` and
+`.cursor/rules/playcanvas-agent-bridge-cli.mdc`. Quote Windows paths that contain spaces.
+`--agent all --path ...` is rejected because the supported agents use different artifact layouts;
+run one command per agent for custom locations.
 
 Installed locations:
 

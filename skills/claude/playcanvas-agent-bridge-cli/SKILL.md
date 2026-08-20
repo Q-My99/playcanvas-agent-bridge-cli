@@ -18,7 +18,8 @@ terminal. For `LOOPBACK_ACCESS_DENIED`, retry with local-loopback permission ins
 second daemon. If no PlayCanvas target appears, ask the user to run `pcbridge install-extension`,
 load the printed directory in `chrome://extensions`, and refresh the Editor or Launch tab.
 
-The directory where `pcbridge daemon start` runs is the workspace root. Each ready Editor project
+The current directory is the default workspace root; `daemon start/restart --workspace <directory>`
+selects it explicitly, and `daemon stop` stops the authenticated daemon. Each ready Editor project
 is mirrored into `<projectId>-<projectName>/` below it. After choosing an explicit target, run
 `pcbridge workspace status --target editor:<sceneId>` and do not write while it reports a conflict
 or sync error.
@@ -33,13 +34,17 @@ project-picker and scene Editor navigations; change the remembered mode only thr
 The CLI/daemon, copied agent skills, generated Chrome extension, and custom Editor frontend update
 independently. For an explicit update request:
 
-1. Have the user stop the foreground daemon with Ctrl+C and preserve its working directory; no
-   `daemon stop` command exists.
+1. Record the workspace root reported by `pcbridge daemon status`.
 2. Run `npm install -g playcanvas-agent-bridge-cli@latest`, check `pcbridge version`, and rerun
    `pcbridge install-skill --agent all`.
+   For a custom or project-local parent directory, use
+   `pcbridge install-skill --agent <one-agent> --path <parent-directory>`; `--path` appends the
+   standard artifact name and cannot be combined with `--agent all`.
 3. Run `pcbridge install-extension --no-open`; the user must click **Reload** in
    `chrome://extensions` and refresh every open Editor/Launch tab.
-4. Restart the daemon from the same workspace root and verify `pcbridge doctor`.
+4. Run `pcbridge daemon restart --workspace <original-root>` and verify `pcbridge doctor`. For a
+   one-time migration from a daemon without authenticated shutdown, have the user stop the old
+   daemon with Ctrl+C, then start the updated daemon with the same `--workspace` value.
 5. Use `pcbridge frontend update` plus `frontend status` for the separately published Editor build.
    That update is read dynamically by a running daemon, but the user must refresh the Editor page
    and choose **Use custom frontend** in the popup if official mode is selected.

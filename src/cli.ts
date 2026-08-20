@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -649,48 +650,219 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+async function resolveDaemonWorkspace(args: Args): Promise<string> {
+  const hasWorkspace = Object.prototype.hasOwnProperty.call(args.flags, "workspace");
+  const requested = flagString(args, "workspace")?.trim();
+  if (hasWorkspace && !requested) {
+    throw new Error("daemon --workspace requires a directory.");
+  }
+
+  const workspaceRoot = resolve(requested || process.cwd());
+  let info;
+  try {
+    info = await stat(workspaceRoot);
+  } catch {
+    throw new Error(`Daemon workspace does not exist: ${workspaceRoot}`);
+  }
+  if (!info.isDirectory()) {
+    throw new Error(`Daemon workspace is not a directory: ${workspaceRoot}`);
+  }
+  return workspaceRoot;
+}
+
+function daemonLog(args: Args, message: string): void {
+  if (flagBool(args, "json")) {
+    process.stderr.write(`${JSON.stringify({ time: new Date().toISOString(), message })}\n`);
+  } else {
+    process.stderr.write(`[pcbridge] ${message}\n`);
+  }
+}
+
+async function runDaemon(
+  args: Args,
+  workspaceRoot: string,
+  restarted: boolean,
+): Promise<void> {
+  const session = await readOrCreateSession();
+  const port = session.port || DEFAULT_PORT;
+  const server = createDaemonServer({
+    host: DEFAULT_HOST,
+    port,
+    token: session.token,
+    workspaceRoot,
+    log: (message) => daemonLog(args, message),
+  });
+
+  try {
+    await server.listen();
+  } catch (error) {
+    print(
+      fail(
+        "PORT_BUSY",
+        `Cannot listen on ${DEFAULT_HOST}:${port}. ${String(error)}`,
+      ),
+    );
+    return;
+  }
+
+  const handleSignal = (signal: NodeJS.Signals) => {
+    daemonLog(args, `received ${signal}; stopping daemon`);
+    void server.close().catch((error) => {
+      daemonLog(args, `daemon shutdown failed: ${String(error)}`);
+      process.exitCode = 1;
+    });
+  };
+  const handleSigint = () => handleSignal("SIGINT");
+  const handleSigterm = () => handleSignal("SIGTERM");
+  process.once("SIGINT", handleSigint);
+  process.once("SIGTERM", handleSigterm);
+
+  print(
+    ok({
+      version: VERSION,
+      host: DEFAULT_HOST,
+      port,
+      workspaceRoot,
+      restarted,
+      extensionPath: EXTENSION_INSTALL_DIR,
+      frontend: await server.frontend.status() as unknown as JsonValue,
+    }),
+  );
+
+  try {
+    await server.closed;
+  } finally {
+    process.off("SIGINT", handleSigint);
+    process.off("SIGTERM", handleSigterm);
+  }
+}
+
+function isPortListening(port: number): Promise<boolean> {
+  return new Promise((resolveListening) => {
+    const socket = createConnection({ host: DEFAULT_HOST, port });
+    let settled = false;
+    const finish = (listening: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolveListening(listening);
+    };
+    socket.setTimeout(500);
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+    socket.once("timeout", () => finish(true));
+  });
+}
+
+async function waitForPortRelease(port: number, timeoutMs = 10000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!await isPortListening(port)) return true;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+  }
+  return !await isPortListening(port);
+}
+
+async function stopDaemon(): Promise<Envelope> {
+  const session = await readOrCreateSession();
+  const port = session.port || DEFAULT_PORT;
+  let health: Envelope;
+  try {
+    health = await fetchDaemon("/health");
+  } catch (error) {
+    if (
+      error instanceof DaemonConnectionError &&
+      error.diagnosis.code === "DAEMON_NOT_LISTENING"
+    ) {
+      return ok({ stopped: false, alreadyStopped: true, host: DEFAULT_HOST, port });
+    }
+    if (error instanceof DaemonConnectionError) {
+      return fail(
+        error.diagnosis.code,
+        error.diagnosis.message,
+        undefined,
+        { nextAction: error.diagnosis.nextAction },
+      );
+    }
+    return fail("DAEMON_UNREACHABLE", String(error));
+  }
+
+  if (!health.ok) {
+    if (health.error.code === "DAEMON_INVALID_RESPONSE") {
+      return fail(
+        "NOT_PCBRIDGE_DAEMON",
+        `The listener on ${DEFAULT_HOST}:${port} is not a pcbridge daemon; it was not stopped.`,
+      );
+    }
+    return health;
+  }
+
+  const healthData = health.data && typeof health.data === "object" && !Array.isArray(health.data)
+    ? health.data
+    : {};
+  if (healthData.service !== "pcbridge-daemon") {
+    if (typeof healthData.version === "string" && typeof healthData.workspaceRoot === "string") {
+      return fail(
+        "DAEMON_SHUTDOWN_UNSUPPORTED",
+        "The running pcbridge daemon does not support authenticated shutdown. Stop it once with Ctrl+C, then start the updated daemon.",
+      );
+    }
+    return fail(
+      "NOT_PCBRIDGE_DAEMON",
+      `The listener on ${DEFAULT_HOST}:${port} is not a restartable pcbridge daemon; it was not stopped.`,
+    );
+  }
+
+  let response: Envelope;
+  try {
+    response = await fetchDaemon("/shutdown", { method: "POST" });
+  } catch (error) {
+    if (error instanceof DaemonConnectionError) {
+      return fail(error.diagnosis.code, error.diagnosis.message);
+    }
+    return fail("DAEMON_STOP_FAILED", String(error));
+  }
+  if (!response.ok) return response;
+
+  if (!await waitForPortRelease(port)) {
+    return fail(
+      "DAEMON_STOP_TIMEOUT",
+      `pcbridge daemon accepted shutdown, but ${DEFAULT_HOST}:${port} is still occupied. No process was forcefully terminated.`,
+    );
+  }
+
+  return ok({
+    stopped: true,
+    alreadyStopped: false,
+    host: DEFAULT_HOST,
+    port,
+    previousVersion: healthData.version || null,
+    previousWorkspaceRoot: healthData.workspaceRoot || null,
+  });
+}
+
 async function daemon(args: Args): Promise<void> {
   const subcommand = args._[1] || "status";
 
-  if (subcommand === "start") {
-    const session = await readOrCreateSession();
-    const server = createDaemonServer({
-      host: DEFAULT_HOST,
-      port: session.port || DEFAULT_PORT,
-      token: session.token,
-      workspaceRoot: process.cwd(),
-      log: (message) => {
-        if (flagBool(args, "json")) {
-          process.stderr.write(`${JSON.stringify({ time: new Date().toISOString(), message })}\n`);
-        } else {
-          process.stderr.write(`[pcbridge] ${message}\n`);
-        }
-      },
-    });
-
+  if (subcommand === "start" || subcommand === "restart") {
+    let workspaceRoot: string;
     try {
-      await server.listen();
+      workspaceRoot = await resolveDaemonWorkspace(args);
     } catch (error) {
-      print(
-        fail(
-          "PORT_BUSY",
-          `Cannot listen on ${DEFAULT_HOST}:${session.port || DEFAULT_PORT}. ${String(error)}`,
-        ),
-      );
-      process.exitCode = 1;
+      print(fail("INVALID_WORKSPACE", String(error)));
       return;
     }
 
-    print(
-      ok({
-        version: VERSION,
-        host: DEFAULT_HOST,
-        port: session.port || DEFAULT_PORT,
-        workspaceRoot: process.cwd(),
-        extensionPath: EXTENSION_INSTALL_DIR,
-        frontend: await server.frontend.status() as unknown as JsonValue,
-      }),
-    );
+    if (subcommand === "restart") {
+      const stopped = await stopDaemon();
+      if (!stopped.ok) {
+        print(stopped);
+        return;
+      }
+    }
+    await runDaemon(args, workspaceRoot, subcommand === "restart");
+  } else if (subcommand === "stop") {
+    print(await stopDaemon());
   } else if (subcommand === "status") {
     try {
       print(await fetchDaemon("/health"));
@@ -837,35 +1009,61 @@ function openChromeExtensions(): void {
 
 async function installSkill(args: Args): Promise<Envelope> {
   const agent = flagString(args, "agent", "codex") || "codex";
+  const supportedAgents = new Set(["codex", "claude", "cursor", "windsurf"]);
+  if (agent !== "all" && !supportedAgents.has(agent)) {
+    return fail(
+      "UNKNOWN_AGENT",
+      `Unsupported agent: ${agent}. Use codex, claude, cursor, windsurf, or all.`,
+    );
+  }
+  const hasCustomPath = Object.prototype.hasOwnProperty.call(args.flags, "path");
+  const customPath = flagString(args, "path")?.trim();
+  if (hasCustomPath && !customPath) {
+    return fail("INVALID_REQUEST", "install-skill --path requires a parent directory.");
+  }
+  if (customPath && agent === "all") {
+    return fail(
+      "INVALID_REQUEST",
+      "install-skill --path requires one explicit agent, not --agent all.",
+    );
+  }
+  const customParent = customPath ? resolve(customPath) : null;
   const root = await findPackageRoot();
   const installed: JsonValue[] = [];
   const agents = agent === "all" ? ["codex", "claude", "cursor", "windsurf"] : [agent];
 
   for (const item of agents) {
     if (item === "codex") {
-      const dest = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "skills");
+      const dest = customParent || join(process.env.CODEX_HOME || join(homedir(), ".codex"), "skills");
       const source = join(root, "skills", "codex", "playcanvas-agent-bridge-cli");
       const target = join(dest, "playcanvas-agent-bridge-cli");
       await copyDir(source, target, { clean: true });
       installed.push({ agent: item, path: target });
     } else if (item === "claude") {
-      const target = join(homedir(), ".claude", "skills", "playcanvas-agent-bridge-cli");
+      const target = join(
+        customParent || join(homedir(), ".claude", "skills"),
+        "playcanvas-agent-bridge-cli",
+      );
       await copyDir(join(root, "skills", "claude", "playcanvas-agent-bridge-cli"), target, {
         clean: true,
       });
       installed.push({ agent: item, path: target });
     } else if (item === "cursor") {
-      const target = join(homedir(), ".cursor", "rules", "playcanvas-agent-bridge-cli.mdc");
+      const target = join(
+        customParent || join(homedir(), ".cursor", "rules"),
+        "playcanvas-agent-bridge-cli.mdc",
+      );
       await mkdir(dirname(target), { recursive: true });
       await writeFile(target, await readFile(join(root, "skills", "cursor", "playcanvas-agent-bridge-cli.mdc")));
       installed.push({ agent: item, path: target });
     } else if (item === "windsurf") {
-      const target = join(homedir(), ".windsurf", "rules", "playcanvas-agent-bridge-cli.md");
+      const target = join(
+        customParent || join(homedir(), ".windsurf", "rules"),
+        "playcanvas-agent-bridge-cli.md",
+      );
       await mkdir(dirname(target), { recursive: true });
       await writeFile(target, await readFile(join(root, "skills", "windsurf", "playcanvas-agent-bridge-cli.md")));
       installed.push({ agent: item, path: target });
-    } else {
-      return fail("UNKNOWN_AGENT", `Unsupported agent: ${item}. Use codex, claude, cursor, windsurf, or all.`);
     }
   }
 
@@ -1664,8 +1862,11 @@ function help(group = "overview"): Envelope {
     core: [
       "pcbridge doctor",
       "pcbridge install-extension",
-      "pcbridge install-skill --agent codex|claude|cursor|windsurf|all",
-      "pcbridge daemon start",
+      "pcbridge install-skill --agent codex|claude|cursor|windsurf|all [--path <parent_directory>]",
+      "--path is allowed only with one agent and appends the standard skill/rule name.",
+      "pcbridge daemon start [--workspace <directory>]",
+      "pcbridge daemon restart [--workspace <directory>]",
+      "pcbridge daemon stop",
       "pcbridge daemon status",
       "pcbridge targets",
       "pcbridge version",
@@ -1681,7 +1882,7 @@ function help(group = "overview"): Envelope {
       "pcbridge workspace path --target editor:<sceneId>",
       "pcbridge workspace sync --target editor:<sceneId>",
       "pcbridge workspace pull --target editor:<sceneId> --asset <assetId>",
-      "The directory where `pcbridge daemon start` runs is the workspace root.",
+      "daemon start/restart uses --workspace when provided, otherwise the current directory.",
     ],
     builder: [
       "pcbridge builder start --target editor:<sceneId> --asset <template_asset_id> [--suffix '-${time}'] [--prefix assets]",
