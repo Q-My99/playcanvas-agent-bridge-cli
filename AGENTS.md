@@ -21,26 +21,26 @@ READMEs and use commits or issues for progress logs, release history, and one-of
 
 ## Toolchain
 
-- Node.js 20 or newer.
+- Bun 1.4.0 or newer.
 - TypeScript with ESM modules.
-- `pnpm` is the package manager.
+- `bun` is the package manager and JavaScript runtime. Install monorepo dependencies at the parent root.
 - Use `bun` for one-off TypeScript scripts when a repository script does not already exist.
 - Write temporary artifacts under `./tmp/`; the directory is ignored by Git.
 
 Common commands:
 
 ```bash
-pnpm install
-pnpm check
-pnpm build
-pnpm test
-pnpm check:version
+bun install
+bun run check
+bun run build
+bun run test
+bun run check:version
 ```
 
 Run a focused test while iterating:
 
 ```bash
-node --test test/<name>.test.mjs
+bun test test/<name>.test.mjs
 ```
 
 ## Repository Map
@@ -52,11 +52,11 @@ node --test test/<name>.test.mjs
 - `extension/isolated.js`: WebSocket and `postMessage` bridge.
 - `extension/service-worker.js`: tab metadata and generated extension configuration.
 - `extension/popup.*`: extension status and controls.
-- `test/`: Node test suite for CLI, daemon, extension, workspace, and frontend behavior.
+- `test/`: Bun test suite (using the node:test compatibility API) for CLI, daemon, extension, workspace, and frontend behavior.
 - `scripts/check-version.mjs`: release-version consistency check.
 - `skills/`: agent-specific installation artifacts.
 
-`dist/` is generated and ignored. Edit `src/`, then run `pnpm build`; never patch `dist/`
+`dist/` is generated and ignored. Edit `src/`, then run `bun run build`; never patch `dist/`
 directly.
 
 ## Architecture Boundaries
@@ -97,10 +97,10 @@ CLI -> daemon HTTP API -> extension WebSocket -> isolated script -> MAIN-world s
 - Make the smallest change that solves the requested behavior and follow existing command/result
   patterns.
 - Add or update a focused regression test for behavior changes. Run that test first, then
-  `pnpm test` before finishing when the change affects shared behavior.
-- For extension JavaScript changes, also run `node --check` on each edited extension script.
+  `bun run test` before finishing when the change affects shared behavior.
+- For extension JavaScript changes, also run `bun build --target browser --no-bundle` on each edited extension script.
 - After extension source changes that require live validation, regenerate the local unpacked
-  extension with `node dist/cli.js install-extension --no-open`, reload it in Chrome, and refresh
+  extension with `bun dist/cli.js install-extension --no-open`, reload it in Chrome, and refresh
   the affected Editor or Launch tab.
 - Live PlayCanvas checks should use task-scoped temporary entities/assets and clean them up before
   completion. Do not modify unrelated scene content.
@@ -115,7 +115,7 @@ The release version must stay synchronized in:
 - `src/config.ts`
 - `extension/manifest.json`
 
-`pnpm check:version` enforces this. A stable `vX.Y.Z` tag triggers the npm publishing workflow.
+`bun run check:version` enforces this. A stable `vX.Y.Z` tag triggers the npm publishing workflow.
 Do not bump versions, create or move tags, publish npm packages, or create GitHub releases unless
 the user explicitly requests a release.
 

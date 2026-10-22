@@ -25,11 +25,11 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
+    "build": "tsc -p tsconfig.json && bun -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
     "check": "tsc -p tsconfig.json --noEmit",
-    "check:version": "node scripts/check-version.mjs",
-    "test": "pnpm check:version && pnpm build && node --test",
-    "prepare": "npm run build"
+    "check:version": "bun scripts/check-version.mjs",
+    "test": "bun run check:version && bun run build && bun test --timeout 30000 --isolate ./test",
+    "prepack": "bun run build"
   },
   "keywords": [
     "playcanvas",
@@ -39,27 +39,27 @@
     "agent"
   ],
   "engines": {
-    "node": ">=20"
+    "bun": ">=1.4.0"
   },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1102.0",
-    "@babel/core": "^7.28.4",
-    "@babel/preset-env": "^7.28.3",
-    "dotenv": "^17.4.2",
-    "tar": "^7.5.22",
-    "terser": "^5.50.0",
-    "ws": "^8.18.3"
+    "@aws-sdk/client-s3": "3.1102.0",
+    "@babel/core": "7.28.4",
+    "@babel/preset-env": "7.28.3",
+    "dotenv": "17.4.2",
+    "tar": "7.5.22",
+    "terser": "5.50.0",
+    "ws": "8.21.0"
   },
   "devDependencies": {
-    "@types/babel__core": "^7.20.5",
-    "@types/babel__preset-env": "^7.10.0",
-    "@types/node": "^24.0.4",
-    "@types/ws": "^8.18.1",
+    "@types/babel__core": "7.20.5",
+    "@types/babel__preset-env": "7.10.0",
+    "@types/node": "24.13.2",
+    "@types/ws": "8.18.1",
     "typescript": "5.8.3"
   },
-  "packageManager": "pnpm@11.1.0"
+  "packageManager": "bun@1.4.0"
 }

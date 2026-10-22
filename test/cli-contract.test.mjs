@@ -1,10 +1,33 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { diagnoseDaemonConnection } from "../dist/cli.js";
 import { normalizeError } from "../dist/shared/protocol.js";
+
+test("doctor reports the Bun runtime independently of daemon availability", async (t) => {
+  const tmpBase = join(process.cwd(), "tmp");
+  await mkdir(tmpBase, { recursive: true });
+  const configDir = await mkdtemp(join(tmpBase, "bun-doctor-"));
+  t.after(() => rm(configDir, { recursive: true, force: true }));
+  await writeFile(join(configDir, "session.json"), JSON.stringify({
+    token: "runtime-test-token-not-a-real-session",
+    port: 1,
+    createdAt: new Date().toISOString(),
+  }));
+  const result = spawnSync(process.execPath, ["dist/cli.js", "doctor"], {
+    cwd: process.cwd(),
+    env: { ...process.env, PCBRIDGE_CONFIG_DIR: configDir },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const { data } = JSON.parse(result.stdout);
+  const runtime = data.checks.find(check => check.name === "bun");
+  assert.equal(runtime.ok, true);
+  assert.equal(runtime.version, process.versions.bun);
+  assert.equal(data.healthy, false);
+});
 
 test("daemon connection diagnostics distinguish listener and loopback failures", () => {
   assert.equal(

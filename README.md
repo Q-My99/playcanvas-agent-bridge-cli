@@ -1,5 +1,7 @@
 # playcanvas-agent-bridge-cli
 
+> Requires Bun 1.4.0 or newer. In the parent monorepo, run `bun install --frozen-lockfile` at the workspace root.
+
 CLI-first local automation for controlling already-open PlayCanvas Editor scenes and PlayCanvas Launch pages from AI coding agents such as Codex, Claude Code, Cursor, and Windsurf.
 
 The core interface is the `pcbridge` command plus a local daemon and a Chrome Manifest V3 extension. MCP is intentionally not required.
@@ -9,18 +11,18 @@ The core interface is the `pcbridge` command plus a local daemon and a Chrome Ma
 From npm:
 
 ```bash
-npm install -g playcanvas-agent-bridge-cli
+bun add --global playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
 From this GitHub repository for unreleased changes:
 
 ```bash
-npm install -g github:Q-My99/playcanvas-agent-bridge-cli
+bun add --global github:Q-My99/playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-The commands documented below track repository version `0.6.1`. npm installs the latest stable
+The commands documented below track repository version `0.6.1`. bun installs the latest stable
 release; use the GitHub install when testing changes that have not been released yet.
 
 One-shot with npx:
@@ -38,7 +40,7 @@ frontend are separate local components. Updating one does not update the others 
 ### Update the CLI, daemon, and agent skills
 
 ```bash
-npm install -g playcanvas-agent-bridge-cli@latest
+bun add --global playcanvas-agent-bridge-cli@latest
 pcbridge version
 pcbridge install-skill --agent all
 pcbridge daemon restart --workspace /the/workspace/root
@@ -139,6 +141,12 @@ the `/editor/project/<projectId>` scene picker or an `/editor/scene/<sceneId>` p
 add or remove `use_local_frontend` while preserving other query parameters and the URL hash. The
 preference changes only when the user clicks **Use custom frontend** or **Use official frontend**
 again, and the popup shows the remembered value under **Project preference**.
+
+A remembered custom preference is applied even when the daemon or frontend listener is unavailable,
+so the Editor fails visibly instead of silently falling back to the official frontend. The popup
+reports whether the daemon is offline, the frontend server is stopped, or no release is installed.
+The pcbridge daemon and its frontend listener are started together from the terminal; the extension
+does not attempt to start local processes.
 
 Manage installed releases explicitly when needed:
 
@@ -495,9 +503,9 @@ Safeguards:
 ## Development
 
 ```bash
-pnpm install
-pnpm build
-node dist/cli.js doctor
+bun install
+bun run build
+bun dist/cli.js doctor
 ```
 
 Use `bun` for one-off TypeScript scripts if you add them.
@@ -509,7 +517,7 @@ repository does not need an `NPM_TOKEN` secret.
 
 1. Update the same stable version in `package.json`, `src/config.ts`, and
    `extension/manifest.json`.
-2. Run `pnpm test`, commit the release to `main`, and push `main`.
+2. Run `bun run test`, commit the release to `main`, and push `main`.
 3. Create and push the matching tag, for example:
 
 ```bash

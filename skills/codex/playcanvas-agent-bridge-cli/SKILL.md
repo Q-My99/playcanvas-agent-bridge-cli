@@ -45,7 +45,7 @@ Treat the CLI/daemon, installed agent skill, generated Chrome extension, and cus
 as separate components. When the user asks to update pcbridge:
 
 1. Record the current workspace root from `pcbridge daemon status`.
-2. Run `npm install -g playcanvas-agent-bridge-cli@latest`, verify `pcbridge version`, and reinstall
+2. Run `bun add --global playcanvas-agent-bridge-cli@latest`, verify `pcbridge version`, and reinstall
    copied skills with `pcbridge install-skill --agent all`.
    For a custom or project-local parent directory, use
    `pcbridge install-skill --agent <one-agent> --path <parent-directory>`; `--path` appends the

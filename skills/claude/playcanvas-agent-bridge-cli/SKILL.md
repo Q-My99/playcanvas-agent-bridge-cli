@@ -35,7 +35,7 @@ The CLI/daemon, copied agent skills, generated Chrome extension, and custom Edit
 independently. For an explicit update request:
 
 1. Record the workspace root reported by `pcbridge daemon status`.
-2. Run `npm install -g playcanvas-agent-bridge-cli@latest`, check `pcbridge version`, and rerun
+2. Run `bun add --global playcanvas-agent-bridge-cli@latest`, check `pcbridge version`, and rerun
    `pcbridge install-skill --agent all`.
    For a custom or project-local parent directory, use
    `pcbridge install-skill --agent <one-agent> --path <parent-directory>`; `--path` appends the

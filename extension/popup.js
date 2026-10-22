@@ -95,6 +95,7 @@ function renderStatus(status, context) {
   const frontendStatus = document.getElementById("frontend-status");
   const workspacePath = document.getElementById("workspace-path");
   const workspaceNote = document.getElementById("workspace-note");
+  const frontendNote = document.getElementById("frontend-note");
   const copyPath = document.getElementById("copy-path");
   const useCustom = document.getElementById("use-custom");
   const useOfficial = document.getElementById("use-official");
@@ -182,11 +183,19 @@ function renderStatus(status, context) {
       : "Waiting for a ready Editor target.";
   }
 
-  const serverReady = Boolean(frontend && frontend.ready && frontend.server && frontend.server.listening);
+  const customExpected = Boolean(isEditor && (customMode || rememberedMode === "custom"));
+  const frontendInstalled = Boolean(frontend && frontend.ready);
+  const serverReady = Boolean(frontendInstalled && frontend.server && frontend.server.listening);
   setStatus(
     frontendStatus,
-    serverReady ? "Available" : frontend && frontend.ready ? "Server stopped" : "Not installed",
-    serverReady ? "success" : frontend && frontend.ready ? "warning" : "neutral"
+    serverReady
+      ? "Available"
+      : !status
+        ? "Daemon offline"
+        : frontend && frontend.ready
+          ? "Server stopped"
+          : "Not installed",
+    serverReady ? "success" : customExpected ? "danger" : status && frontendInstalled ? "warning" : "neutral"
   );
   document.getElementById("frontend").textContent = frontend && frontend.activeRelease
     ? frontend.activeRelease
@@ -198,8 +207,19 @@ function renderStatus(status, context) {
     ? rememberedMode === "custom" ? "Custom · remembered" : "Official · remembered"
     : isEditor ? "Follow current URL" : "Unavailable";
 
-  useCustom.disabled = !isEditor || !serverReady || rememberedMode === "custom" || (!rememberedMode && customMode);
-  useOfficial.disabled = !isEditor || rememberedMode === "official" || (!rememberedMode && !customMode);
+  const note = !customExpected || serverReady
+    ? ""
+    : !status
+      ? "Custom frontend unavailable: pcbridge daemon is offline."
+      : !frontendInstalled
+        ? "Custom frontend unavailable: no active frontend release is installed."
+        : `Custom frontend unavailable: port ${frontend.server.port} is not listening.`;
+  frontendNote.textContent = note;
+  frontendNote.hidden = !note;
+  frontendNote.classList.toggle("error", Boolean(note));
+
+  useCustom.disabled = !isEditor || !serverReady || customMode;
+  useOfficial.disabled = !isEditor || !customMode;
 }
 
 async function main() {

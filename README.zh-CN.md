@@ -1,5 +1,7 @@
 # playcanvas-agent-bridge-cli
 
+> 需要 Bun 1.4.0 或更新版本。在父级 monorepo 中，请于根目录执行 `bun install --frozen-lockfile`。
+
 这是一个 CLI 优先的本地自动化桥，用来让 Codex、Claude Code、Cursor、Windsurf 等 AI 编程 agent 控制已经打开的 PlayCanvas Editor 场景和 PlayCanvas Launch 页面。
 
 核心接口是 `pcbridge` 命令、本地 daemon 和 Chrome Manifest V3 插件。MCP 不是核心依赖，之后可以作为薄适配层再加。
@@ -9,7 +11,7 @@
 从 npm 安装：
 
 ```bash
-npm install -g playcanvas-agent-bridge-cli
+bun add --global playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
@@ -19,7 +21,7 @@ GitHub 安装。
 如果要测试尚未发布的改动，也可以直接从这个 GitHub 仓库安装：
 
 ```bash
-npm install -g github:Q-My99/playcanvas-agent-bridge-cli
+bun add --global github:Q-My99/playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
@@ -38,7 +40,7 @@ CLI/daemon、已安装的 Agent 技能、生成的 Chrome 插件和可选的本�
 ### 更新 CLI、daemon 和 Agent 技能
 
 ```bash
-npm install -g playcanvas-agent-bridge-cli@latest
+bun add --global playcanvas-agent-bridge-cli@latest
 pcbridge version
 pcbridge install-skill --agent all
 pcbridge daemon restart --workspace /原来的/workspace/根目录
@@ -136,6 +138,10 @@ Editor URL。
 添加或删除 `use_local_frontend`，并保留 URL 中其他查询参数和 hash。该偏好只会在用户再次
 点击 **Use custom frontend** 或 **Use official frontend** 时改变；popup 的 **Project
 preference** 会显示当前项目的记忆值。
+
+已记住的 Custom 偏好会始终应用；即使 daemon 或前端监听不可用，Editor 也会明确加载失败，
+不会静默回退到官方前端。popup 会区分显示 daemon 离线、前端监听停止或未安装前端版本。
+pcbridge daemon 与前端监听仍由同一个终端命令一起启动；插件不会尝试启动本地进程。
 
 需要时可以显式管理本地版本：
 
@@ -482,9 +488,9 @@ pcbridge install-skill --agent cursor --path ./.cursor/rules
 ## 开发
 
 ```bash
-pnpm install
-pnpm build
-node dist/cli.js doctor
+bun install
+bun run build
+bun dist/cli.js doctor
 ```
 
 如果以后添加一次性 TypeScript 脚本，优先用 `bun` 执行。
@@ -495,7 +501,7 @@ node dist/cli.js doctor
 仓库不需要保存 `NPM_TOKEN`。
 
 1. 在 `package.json`、`src/config.ts` 和 `extension/manifest.json` 中同步更新同一个稳定版本号。
-2. 运行 `pnpm test`，把发布提交合并并推送到 `main`。
+2. 运行 `bun run test`，把发布提交合并并推送到 `main`。
 3. 创建并推送匹配的 tag，例如：
 
 ```bash

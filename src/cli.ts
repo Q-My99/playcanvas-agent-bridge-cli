@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
@@ -499,19 +499,24 @@ async function uploadAsset(args: Args, spec: UploadSpec): Promise<Envelope> {
   );
 }
 
+function bunVersionSupported(version: string): boolean {
+  const [major, minor] = version.split(".").map(Number);
+  return major > 1 || (major === 1 && minor >= 4);
+}
+
 async function doctor(): Promise<Envelope> {
   const session = await readSessionIfExists();
   const checks: JsonValue[] = [];
   const nextActions: string[] = [];
-  const major = Number(process.versions.node.split(".", 1)[0]);
+  const bunVersion = process.versions.bun;
   let daemonOk = false;
   let connectedExtensionVersionsOk = true;
 
   checks.push({
-    name: "node",
-    ok: major >= 20,
-    version: process.version,
-    message: major >= 20 ? "Node version is supported." : "Node 20 or newer is required.",
+    name: "bun",
+    ok: !!bunVersion && bunVersionSupported(bunVersion),
+    version: bunVersion || process.version,
+    message: bunVersion && bunVersionSupported(bunVersion) ? "Bun version is supported." : "Bun 1.4.0 or newer is required.",
   });
 
   if (!session) {
@@ -630,7 +635,7 @@ async function doctor(): Promise<Envelope> {
   return ok({
     version: VERSION,
     healthy:
-      major >= 20 &&
+      !!bunVersion && bunVersionSupported(bunVersion) &&
       daemonOk &&
       extensionExists &&
       generatedExtensionVersion === VERSION &&

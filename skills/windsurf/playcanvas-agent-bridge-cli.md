@@ -15,7 +15,7 @@ with local-loopback permission. If no target is connected, install/reload the un
 
 Updates are component-specific. For an explicit update request, record the workspace root from
 `pcbridge daemon status`. Run
-`npm install -g playcanvas-agent-bridge-cli@latest`, verify `pcbridge version`, then rerun
+`bun add --global playcanvas-agent-bridge-cli@latest`, verify `pcbridge version`, then rerun
 `pcbridge install-skill --agent all`. For a custom or project-local parent directory, use
 `pcbridge install-skill --agent <one-agent> --path <parent-directory>`; it appends the standard
 artifact name and cannot be combined with `--agent all`. Regenerate the extension with

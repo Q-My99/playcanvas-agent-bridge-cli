@@ -336,6 +336,11 @@ test("extension popup preserves Editor URLs and always allows returning to offic
   );
   assert.equal(custom.elements.get("use-custom").disabled, true);
   assert.equal(custom.elements.get("use-official").disabled, false);
+  assert.equal(custom.elements.get("frontend-status").textContent, "Daemon offline");
+  assert.equal(
+    custom.elements.get("frontend-note").textContent,
+    "Custom frontend unavailable: pcbridge daemon is offline.",
+  );
   await custom.elements.get("use-official").handlers.click();
   const restoredUrl = new URL(custom.updatedUrls[0]);
   assert.equal(restoredUrl.searchParams.get("foo"), "bar");
@@ -358,6 +363,19 @@ test("extension popup preserves Editor URLs and always allows returning to offic
   );
   assert.equal(rememberedCustom.elements.get("use-custom").disabled, true);
   assert.equal(rememberedCustom.elements.get("use-official").disabled, false);
+
+  const stoppedStatus = structuredClone(statusData);
+  stoppedStatus.frontend.server.listening = false;
+  const stopped = await runPopup(
+    "https://playcanvas.com/editor/project/1552681?foo=bar&use_local_frontend",
+    stoppedStatus,
+    "custom",
+  );
+  assert.equal(stopped.elements.get("frontend-status").textContent, "Server stopped");
+  assert.equal(
+    stopped.elements.get("frontend-note").textContent,
+    "Custom frontend unavailable: port 3487 is not listening.",
+  );
 });
 
 test("extension popup refreshes workspace sync status while it remains open", async () => {
