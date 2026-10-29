@@ -181,19 +181,19 @@ edits, prefer editing the tracked local file under `assets/` over `script set-te
 ```bash
 pcbridge asset list --target editor:<sceneId> --type script --limit 50
 pcbridge asset create --target editor:<sceneId> --json ./assets.json
-pcbridge asset folder ensure --target editor:<sceneId> --path "AI Agent Bridge/My Task/Textures"
-pcbridge asset upload --target editor:<sceneId> --file ./texture.png --name TaskTexture --folder "AI Agent Bridge/My Task/Textures"
+pcbridge asset folder ensure --target editor:<sceneId> --path "My Task/Textures"
+pcbridge asset upload --target editor:<sceneId> --file ./texture.png --name TaskTexture --folder "My Task/Textures"
 pcbridge asset upload-many --target editor:<sceneId> --json ./upload-manifest.json
 pcbridge asset instantiate --target editor:<sceneId> --id <template_asset_id>
-pcbridge material create --target editor:<sceneId> --name TaskMaterial --folder "AI Agent Bridge/My Task/Materials" --diffuse-map <texture_asset_id>
+pcbridge material create --target editor:<sceneId> --name TaskMaterial --folder "My Task/Materials" --diffuse-map <texture_asset_id>
 pcbridge material patch --target editor:<sceneId> --asset-id <material_asset_id> --set diffuse='[1,0,0]'
-pcbridge template create --target editor:<sceneId> --entity-id <resource_id> --name TaskTemplate --folder "AI Agent Bridge/My Task/Templates"
+pcbridge template create --target editor:<sceneId> --entity-id <resource_id> --name TaskTemplate --folder "My Task/Templates"
 pcbridge template instantiate --target editor:<sceneId> --id <template_asset_id>
 pcbridge template overrides --target editor:<sceneId> --entity-id <resource_id>
 pcbridge template apply --target editor:<sceneId> --entity-id <resource_id>
 pcbridge template apply-many --target editor:<sceneId> --json ./template-roots.json
-pcbridge script upsert --target editor:<sceneId> --filename controller.js --file ./controller.js --folder "AI Agent Bridge/My Task/Scripts" --parse --wait
-pcbridge script create --target editor:<sceneId> --filename controller.js --file ./controller.js --folder "AI Agent Bridge/My Task/Scripts"
+pcbridge script upsert --target editor:<sceneId> --filename controller.js --file ./controller.js --folder "My Task/Scripts" --parse --wait
+pcbridge script create --target editor:<sceneId> --filename controller.js --file ./controller.js --folder "My Task/Scripts"
 pcbridge script set-text --target editor:<sceneId> --asset-id <id> --file ./controller.js --parse --wait
 pcbridge script parse --target editor:<sceneId> --asset-id <id>
 ```
@@ -247,16 +247,16 @@ authoritative.
 
 ## Asset Organization
 
-Create synchronized files directly under a task-scoped path in the project `assets/` tree. Keep
-intermediate or disposable generation files under `tmp/` so the watcher does not upload them:
+Before creating asset folders, inspect the project's existing directory tree and comparable
+resources. Prefer reusing suitable folders and follow the project's naming language, casing,
+separators, hierarchy, and resource grouping when new folders are needed. Organize related assets
+by task or feature within that structure; if the project groups by resource type first, preserve
+that layout rather than imposing a task-first hierarchy. Do not create an `AI Agent Bridge` folder
+by default. If no convention exists, use a descriptive task folder with resource subfolders as needed.
 
-```text
-assets/AI Agent Bridge/<task name>/Textures
-assets/AI Agent Bridge/<task name>/Models
-assets/AI Agent Bridge/<task name>/Scripts
-```
-
-Use stable names that describe the asset purpose. Avoid dumping generated files at the project root.
+Keep final file-backed assets in the project `assets/` tree and intermediate or disposable files
+under `tmp/<task name>/` so the watcher does not upload them. Paths in command examples are
+illustrative; adapt them to the project's existing conventions before creating folders.
 
 ## Large Task Workflow
 
@@ -265,7 +265,7 @@ For multi-asset or game-sized tasks:
 1. Choose an explicit target from `pcbridge targets`, preferably `editor:<sceneId>` for writes or
    `launch:<sceneId>` for tests; use `tab:<id>` to resolve ambiguity.
 2. Confirm `workspace status` is `synced`. Put disposable generation inputs under `<project>/tmp/<task name>/`.
-3. Put final scripts, textures, models, audio, and other file-backed Assets under `<project>/assets/AI Agent Bridge/<task name>/...`; create or edit them locally and wait for synchronization.
+3. Inspect existing asset folders and follow their naming and hierarchy. Group new resources by task within that convention, reuse suitable folders, and create or edit files locally under `<project>/assets/`; wait for synchronization.
 4. Use `asset upload-many` only when explicit upload settings or a non-watched source path is required. Do not upload a file again when it is already tracked under `assets/`.
 5. For an existing script, edit its local file. Use `script parse` after synchronization when parse verification is needed; reserve `script upsert --parse --wait` for recovery or workflows that intentionally bypass the mirror.
 6. Use `pcbridge eval --target editor:<sceneId> --file ./install.js --args-json ./args.json --timeout-ms 120000` for large scene installation scripts. The JSON object is available as `command.args`; increase `--timeout-ms` instead of splitting a coherent install script just to avoid the default 15s timeout.
@@ -291,10 +291,10 @@ That verification is limited to the current Editor observer and does not prove r
 For a textured scripted box, compose structured commands instead of writing one large eval:
 
 ```bash
-pcbridge asset folder ensure --target editor:<sceneId> --path "AI Agent Bridge/Texture Box/Textures"
-pcbridge asset upload --target editor:<sceneId> --file ./image.png --name TextureBoxImage --folder "AI Agent Bridge/Texture Box/Textures"
-pcbridge material create --target editor:<sceneId> --name TextureBoxMaterial --folder "AI Agent Bridge/Texture Box/Materials" --diffuse-map <texture_asset_id>
-pcbridge script create --target editor:<sceneId> --filename jumpingBox.js --file ./jumpingBox.js --folder "AI Agent Bridge/Texture Box/Scripts"
+pcbridge asset folder ensure --target editor:<sceneId> --path "Texture Box/Textures"
+pcbridge asset upload --target editor:<sceneId> --file ./image.png --name TextureBoxImage --folder "Texture Box/Textures"
+pcbridge material create --target editor:<sceneId> --name TextureBoxMaterial --folder "Texture Box/Materials" --diffuse-map <texture_asset_id>
+pcbridge script create --target editor:<sceneId> --filename jumpingBox.js --file ./jumpingBox.js --folder "Texture Box/Scripts"
 pcbridge entity create --target editor:<sceneId> --json ./box.json
 pcbridge entity set-material --target editor:<sceneId> --id <box_resource_id> --material-id <material_asset_id>
 pcbridge entity add-script --target editor:<sceneId> --id <box_resource_id> --asset-id <script_asset_id> --attributes '{"height":0.5,"speed":2.4}'
@@ -339,3 +339,8 @@ return entities.slice(0, 20).map((entity) => ({
 ```
 
 Avoid destructive operations unless the user clearly asked for them. When deleting or overwriting, require explicit stable IDs and report affected counts.
+
+
+## Self-hosted local processing
+
+Use `pcbridge help processing` and `pcbridge help import` for self-hosted conversion. Diagnose with `processing status --target editor:<sceneId>`; tools require explicit installation and `processing enable`. Do not enable local conversion on official targets. Use `import submit --asset <id> --kind model|texture --json options.json`, then `import wait --job <id> --sync-workspace`. Server `complete` means published; workspace synchronization is separate and keeps binary lazy loading. On a wait timeout query the same job before repeating a write. Browser authentication, leases and signed URLs must never be copied into CLI arguments. Extension source upgrades require regenerating the unpacked extension, reloading it in Chrome and refreshing target pages. Custom host permissions are granted by the user through the popup.

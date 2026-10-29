@@ -115,6 +115,7 @@ async function loadBridgeWorlds({ fetchImpl } = {}) {
       sendMessage(message, callback) {
         runtimeRequests.push(message);
         const responses = {
+          "pcbridge:siteStatus": { enabled: true },
           "pcbridge:applyFrontendPreference": {},
           "pcbridge:getConfig": { host: "127.0.0.1", port: 17329, token: "test" },
           "pcbridge:getTabInfo": { tabId: 1, windowId: 1 },
@@ -167,7 +168,7 @@ async function loadBridgeWorlds({ fetchImpl } = {}) {
   return socket;
 }
 
-async function loadServiceWorker(fetchImpl = fetch) {
+async function loadServiceWorker(fetchImpl = fetch, sites = false) {
   const runtimeMessages = createEvent();
   const tabUpdates = createEvent();
   const tabRemovals = createEvent();
@@ -194,6 +195,18 @@ async function loadServiceWorker(fetchImpl = fetch) {
       },
     },
   };
+  const registered = new Map(), permissions = new Set(), disconnected = [];
+  if (sites) {
+    chrome.runtime.onInstalled = createEvent(); chrome.runtime.onStartup = createEvent();
+    chrome.permissions = { onRemoved: createEvent(), async contains({ origins }) { return origins.every(o => permissions.has(o)); } };
+    chrome.scripting = {
+      async getRegisteredContentScripts() { return [...registered.values()]; },
+      async unregisterContentScripts({ ids }) { ids.forEach(id => registered.delete(id)); },
+      async registerContentScripts(scripts) { scripts.forEach(s => registered.set(s.id, s)); }
+    };
+    chrome.tabs.query = async () => [{ id: 7, url: "https://studio.example/editor/scene/1" }];
+    chrome.tabs.sendMessage = async (id, message) => { disconnected.push({ id, message }); };
+  }
   const source = await readFile(join(process.cwd(), "extension/service-worker.js"), "utf8");
   vm.runInNewContext(source, { URL, chrome, fetch: fetchImpl, console, Response });
 
@@ -212,6 +225,7 @@ async function loadServiceWorker(fetchImpl = fetch) {
     tabUpdates,
     updatedTabs,
     updatedWindows,
+    chrome, registered, permissions, disconnected,
   };
 }
 
@@ -311,7 +325,7 @@ test("extension background authenticates Template builder requests to the local 
     path: "/builder/jobs",
     method: "POST",
     body: { templateAssetId: "123" },
-  }, { tab: { id: 41 } });
+  }, { tab: { id: 41, url: "https://playcanvas.com/editor/scene/1" } });
   assert.equal(response.ok, true);
   assert.equal(requests[0].url, "http://127.0.0.1:17329/builder/jobs");
   assert.equal(requests[0].options.headers["X-PCBridge-Token"], "test");
@@ -324,7 +338,7 @@ test("extension background authenticates Template builder requests to the local 
     path: "/rpc",
     method: "POST",
     body: {},
-  }, { tab: { id: 41 } });
+  }, { tab: { id: 41, url: "https://playcanvas.com/editor/scene/1" } });
   assert.equal(blocked.ok, false);
   assert.equal(blocked.error.code, "UNSUPPORTED_DAEMON_REQUEST");
   assert.equal(requests.length, 1);
@@ -391,4 +405,32 @@ test("extension remembers frontend mode per project and applies it to project an
   });
   await settleExtensionTasks();
   assert.equal(extension.updatedTabs.length, updateCount);
+});
+
+
+test("custom sites require grants, persist scripts, revoke connections and isolate official frontend preferences", async () => {
+  const extension = await loadServiceWorker(fetch, true);
+  const url = "https://studio.example/editor/scene/1";
+  const status = () => extension.sendMessage({ type: "pcbridge:siteStatus", url });
+  assert.equal((await status()).enabled, false);
+  assert.ok((await extension.sendMessage({ type: "pcbridge:setSite", url, enabled: true })).error);
+  extension.permissions.add("https://studio.example/*");
+  assert.equal((await extension.sendMessage({ type: "pcbridge:setSite", url, enabled: true })).enabled, true);
+  assert.equal(extension.registered.size, 2);
+  assert.deepEqual([...extension.registered.values()].map(s => s.world).sort(), ["ISOLATED", "MAIN"]);
+  assert.ok([...extension.registered.values()].every(s => s.persistAcrossSessions && s.runAt === "document_start"));
+  const preference = await extension.sendMessage({ type: "pcbridge:setFrontendPreference", url, projectId: "1", mode: "custom" });
+  assert.equal(preference.ok, false);
+  extension.permissions.clear(); extension.chrome.permissions.onRemoved.fire({ origins: ["https://studio.example/*"] });
+  await settleExtensionTasks();
+  assert.equal(extension.registered.size, 0); assert.equal((await status()).enabled, false);
+  assert.ok(extension.disconnected.some(x => x.id === 7));
+  extension.permissions.add("https://studio.example/*");
+  extension.chrome.runtime.onStartup.fire(); await settleExtensionTasks();
+  assert.equal(extension.registered.size, 2);
+  await extension.sendMessage({ type: "pcbridge:setSite", url, enabled: false });
+  assert.equal(extension.registered.size, 0);
+  for (const url of ["http://localhost:8080/editor/scene/1", "http://127.0.0.1:9200/launch/1"]) {
+    assert.equal((await extension.sendMessage({ type: "pcbridge:siteStatus", url })).enabled, true);
+  }
 });

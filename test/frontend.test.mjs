@@ -115,6 +115,7 @@ async function runPopup(initialUrl, statusData, initialPreference = null) {
   };
   const chrome = {
     runtime: {
+      getManifest: () => ({ version: "0.6.2" }),
       getURL: () => "chrome-extension://test/config.json",
       sendMessage: async (message) => {
         runtimeMessages.push(message);
@@ -319,6 +320,7 @@ test("extension popup preserves Editor URLs and always allows returning to offic
     statusData,
   );
   assert.equal(official.elements.get("use-custom").disabled, false);
+  assert.match(official.elements.get("version").textContent, /^Extension v0\.6\.2 · Daemon v/);
   assert.equal(official.elements.get("use-official").disabled, true);
   await official.elements.get("use-custom").handlers.click();
   const customUrl = new URL(official.updatedUrls[0]);
@@ -335,6 +337,7 @@ test("extension popup preserves Editor URLs and always allows returning to offic
     null,
   );
   assert.equal(custom.elements.get("use-custom").disabled, true);
+  assert.equal(custom.elements.get("version").textContent, "Extension v0.6.2 · Daemon unavailable");
   assert.equal(custom.elements.get("use-official").disabled, false);
   assert.equal(custom.elements.get("frontend-status").textContent, "Daemon offline");
   assert.equal(

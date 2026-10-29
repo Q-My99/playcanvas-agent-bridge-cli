@@ -194,7 +194,10 @@
 
   function getTargetKind() {
     if (location.hostname === "launch.playcanvas.com") return "launch";
-    if (location.pathname.startsWith("/editor")) return "editor";
+    const selfhost = Boolean(window.config && window.config.selfhost);
+    if (selfhost && /^\/launch\//.test(location.pathname)) return "launch";
+    if ((location.hostname === "playcanvas.com" || selfhost) &&
+        /^\/editor(?:\/|$)/.test(location.pathname)) return "editor";
     return "playcanvas";
   }
 
@@ -450,6 +453,9 @@
     const ready = kind === "launch" ? launchReady : editorReady;
     return {
       kind,
+      platform: config.selfhost ? "selfhost" : "official",
+      bridgeProtocolVersion: 1,
+      processingProtocolVersion: config.selfhost && kind === "editor" && window.editor?.methods?.has("assets:import:request") ? 1 : null,
       url: location.href,
       title: document.title || "",
       ready,
@@ -1389,6 +1395,28 @@
   }
 
   async function callMethod(method, params, requestId) {
+    if (method === "bridge:importJob") {
+      if (getTargetKind() !== "editor" || !window.config?.selfhost || !window.editor?.api?.globals) {
+        throw Object.assign(new Error("Selfhost Editor required"), { code: "SELFHOST_EDITOR_REQUIRED" });
+      }
+      if (!window.editor.methods?.has("assets:import:request")) {
+        throw Object.assign(new Error("Refresh the upgraded selfhost Editor before importing"), { code: "PROCESSING_EDITOR_UNSUPPORTED" });
+      }
+      const api = window.editor.api.globals;
+      const context = { projectId: api.projectId, branchId: api.branchId };
+      const action = params.action;
+      let path, verb = "GET", body;
+      if (action === "list") path = `/jobs?projectId=${api.projectId}&branchId=${encodeURIComponent(api.branchId)}`;
+      else if (action === "submit") {
+        if (!/^\d+$/.test(params.assetId || "") || !["model", "texture"].includes(params.kind)) throw new Error("Invalid import submission");
+        path = `/${params.assetId}/${params.kind === "texture" ? "texture" : "reimport"}`;
+        verb = "POST"; body = { ...context, options: params.options || {} };
+      } else if (["status", "cancel", "retry"].includes(action) && /^[a-zA-Z0-9-]{1,100}$/.test(params.jobId || "")) {
+        path = `/jobs/${params.jobId}${action === "status" ? "" : `/${action}`}`;
+        if (action !== "status") { verb = "POST"; body = {}; }
+      } else throw new Error("Invalid import action");
+      return window.editor.call("assets:import:request", path, verb, body);
+    }
     if (method === "bridge:ping") return { pong: true, href: location.href };
     if (method === "bridge:describeTarget") return describeTarget();
     if (method === "bridge:eval") return evalInPage(params || {}, requestId);

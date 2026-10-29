@@ -1,6 +1,6 @@
 {
   "name": "playcanvas-agent-bridge-cli",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "CLI-first local bridge for automating open PlayCanvas Editor tabs from AI coding agents.",
   "type": "module",
   "license": "MIT",
@@ -50,6 +50,7 @@
     "@babel/core": "7.28.4",
     "@babel/preset-env": "7.28.3",
     "dotenv": "17.4.2",
+    "sharp": "0.34.5",
     "tar": "7.5.22",
     "terser": "5.50.0",
     "ws": "8.21.0"

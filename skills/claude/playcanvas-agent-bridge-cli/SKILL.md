@@ -127,27 +127,35 @@ pcbridge entity add-script --target editor:<sceneId> --id <resource_id> --asset-
 pcbridge entity add-script --target editor:<sceneId> --id <resource_id> --script-name sdsAudioPlayer --attributes-json ./audio-slots.json
 pcbridge asset list --target editor:<sceneId> --type script
 pcbridge asset create --target editor:<sceneId> --json ./assets.json
-pcbridge asset folder ensure --target editor:<sceneId> --path "AI Agent Bridge/My Task/Textures"
-pcbridge asset upload --target editor:<sceneId> --file ./texture.png --name TaskTexture --folder "AI Agent Bridge/My Task/Textures"
+pcbridge asset folder ensure --target editor:<sceneId> --path "My Task/Textures"
+pcbridge asset upload --target editor:<sceneId> --file ./texture.png --name TaskTexture --folder "My Task/Textures"
 pcbridge asset upload-many --target editor:<sceneId> --json ./upload-manifest.json
-pcbridge material create --target editor:<sceneId> --name TaskMaterial --folder "AI Agent Bridge/My Task/Materials" --diffuse-map <texture_asset_id>
-pcbridge template create --target editor:<sceneId> --entity-id <resource_id> --name TaskTemplate --folder "AI Agent Bridge/My Task/Templates"
+pcbridge material create --target editor:<sceneId> --name TaskMaterial --folder "My Task/Materials" --diffuse-map <texture_asset_id>
+pcbridge template create --target editor:<sceneId> --entity-id <resource_id> --name TaskTemplate --folder "My Task/Templates"
 pcbridge template instantiate --target editor:<sceneId> --id <template_asset_id>
 pcbridge template overrides --target editor:<sceneId> --entity-id <resource_id>
 pcbridge template apply --target editor:<sceneId> --entity-id <resource_id>
 pcbridge template apply-many --target editor:<sceneId> --json ./template-roots.json
 pcbridge scene settings get --target editor:<sceneId>
 pcbridge viewport focus --target editor:<sceneId> --id <resource_id> --view perspective
-pcbridge script upsert --target editor:<sceneId> --filename controller.js --file ./script.js --folder "AI Agent Bridge/My Task/Scripts" --parse --wait
-pcbridge script create --target editor:<sceneId> --filename controller.js --file ./script.js --folder "AI Agent Bridge/My Task/Scripts"
+pcbridge script upsert --target editor:<sceneId> --filename controller.js --file ./script.js --folder "My Task/Scripts" --parse --wait
+pcbridge script create --target editor:<sceneId> --filename controller.js --file ./script.js --folder "My Task/Scripts"
 pcbridge script set-text --target editor:<sceneId> --asset-id <id> --file ./script.js --parse --wait
 pcbridge viewport capture --target editor:<sceneId> --out ./tmp/playcanvas.png
 pcbridge logs get --target launch:<sceneId> --limit 100
 pcbridge logs get --target launch:<sceneId> --level error
 ```
 
-Organize final file-backed assets under `assets/AI Agent Bridge/<task name>/...` and disposable
-generation files under `tmp/<task name>/`. Use `pcbridge eval` for exploratory API inspection,
+Before creating asset folders, inspect the project's existing directory tree and comparable
+resources. Prefer reusing suitable folders and follow the project's naming language, casing,
+separators, hierarchy, and resource grouping when new folders are needed. Organize related assets
+by task or feature within that structure; if the project groups by resource type first, preserve
+that layout rather than imposing a task-first hierarchy. Do not create an `AI Agent Bridge` folder
+by default. If no convention exists, use a descriptive task folder with resource subfolders as needed.
+
+Keep final file-backed assets in the project `assets/` tree and intermediate or disposable files
+under `tmp/<task name>/` so the watcher does not upload them. Paths in command examples are
+illustrative; adapt them to the project's existing conventions before creating folders. Use `pcbridge eval` for exploratory API inspection,
 custom Editor/Engine workflows, and large multi-step scene edits:
 
 ```bash
@@ -187,3 +195,8 @@ scene edits or runtime verification. Use upload manifests only when explicit imp
 non-watched source path is required, then capture under `tmp/captures/` after smoke tests.
 
 Do not pre-place runtime-generated content just to prove a game exists. Keep procedural maps, pickups, enemies, and VFX in the runtime script, with only a small durable Editor root and helper entities when needed. If Editor entities must be created, use structured commands and small `entity create-many` batches with read-back verification; large eval scripts that create many entities in a tight loop can briefly show objects and then lose them from the Editor data model.
+
+
+## Self-hosted local processing
+
+Use `pcbridge help processing` and `pcbridge help import` for self-hosted conversion. Diagnose with `processing status --target editor:<sceneId>`; tools require explicit installation and `processing enable`. Do not enable local conversion on official targets. Use `import submit --asset <id> --kind model|texture --json options.json`, then `import wait --job <id> --sync-workspace`. Server `complete` means published; workspace synchronization is separate and keeps binary lazy loading. On a wait timeout query the same job before repeating a write. Browser authentication, leases and signed URLs must never be copied into CLI arguments. Extension source upgrades require regenerating the unpacked extension, reloading it in Chrome and refreshing target pages. Custom host permissions are granted by the user through the popup.

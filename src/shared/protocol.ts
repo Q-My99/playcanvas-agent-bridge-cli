@@ -30,6 +30,9 @@ export type TargetInfo = {
   tabId?: number;
   windowId?: number;
   kind?: string;
+  platform?: string;
+  bridgeProtocolVersion?: number;
+  processingProtocolVersion?: number;
   url: string;
   title?: string;
   projectId?: string;

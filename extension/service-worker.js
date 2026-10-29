@@ -84,6 +84,7 @@ async function getSceneProject(sceneId) {
 
 async function resolveProjectContext({ url, tabId, projectId, sceneId } = {}) {
   const parsed = parseEditorUrl(url);
+  if (!parsed) return { parsed: null, projectId: null, sceneId: null };
   const resolvedSceneId = normalizeId(sceneId) || (parsed && parsed.sceneId);
   let resolvedProjectId = normalizeId(projectId) || (parsed && parsed.projectId);
 
@@ -173,6 +174,8 @@ async function requestDaemon(message, sender) {
   const method = String(message.method || "GET").toUpperCase();
   const allowed =
     (path === "/builder/jobs" && method === "POST") ||
+    (path === "/workspace/sync" && method === "POST") ||
+      (/^\/processing\/(capabilities|begin|chunk|run|status|read|cancel|finish)$/.test(path) && method === "POST") ||
     (/^\/builder\/jobs\/[^/]+$/.test(path) && method === "GET");
   if (!allowed) {
     return {
@@ -181,6 +184,9 @@ async function requestDaemon(message, sender) {
     };
   }
 
+  if (!sender.tab || !(await siteStatus(sender.tab.url)).enabled) {
+    return { ok: false, error: { code: "SITE_DISABLED", message: "Site is not enabled." } };
+  }
   const config = await loadConfig();
   if (!config.token) {
     return {
@@ -190,7 +196,7 @@ async function requestDaemon(message, sender) {
   }
   const payload = message.body && typeof message.body === "object" ? { ...message.body } : {};
   const tabId = sender.tab && sender.tab.id;
-  if (method === "POST" && !payload.target && Number.isInteger(tabId)) {
+  if (method === "POST" && Number.isInteger(tabId)) {
     payload.target = "tab:" + tabId;
   }
   const host = config.host || "127.0.0.1";
@@ -240,6 +246,25 @@ async function focusSenderTab(sender) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message && message.type === "pcbridge:siteStatus") {
+    siteStatus(sender.tab?.url || message.url).then(sendResponse);
+    return true;
+  }
+  if (message && message.type === "pcbridge:setSite" && !sender.tab) {
+    (async () => {
+      const origin = siteOrigin(message.url);
+      if (!origin || builtinSite(message.url)) throw new Error("This site cannot be changed.");
+      if (message.enabled && !(await chrome.permissions.contains({ origins: [origin] }))) throw new Error("Site permission is required.");
+      const sites = await readObject(chrome.storage.local, SITES_KEY);
+      if (message.enabled) sites[origin] = true;
+      else delete sites[origin];
+      await chrome.storage.local.set({ [SITES_KEY]: sites });
+      await reconcileSites();
+      return siteStatus(message.url);
+    })().then(sendResponse).catch(error => sendResponse({ error: String(error) }));
+    return true;
+  }
+
   if (message && message.type === "pcbridge:getTabInfo") {
     sendResponse({
       tabId: sender.tab && sender.tab.id,
@@ -345,3 +370,57 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   void forgetTabProject(tabId);
 });
+
+// Registered scripts are reconciled with permissions on startup and revocation.
+const SITES_KEY = "pcbridgeSites";
+function siteOrigin(value) {
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol)) return null;
+    return `${url.protocol}//${url.hostname}/*`;
+  } catch { return null; }
+}
+function builtinSite(value) {
+  try { return ["playcanvas.com", "launch.playcanvas.com", "localhost", "127.0.0.1"].includes(new URL(value).hostname); }
+  catch { return false; }
+}
+async function siteStatus(value) {
+  const origin = siteOrigin(value);
+  if (!origin) return { enabled: false, builtin: false, origin: null };
+  const builtin = builtinSite(value);
+  if (builtin) return { enabled: true, builtin, origin };
+  const sites = await readObject(chrome.storage.local, SITES_KEY);
+  const permitted = await chrome.permissions.contains({ origins: [origin] });
+  return { enabled: sites[origin] === true && permitted, builtin, origin };
+}
+let reconcileQueue = Promise.resolve();
+function reconcileSites() {
+  reconcileQueue = reconcileQueue.catch(() => {}).then(async () => {
+    const sites = await readObject(chrome.storage.local, SITES_KEY);
+    const registered = await chrome.scripting.getRegisteredContentScripts();
+    const obsolete = registered.filter(s => s.id.startsWith("pcbridge-site-"));
+    if (obsolete.length) await chrome.scripting.unregisterContentScripts({ ids: obsolete.map(s => s.id) });
+    const scripts = [];
+    for (const [origin, enabled] of Object.entries(sites)) {
+      if (!enabled || !(await chrome.permissions.contains({ origins: [origin] }))) continue;
+      const prefix = `pcbridge-site-${scripts.length}`;
+      for (const world of ["MAIN", "ISOLATED"]) scripts.push({
+        id: `${prefix}-${world.toLowerCase()}`, matches: [origin],
+        js: [world === "MAIN" ? "main.js" : "isolated.js"], world,
+        runAt: "document_start", persistAcrossSessions: true
+      });
+    }
+    if (scripts.length) await chrome.scripting.registerContentScripts(scripts);
+    for (const tab of await chrome.tabs.query({})) {
+      if (!tab.url || (await siteStatus(tab.url)).enabled) continue;
+      await chrome.tabs.sendMessage(tab.id, { type: "pcbridge:siteDisabled" }).catch(() => {});
+    }
+  });
+  return reconcileQueue;
+}
+if (chrome.permissions && chrome.scripting) {
+  chrome.permissions.onRemoved.addListener(() => { void reconcileSites(); });
+  chrome.runtime.onStartup.addListener(() => { void reconcileSites(); });
+  chrome.runtime.onInstalled.addListener(() => { void reconcileSites(); });
+  void reconcileSites();
+}

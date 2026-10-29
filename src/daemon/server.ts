@@ -1,3 +1,4 @@
+import { ProcessingManager } from "../processing/manager.js";
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer } from "ws";
@@ -69,6 +70,9 @@ function readBody(req: http.IncomingMessage): Promise<unknown> {
     let text = "";
     req.setEncoding("utf8");
     req.on("data", (chunk) => {
+      if (text.length + chunk.length > (req.url?.startsWith("/processing/") ? 1024 * 1024 : 128 * 1024 * 1024)) {
+        reject(new Error("Request body exceeds limit")); req.destroy(); return;
+      }
       text += chunk;
     });
     req.on("end", () => {
@@ -195,6 +199,11 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
     workspace,
   });
 
+  const processing = new ProcessingManager(target => {
+    const status = workspace.statusForTarget(target);
+    return isJsonObject(status) && !status.branchConflict && typeof status.projectDirectory === "string" ? status.projectDirectory : null;
+  });
+
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolvePromise) => {
     resolveClosed = resolvePromise;
@@ -299,6 +308,18 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
           return;
         }
         writeJson(res, 200, ok(workspace.statusForTarget(resolved.target.info)));
+        return;
+      }
+
+      const processingMatch = url.pathname.match(/^\/processing\/(capabilities|begin|chunk|run|status|read|cancel|finish)$/);
+      if (processingMatch && req.method === "POST") {
+        if (!requireToken(req)) { writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token.")); return; }
+        const body = await readBody(req);
+        if (!isJsonObject(body)) { writeJson(res, 400, fail("INVALID_REQUEST", "Object required")); return; }
+        const target = registry.resolve(typeof body.target === "string" ? body.target : "current");
+        if (!target.ok) { writeJson(res, 400, fail(target.code, target.message)); return; }
+        try { writeJson(res, 200, ok(await processing.request(target.target.info, processingMatch[1], body) as unknown as JsonValue)); }
+        catch (error) { writeJson(res, 400, fail("PROCESSING_ERROR", String(error))); }
         return;
       }
 
@@ -528,7 +549,7 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
       }
       pending.clear();
 
-      const builderCleanup = await Promise.allSettled([builder.close()]);
+      const builderCleanup = await Promise.allSettled([builder.close(), processing.close()]);
       const cleanupResults = [
         ...builderCleanup,
         ...await Promise.allSettled([

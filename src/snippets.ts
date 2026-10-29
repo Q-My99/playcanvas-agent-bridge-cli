@@ -1654,6 +1654,34 @@ return {
 `;
 }
 
+export function sceneManageSnippet(): string {
+  return `
+const args = command.args || {};
+const list = () => new Promise((resolve, reject) => editor.call("scenes:list", resolve, reject));
+if (args.action === "list") return await list();
+if (args.action === "create") {
+  if (!editor.call("permissions:write")) throw new Error("Scene creation requires write access.");
+  return await new Promise((resolve, reject) => editor.call("scenes:new", args.name, resolve, reject));
+}
+const scenes = await list();
+const scene = scenes.find(item => String(item.id) === String(args.id) || String(item.uniqueId) === String(args.id));
+if (!scene) throw new Error("Scene not found in the current project: " + args.id);
+await new Promise((resolve, reject) => editor.call("scenes:get", String(scene.id), (error, data) => error ? reject(error) : resolve(data)));
+if (String(editor.api.globals.realtime.scenes.current?.uniqueId) === String(scene.uniqueId)) return scene;
+await new Promise((resolve, reject) => {
+  const event = editor.on("scene:load", (id, uniqueId) => {
+    if (String(uniqueId) !== String(scene.uniqueId)) return;
+    clearTimeout(timer);
+    event.unbind();
+    resolve();
+  });
+  const timer = setTimeout(() => { event.unbind(); reject(new Error("Scene load timed out.")); }, 50000);
+  editor.call("scene:load", scene.uniqueId);
+});
+return scene;
+`;
+}
+
 export function sceneSettingsGetSnippet(): string {
   return `
 return editor.api.globals.settings.scene.json();

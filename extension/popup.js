@@ -100,9 +100,10 @@ function renderStatus(status, context) {
   const useCustom = document.getElementById("use-custom");
   const useOfficial = document.getElementById("use-official");
 
+  const extensionVersion = chrome.runtime.getManifest().version;
   document.getElementById("version").textContent = status && status.daemon
-    ? `v${status.daemon.version} · ${status.daemon.targetCount} target${status.daemon.targetCount === 1 ? "" : "s"}`
-    : "Daemon unavailable";
+    ? `Extension v${extensionVersion} · Daemon v${status.daemon.version} · ${status.daemon.targetCount} target${status.daemon.targetCount === 1 ? "" : "s"}`
+    : `Extension v${extensionVersion} · Daemon unavailable`;
 
   if (!status) {
     setStatus(overallStatus, "Offline", "danger");
@@ -226,8 +227,23 @@ async function main() {
   const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
   const url = active && active.url ? new URL(active.url) : null;
   const isEditor = isEditorUrl(url);
-  const isLaunch = Boolean(url && url.hostname === "launch.playcanvas.com");
+  const isLaunch = Boolean(url && (url.hostname === "launch.playcanvas.com" || /^\/launch\//.test(url.pathname)));
   const customMode = Boolean(isEditor && url.searchParams.has("use_local_frontend"));
+  const site = await sendRuntimeMessage({ type: "pcbridge:siteStatus", url: url?.href });
+  const siteToggle = document.getElementById("site-toggle");
+  const siteStatus = document.getElementById("site-status");
+  siteStatus.textContent = site?.enabled ? "Enabled" : "Not enabled";
+  siteToggle.disabled = !site?.origin || site.builtin;
+  siteToggle.textContent = site?.enabled ? "Disable on this site" : "Enable on this site";
+  siteToggle.addEventListener("click", async () => {
+    const enabled = !site.enabled;
+    if (enabled && !(await chrome.permissions.request({ origins: [site.origin] }))) return;
+    const result = await sendRuntimeMessage({ type: "pcbridge:setSite", url: url.href, enabled });
+    if (!result || result.error) { siteStatus.textContent = result?.error || "Could not update site"; return; }
+    site.enabled = result.enabled;
+    siteToggle.textContent = site.enabled ? "Disable on this site" : "Enable on this site";
+    siteStatus.textContent = site.enabled ? "Enabled. Refresh Editor / Launch to connect." : "Disabled. Existing connections closed.";
+  });
   const config = await loadConfig();
   let status = await loadStatus(config, active && active.id);
   let projectId = (status && status.target && status.target.projectId) || projectIdFromUrl(url);

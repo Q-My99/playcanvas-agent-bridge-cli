@@ -1,5 +1,9 @@
 # playcanvas-agent-bridge-cli
 
+Scene management: `scene list`, `scene create --name <name>`, and `scene open --id <id>` use the selected Editor project; opening waits for the matching scene load. `asset upload` infers GLB/FBX/OBJ files as model sources (`scene`).
+
+In the parent PlayCanvas workspace, `bun run pcbridge <command>` defaults to the root `pcbridge-workspace/` directory (created automatically and ignored by Git). `bun run dev` starts the daemon from the current source and stops it on exit. If the daemon port is occupied, run `bun run pcbridge daemon stop` first. The extension popup shows its own version separately from the daemon version, including while offline.
+
 > Requires Bun 1.4.0 or newer. In the parent monorepo, run `bun install --frozen-lockfile` at the workspace root.
 
 CLI-first local automation for controlling already-open PlayCanvas Editor scenes and PlayCanvas Launch pages from AI coding agents such as Codex, Claude Code, Cursor, and Windsurf.
@@ -528,3 +532,28 @@ git push origin v<version>
 The workflow rejects tags that do not match the package version or whose commit is not on `main`.
 Configure the npm package's Trusted Publisher with GitHub user `Q-My99`, repository
 `playcanvas-agent-bridge-cli`, and workflow filename `npm-publish.yml` before pushing the tag.
+
+## Self-hosted sites and local asset processing
+
+The extension automatically recognizes official PlayCanvas, localhost and 127.0.0.1 Editor/Launch pages on any port. For another hostname, use **Enable on this site** in the popup, grant Chrome permission, then refresh. Editor and Launch hosts need separate grants. Disabling or revoking a site closes existing connections. Self-hosted pages never inherit the official frontend-switch preference.
+
+Local conversion is opt-in and self-hosted only. Install a **trusted** versioned asset-tools manifest and its precompiled archive (macOS arm64 validated; no public release published yet):
+
+```sh
+pcbridge processing install /path/to/release.json
+pcbridge processing enable --memory-mb 1024 --timeout-ms 600000
+pcbridge processing status --target editor:<sceneId>
+pcbridge import submit --asset <id> --kind model --json options.json --target editor:<sceneId>
+pcbridge import list --target editor:<sceneId>
+pcbridge import wait --job <id> --sync-workspace --target editor:<sceneId>
+pcbridge import status --job <id> --target editor:<sceneId>
+pcbridge import cancel --job <id> --target editor:<sceneId>
+pcbridge import retry --job <id> --target editor:<sceneId>
+pcbridge processing disable
+```
+
+For textures use `--kind texture` with options such as `{"formats":["dxt","etc2"],"mipmaps":true}`. Existing asset uploads and Editor UI use the same server jobs. Browser-owned authentication, leases and object-store URLs never reach the CLI. `complete` means server publication; `--sync-workspace` separately waits for metadata synchronization, retaining lazy binary downloads. Missing/disabled/busy tools fall back to the server worker.
+
+Processing uses one fixed subprocess, a 1 GiB conversion budget, 256 KiB sequential chunks and project `tmp/processing/` scratch files. A ten-minute conversion timeout and ninety-second abandoned-transfer timeout bound execution. This is not an OS memory sandbox. Tool/recipe/platform checks are independent of bridge connectivity. Server caches remain trusted; client output does not populate the server converter cache. Persistent local result caching is not implemented.
+
+After upgrading extension sources, regenerate with `pcbridge install-extension --no-open`, reload the unpacked extension in Chrome, refresh Editor/Launch and restart an older daemon while retaining its workspace path. Official and self-hosted projects must use separate workspaces and explicit targets; project IDs are not namespaced across sites. Fresh self-hosted resource datasets use MD5; no legacy SHA-256 resource migration is provided.

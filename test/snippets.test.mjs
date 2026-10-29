@@ -2,12 +2,39 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   scriptParseSnippet,
+  sceneManageSnippet,
   scriptSetTextSnippet,
   templateApplySnippet,
   templateOverridesSnippet,
 } from "../dist/snippets.js";
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+
+test("scene management validates project membership and awaits the matching scene load", async () => {
+  let callback;
+  let unbound = false;
+  const scene = { id: 217, uniqueId: "scene-217", name: "CLI test" };
+  const editor = {
+    api: { globals: { realtime: { scenes: { current: { uniqueId: "old" } } } } },
+    on: (_event, handler) => { callback = handler; return { unbind: () => { unbound = true; } }; },
+    call(method, ...args) {
+      if (method === "scenes:list") args[0]([scene]);
+      if (method === "scenes:get") args[1](null, scene);
+      if (method === "scene:load") {
+        assert.equal(args[0], scene.uniqueId);
+        callback(1, "unrelated");
+        callback(scene.id, scene.uniqueId);
+      }
+      if (method === "permissions:write") return false;
+    },
+  };
+  const run = args => runSnippet(sceneManageSnippet(), { editor, command: { args } });
+  assert.deepEqual(await run({ action: "list" }), [scene]);
+  assert.deepEqual(await run({ action: "open", id: 217 }), scene);
+  assert.equal(unbound, true);
+  await assert.rejects(run({ action: "open", id: 999 }), /not found/);
+  await assert.rejects(run({ action: "create", name: "denied" }), /write access/);
+});
 
 function runSnippet(source, bindings) {
   const names = Object.keys(bindings);

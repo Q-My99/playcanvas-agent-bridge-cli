@@ -1,5 +1,9 @@
 # playcanvas-agent-bridge-cli
 
+场景管理：`scene list`、`scene create --name <名称>`、`scene open --id <ID>` 使用所选 Editor 的项目；打开操作会等待目标场景加载。`asset upload` 自动将 GLB/FBX/OBJ 识别为模型源资源（`scene`）。
+
+在父级 PlayCanvas 工作区中，`bun run pcbridge <命令>` 默认使用根目录 `pcbridge-workspace/`（自动创建，Git 忽略）。`bun run dev` 会自动启动当前源码的 daemon，退出时一起关闭；若 daemon 端口已被占用，先运行 `bun run pcbridge daemon stop`。插件弹窗显示插件自身版本和 daemon 版本，离线时也能确认插件版本。
+
 > 需要 Bun 1.4.0 或更新版本。在父级 monorepo 中，请于根目录执行 `bun install --frozen-lockfile`。
 
 这是一个 CLI 优先的本地自动化桥，用来让 Codex、Claude Code、Cursor、Windsurf 等 AI 编程 agent 控制已经打开的 PlayCanvas Editor 场景和 PlayCanvas Launch 页面。
@@ -512,3 +516,28 @@ git push origin v<version>
 如果 tag 与包版本不一致，或者 tag 对应的提交不属于 `main`，workflow 会拒绝发布。
 推送 tag 前，需要在 npm 包设置中把 GitHub 用户设为 `Q-My99`、仓库设为
 `playcanvas-agent-bridge-cli`、workflow 文件名设为 `npm-publish.yml`。
+
+## 自托管站点与本地资源处理
+
+插件自动识别官方站点及任意端口的 localhost / 127.0.0.1 Editor、Launch 页面。其他域名在 popup 点击 **Enable on this site**，经 Chrome 授权后刷新；Editor 与 Launch 域名分别授权。禁用或撤回权限会关闭现有连接。自托管页面不套用官方 frontend 切换偏好。
+
+本地计算仅限自托管，默认关闭。安装可信发布者提供的版本化工具 manifest 和预编译包（当前实测 macOS arm64，尚未发布公开工具 release）：
+
+```sh
+pcbridge processing install /path/to/release.json
+pcbridge processing enable --memory-mb 1024 --timeout-ms 600000
+pcbridge processing status --target editor:<sceneId>
+pcbridge import submit --asset <id> --kind model --json options.json --target editor:<sceneId>
+pcbridge import list --target editor:<sceneId>
+pcbridge import wait --job <id> --sync-workspace --target editor:<sceneId>
+pcbridge import status --job <id> --target editor:<sceneId>
+pcbridge import cancel --job <id> --target editor:<sceneId>
+pcbridge import retry --job <id> --target editor:<sceneId>
+pcbridge processing disable
+```
+
+贴图改用 `--kind texture`，options 如 `{"formats":["dxt","etc2"],"mipmaps":true}`。已有上传命令和 Editor UI 使用同一种服务器任务。身份、租约和对象存储 URL 仅由浏览器持有，不传给 CLI。`complete` 表示服务器正式发布；`--sync-workspace` 额外等待工作区元数据同步，二进制继续按需下载。工具缺失、关闭或繁忙时回退服务器 worker。
+
+固定转换子进程单并发，转换预算 1 GiB，顺序分块 256 KiB，临时文件在项目 `tmp/processing/`。转换超时 10 分钟，失联传输 90 秒回收；这不是 OS 级硬内存沙箱。工具/配方/平台兼容性独立于桥接连接报告。可复用可信服务端缓存，但客户端结果不写入服务端转换缓存；首版不提供本地持久结果缓存。
+
+更新后执行 `pcbridge install-extension --no-open`，在 Chrome 重新加载 unpacked 扩展，再刷新 Editor/Launch；旧 daemon 需使用原工作区路径重启。官方与自托管需分开工作区并明确选择目标，不提供跨站点 projectId 命名空间。自托管新数据集使用资源 MD5，不提供旧 SHA-256 资源迁移。

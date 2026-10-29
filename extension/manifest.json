@@ -2,15 +2,23 @@
   "manifest_version": 3,
   "name": "PlayCanvas Agent Bridge",
   "description": "Connects open PlayCanvas Editor and Launch tabs to the local pcbridge daemon.",
-  "version": "0.6.1",
-  "permissions": ["activeTab", "storage"],
+  "version": "0.6.2",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
   "host_permissions": [
     "http://playcanvas.com/*",
     "https://playcanvas.com/*",
     "http://127.0.0.1/*",
     "http://localhost/*",
     "ws://127.0.0.1/*",
-    "ws://localhost/*"
+    "ws://localhost/*",
+    "http://launch.playcanvas.com/*",
+    "https://launch.playcanvas.com/*",
+    "https://localhost/*",
+    "https://127.0.0.1/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -37,9 +45,19 @@
         "http://playcanvas.com/editor*",
         "https://playcanvas.com/editor*",
         "http://launch.playcanvas.com/*",
-        "https://launch.playcanvas.com/*"
+        "https://launch.playcanvas.com/*",
+        "http://localhost/editor/*",
+        "http://localhost/launch/*",
+        "http://127.0.0.1/editor/*",
+        "http://127.0.0.1/launch/*",
+        "https://localhost/editor/*",
+        "https://localhost/launch/*",
+        "https://127.0.0.1/editor/*",
+        "https://127.0.0.1/launch/*"
       ],
-      "js": ["main.js"],
+      "js": [
+        "main.js"
+      ],
       "world": "MAIN",
       "run_at": "document_start"
     },
@@ -48,14 +66,28 @@
         "http://playcanvas.com/editor*",
         "https://playcanvas.com/editor*",
         "http://launch.playcanvas.com/*",
-        "https://launch.playcanvas.com/*"
+        "https://launch.playcanvas.com/*",
+        "http://localhost/editor/*",
+        "http://localhost/launch/*",
+        "http://127.0.0.1/editor/*",
+        "http://127.0.0.1/launch/*",
+        "https://localhost/editor/*",
+        "https://localhost/launch/*",
+        "https://127.0.0.1/editor/*",
+        "https://127.0.0.1/launch/*"
       ],
-      "js": ["isolated.js"],
+      "js": [
+        "isolated.js"
+      ],
       "world": "ISOLATED",
       "run_at": "document_start"
     }
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'; connect-src http://127.0.0.1:* ws://127.0.0.1:* http://localhost:* ws://localhost:*"
-  }
+  },
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ]
 }

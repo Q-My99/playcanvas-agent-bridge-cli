@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { activeTools, installTools, TOOLS_ROOT } from "./processing/tools.js";
 import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
@@ -52,6 +53,7 @@ import {
   materialCreateSnippet,
   materialPatchSnippet,
   sceneSettingsGetSnippet,
+  sceneManageSnippet,
   sceneSettingsPatchSnippet,
   scriptCreateSnippet,
   scriptParseSnippet,
@@ -387,6 +389,7 @@ function listEnvelope(raw: Envelope): Envelope {
 
 function inferAssetType(path: string): string | undefined {
   const ext = extname(path).toLowerCase();
+  if ([".glb", ".fbx", ".obj"].includes(ext)) return "scene";
   if ([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tga"].includes(ext)) return "texture";
   if ([".mp3", ".wav", ".ogg", ".m4a"].includes(ext)) return "audio";
   if (ext === ".json") return "json";
@@ -1561,6 +1564,13 @@ async function handleScript(args: Args): Promise<Envelope> {
 
 async function handleScene(args: Args): Promise<Envelope> {
   const subcommand = args._[1];
+  if (["list", "create", "open"].includes(subcommand)) {
+    const name = flagString(args, "name");
+    const id = flagString(args, "id");
+    if (subcommand === "create" && !name) return fail("INVALID_REQUEST", "scene create requires --name.");
+    if (subcommand === "open" && !id) return fail("INVALID_REQUEST", "scene open requires --id.");
+    return rpcEval(args, sceneManageSnippet(), { action: subcommand, name: name || null, id: id || null }, 60000);
+  }
   if (subcommand === "settings" && (args._[2] || "get") === "get") {
     return rpcEval(args, sceneSettingsGetSnippet());
   }
@@ -1844,12 +1854,71 @@ async function handleBuilder(args: Args): Promise<Envelope> {
   return fail("UNKNOWN_COMMAND", `Unknown builder command: ${subcommand}`);
 }
 
+async function handleProcessing(args: Args): Promise<Envelope> {
+  const action = args._[1] || "status";
+  if (action === "install") {
+    const source = args._[2];
+    if (!source) return fail("INVALID_REQUEST", "processing install requires a trusted release manifest path or HTTPS URL.");
+    return ok(await installTools(source));
+  }
+  if (action === "enable" || action === "disable") {
+    await mkdir(TOOLS_ROOT, { recursive: true });
+    if (action === "enable") await activeTools();
+    const memoryMb = Number(flagString(args, "memory-mb", "1024"));
+    const timeoutMs = Number(flagString(args, "timeout-ms", "600000"));
+    if (!Number.isInteger(memoryMb) || memoryMb < 64 || memoryMb > 1024 || !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 600000)
+      return fail("INVALID_REQUEST", "memory-mb must be 64..1024; timeout-ms must be 1000..600000.");
+    const settings = { enabled: action === "enable", memoryBytes: memoryMb * 1024 * 1024, timeoutMs };
+    await writeFile(join(TOOLS_ROOT, "settings.json"), JSON.stringify(settings));
+    return ok(settings);
+  }
+  if (action === "status") return fetchDaemon("/processing/capabilities", { method: "POST", body: JSON.stringify({ target: flagString(args, "target", "current") }) });
+  return fail("UNKNOWN_COMMAND", `Unknown processing command: ${action}`);
+}
+
+async function handleImportJob(args: Args): Promise<Envelope> {
+  const action = args._[1] || "list";
+  const id = flagString(args, "job");
+  if (["status", "cancel", "retry", "wait"].includes(action) && !id) return fail("INVALID_REQUEST", "--job is required.");
+  const params: Record<string, JsonValue> = { action, jobId: id || null };
+  if (action === "submit") {
+    const assetId = flagString(args, "asset");
+    const kind = flagString(args, "kind", "model");
+    if (!assetId || !["model", "texture"].includes(kind || "")) return fail("INVALID_REQUEST", "submit requires --asset and --kind model|texture.");
+    params.assetId = assetId; params.kind = kind || "model";
+    params.options = objectJson(await readJsonFlag(args, "json"), "import options");
+  }
+  if (action !== "wait") return rpcCall(args, "bridge:importJob", params);
+  const timeout = readTimeoutMs(args, 120000);
+  if (timeout === null) return invalidTimeoutEnvelope();
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const result = await rpcCall(args, "bridge:importJob", { action: "status", jobId: id! }, 15000, false);
+    if (!result.ok) return result;
+    const job = result.data as Record<string, JsonValue>;
+    if (["failed", "cancelled"].includes(String(job.status))) return fail("IMPORT_" + String(job.status).toUpperCase(), String(job.error || job.status), undefined, job);
+    if (job.status === "complete") {
+      let workspace: JsonValue = { state: "not-requested" };
+      if (flagBool(args, "sync-workspace")) {
+        const synced = await fetchDaemon("/workspace/sync", { method: "POST", body: JSON.stringify({ target: flagString(args, "target", "current") }) });
+        if (!synced.ok) return synced;
+        workspace = synced.data;
+      }
+      return ok({ job, published: true, workspace });
+    }
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  return fail("IMPORT_WAIT_TIMEOUT", "Task is still pending; query the same job before submitting another.");
+}
+
 function help(group = "overview"): Envelope {
   const groups: Record<string, string[]> = {
     overview: [
       "pcbridge help core",
       "pcbridge help workspace",
       "pcbridge help builder",
+      "pcbridge help processing",
+      "pcbridge help import",
       "pcbridge help frontend",
       "pcbridge help target",
       "pcbridge help entity",
@@ -1888,6 +1957,21 @@ function help(group = "overview"): Envelope {
       "pcbridge workspace sync --target editor:<sceneId>",
       "pcbridge workspace pull --target editor:<sceneId> --asset <assetId>",
       "daemon start/restart uses --workspace when provided, otherwise the current directory.",
+    ],
+    processing: [
+      "pcbridge processing install <trusted-release.json-path-or-https-url>",
+      "pcbridge processing enable [--memory-mb 1024] [--timeout-ms 600000]",
+      "pcbridge processing disable",
+      "pcbridge processing status --target editor:<sceneId>",
+      "Selfhost only. Tools are opt-in; unavailable local compute falls back to server.",
+    ],
+    import: [
+      "pcbridge import submit --asset <source_asset_id> --kind model|texture [--json options.json] --target editor:<sceneId>",
+      "pcbridge import list --target editor:<sceneId>",
+      "pcbridge import status|cancel|retry --job <id> --target editor:<sceneId>",
+      "pcbridge import wait --job <id> [--timeout-ms 120000] [--sync-workspace] --target editor:<sceneId>",
+      "Complete means server publication. --sync-workspace separately waits for local metadata synchronization.",
+      "New files use the existing asset upload command; model uploads create the same import jobs.",
     ],
     builder: [
       "pcbridge builder start --target editor:<sceneId> --asset <template_asset_id> [--suffix '-${time}'] [--prefix assets]",
@@ -1955,6 +2039,9 @@ function help(group = "overview"): Envelope {
     ],
     scene: [
       "pcbridge scene settings get --target editor:<sceneId>",
+      "pcbridge scene list --target editor:<sceneId>",
+      "pcbridge scene create --name <name> --target editor:<sceneId>",
+      "pcbridge scene open --id <sceneId> --target editor:<sceneId>",
       "pcbridge scene settings patch --target editor:<sceneId> --json ./scene-settings.json",
       "pcbridge scene settings patch --target editor:<sceneId> --set render.fog='\"linear\"' --set physics.gravity='[0,-9.8,0]'",
     ],
@@ -2039,6 +2126,10 @@ async function main(): Promise<void> {
       print(await installExtension(args));
     } else if (command === "install-skill") {
       print(await installSkill(args));
+    } else if (command === "processing") {
+      print(await handleProcessing(args));
+    } else if (command === "import") {
+      print(await handleImportJob(args));
     } else if (command === "frontend") {
       print(await handleFrontend(args));
     } else if (command === "targets") {

@@ -1,6 +1,9 @@
 (() => {
   "use strict";
 
+  if (window.__pcbridgeIsolatedWorld) return;
+  window.__pcbridgeIsolatedWorld = true;
+
   const CHANNEL = "playcanvas-agent-bridge";
   const DEFAULT_CONFIG = {
     host: "127.0.0.1",
@@ -144,6 +147,7 @@
     const allowed =
       (path === "/builder/jobs" && method === "POST") ||
       (path === "/workspace/sync" && method === "POST") ||
+      (/^\/processing\/(capabilities|begin|chunk|run|status|read|cancel|finish)$/.test(path) && method === "POST") ||
       (/^\/builder\/jobs\/[^/]+$/.test(path) && method === "GET");
     if (!allowed) throw new Error("Unsupported pcbridge browser request.");
     const payload = body && typeof body === "object" ? { ...body } : {};
@@ -267,7 +271,10 @@
   async function sendTargetUpdate(force = false) {
     if (stopped || !ws || ws.readyState !== WebSocket.OPEN) return;
     try {
+      const site = await requestRuntime({ type: "pcbridge:siteStatus" });
+      if (!site || !site.enabled) { stopBridge(); return; }
       const target = await describeTarget();
+      if (!["editor", "launch"].includes(target.kind)) { stopBridge(); return; }
       const signature = JSON.stringify(target);
       if (!force && signature === lastTargetSignature) return;
       if (target.projectId) {
@@ -320,6 +327,14 @@
 
   async function connect() {
     if (stopped) return;
+    const site = await requestRuntime({ type: "pcbridge:siteStatus" });
+    if (!site || !site.enabled) { stopBridge(); return; }
+    const target = await describeTarget();
+    if (!["editor", "launch"].includes(target.kind) ||
+        (target.kind === "editor" ? !target.hasEditor : !target.hasRuntimeApp)) {
+      scheduleReconnect();
+      return;
+    }
     if (connecting) return;
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       return;
@@ -448,6 +463,10 @@
       });
     }, 2000);
   }
+
+  chrome.runtime.onMessage?.addListener((message) => {
+    if (message?.type === "pcbridge:siteDisabled") stopBridge();
+  });
 
   start().catch((error) => {
     if (isExtensionContextInvalidated(error)) stopBridge();
