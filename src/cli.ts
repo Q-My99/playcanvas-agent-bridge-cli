@@ -1807,7 +1807,22 @@ async function handleWorkspace(args: Args): Promise<Envelope> {
       rootDirectory: data.rootDirectory || null,
       projectDirectory: data.projectDirectory || null,
       assetsDirectory: data.assetsDirectory || null,
+      scenesDirectory: data.scenesDirectory || null,
       tmpDirectory: data.tmpDirectory || null,
+    });
+  }
+  if (subcommand === "settings") {
+    const rawLimit = flagString(args, "eager-max-mb") || flagString(args, "limit-mb");
+    if (!rawLimit) {
+      return fetchDaemon("/workspace/settings");
+    }
+    const mb = Number(rawLimit);
+    if (!Number.isFinite(mb) || mb < 1 || mb > 10) {
+      return fail("INVALID_REQUEST", "workspace settings --eager-max-mb must be between 1 and 10.");
+    }
+    return fetchDaemon("/workspace/settings", {
+      method: "POST",
+      body: JSON.stringify({ eagerMaxMb: Math.round(mb) }),
     });
   }
   if (subcommand === "sync") {
@@ -1954,6 +1969,7 @@ function help(group = "overview"): Envelope {
     workspace: [
       "pcbridge workspace status --target editor:<sceneId>",
       "pcbridge workspace path --target editor:<sceneId>",
+      "pcbridge workspace settings [--eager-max-mb <1..10>]",
       "pcbridge workspace sync --target editor:<sceneId>",
       "pcbridge workspace pull --target editor:<sceneId> --asset <assetId>",
       "daemon start/restart uses --workspace when provided, otherwise the current directory.",

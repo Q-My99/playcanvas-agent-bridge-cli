@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { once } from "node:events";
@@ -100,4 +100,114 @@ test("daemon shutdown requires the session token and releases the listener", asy
   await assert.rejects(fetch(`http://127.0.0.1:${daemon.port}/health`, {
     headers: { "X-PCBridge-Token": token },
   }));
+});
+
+test("daemon validates workspace settings 1-10 MB and applies WebSocket workspace:delta", async (t) => {
+  const tmpBase = join(process.cwd(), "tmp");
+  await mkdir(tmpBase, { recursive: true });
+  const root = await mkdtemp(join(tmpBase, "daemon-delta-test-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const token = "daemon-delta-token-that-is-long-enough";
+  const daemon = createDaemonServer({
+    token,
+    port: 0,
+    frontendPort: 0,
+    frontendRootDir: join(root, "frontend"),
+    workspaceRoot: root,
+  });
+  await daemon.listen();
+  t.after(() => daemon.close());
+
+  const invalidResp = await fetch(`http://127.0.0.1:${daemon.port}/workspace/settings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-PCBridge-Token": token },
+    body: JSON.stringify({ eagerMaxMb: 25 }),
+  });
+  assert.equal(invalidResp.status, 400);
+
+  const validResp = await fetch(`http://127.0.0.1:${daemon.port}/workspace/settings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-PCBridge-Token": token },
+    body: JSON.stringify({ eagerMaxMb: 6 }),
+  });
+  assert.equal(validResp.status, 200);
+  assert.equal((await validResp.json()).data.eagerMaxMb, 6);
+
+  const socket = new WebSocket(
+    `ws://127.0.0.1:${daemon.port}/extension?token=${token}&clientId=delta-client`,
+  );
+  await once(socket, "open");
+  t.after(() => socket.close());
+
+  socket.on("message", (raw) => {
+    const msg = JSON.parse(raw.toString());
+    if (msg.type === "request" && msg.method === "bridge:workspaceSnapshot") {
+      socket.send(JSON.stringify({
+        type: "response",
+        id: msg.id,
+        ok: true,
+        data: {
+          assets: [{
+            id: 1,
+            name: "Armor",
+            type: "material",
+            path: [],
+            file: null,
+            data: { diffuse: [0.3, 0.3, 0.3] },
+          }],
+        },
+      }));
+    }
+  });
+
+  socket.send(JSON.stringify({
+    type: "target:update",
+    target: {
+      clientId: "delta-client",
+      tabId: 88,
+      kind: "editor",
+      url: "https://playcanvas.com/editor/scene/1",
+      projectId: "888",
+      projectName: "LiveDelta",
+      sceneId: "1",
+      branchId: "main",
+      ready: true,
+    },
+  }));
+
+  const armorPath = join(root, "888-LiveDelta", "assets", "Armor.material.json");
+  for (let i = 0; i < 40; i++) {
+    try {
+      await readFile(armorPath, "utf8");
+      break;
+    } catch {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  }
+  assert.deepEqual(JSON.parse(await readFile(armorPath, "utf8")).data.diffuse, [0.3, 0.3, 0.3]);
+
+  // Push incremental workspace:delta over WebSocket without any snapshot RPC!
+  socket.send(JSON.stringify({
+    type: "workspace:delta",
+    clientId: "delta-client",
+    tabId: 88,
+    delta: {
+      upsertedAssets: [{
+        id: 1,
+        name: "Armor",
+        type: "material",
+        path: [],
+        file: null,
+        data: { diffuse: [0.9, 0.8, 0.1] },
+      }],
+    },
+  }));
+
+  for (let i = 0; i < 40; i++) {
+    const cur = JSON.parse(await readFile(armorPath, "utf8"));
+    if (cur.data.diffuse[0] === 0.9) break;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.deepEqual(JSON.parse(await readFile(armorPath, "utf8")).data.diffuse, [0.9, 0.8, 0.1]);
 });

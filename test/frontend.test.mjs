@@ -90,7 +90,9 @@ async function runPopup(initialUrl, statusData, initialPreference = null) {
   const intervals = [];
   const updatedUrls = [];
   const runtimeMessages = [];
+  const daemonCalls = [];
   let preference = initialPreference;
+  let storedWorkspace = { eagerMaxMb: 2, pendingDaemonSync: false };
   const document = {
     getElementById(id) {
       if (!elements.has(id)) {
@@ -134,6 +136,16 @@ async function runPopup(initialUrl, statusData, initialPreference = null) {
             projectId: message.projectId || null,
           };
         }
+        if (message.type === "pcbridge:getWorkspaceSettings") {
+          return { ok: true, ...storedWorkspace };
+        }
+        if (message.type === "pcbridge:setWorkspaceSettings") {
+          storedWorkspace = {
+            eagerMaxMb: message.eagerMaxMb,
+            pendingDaemonSync: Boolean(message.pendingDaemonSync),
+          };
+          return { ok: true, ...storedWorkspace };
+        }
         return null;
       },
     },
@@ -144,12 +156,24 @@ async function runPopup(initialUrl, statusData, initialPreference = null) {
       },
     },
   };
-  const fetchMock = async (url) => {
+  const fetchMock = async (url, options = {}) => {
     if (String(url).startsWith("chrome-extension:")) {
       return new Response(JSON.stringify({
         host: "127.0.0.1",
         port: 17329,
         token: "test-token",
+      }));
+    }
+    if (String(url).endsWith("/workspace/settings") && options.method === "POST") {
+      const payload = JSON.parse(String(options.body || "{}"));
+      daemonCalls.push(payload);
+      const currentStatus = typeof statusData === "function" ? statusData() : statusData;
+      if (!currentStatus) throw new Error("daemon offline");
+      if (currentStatus.workspace) currentStatus.workspace.eagerMaxMb = payload.eagerMaxMb;
+      if (currentStatus.daemon) currentStatus.daemon.eagerMaxMb = payload.eagerMaxMb;
+      return new Response(JSON.stringify({
+        ok: true,
+        data: { eagerMaxMb: payload.eagerMaxMb, eagerMaxBytes: payload.eagerMaxMb * 1024 * 1024 },
       }));
     }
     const currentStatus = typeof statusData === "function" ? statusData() : statusData;
@@ -175,7 +199,7 @@ async function runPopup(initialUrl, statusData, initialPreference = null) {
   });
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
-  return { elements, intervals, runtimeMessages, updatedUrls };
+  return { elements, intervals, runtimeMessages, updatedUrls, daemonCalls };
 }
 
 test("frontend releases install, switch, serve, and remove safely", async (t) => {
@@ -447,4 +471,50 @@ test("frontend install rejects a checksum mismatch", async (t) => {
     }),
     (error) => error instanceof FrontendError && error.code === "FRONTEND_CHECKSUM_MISMATCH",
   );
+});
+
+test("extension popup direct-sync slider defaults to 2 MB and syncs 1-10 MB updates to daemon", async () => {
+  const liveStatus = {
+    daemon: { version: "0.6.2", targetCount: 1, eagerMaxMb: 2 },
+    target: {
+      connected: true,
+      ready: true,
+      kind: "editor",
+      projectId: "1552681",
+      projectName: "pcbridge-test",
+    },
+    workspace: {
+      available: true,
+      state: "synced",
+      eagerMaxMb: 2,
+      projectDirectory: "/workspace/1552681-pcbridge-test",
+      counts: { scripts: 1, scriptsSynced: 1, assets: 5, lazyAssets: 2, conflicts: 0 },
+    },
+    frontend: { ready: false, activeRelease: null, server: { listening: false } },
+  };
+  const popup = await runPopup("https://playcanvas.com/editor/scene/2558608", () => liveStatus);
+  const slider = popup.elements.get("eager-limit");
+  const label = popup.elements.get("eager-limit-value");
+
+  assert.equal(slider.value, "2");
+  assert.equal(label.textContent, "2 MB");
+
+  // Dragging slider updates label immediately and blocks polling from resetting the thumb mid-drag.
+  slider.value = "7";
+  slider.handlers.input();
+  assert.equal(label.textContent, "7 MB");
+  await popup.intervals[0]();
+  assert.equal(slider.value, "7");
+
+  // Releasing slider commits setting to daemon and extension storage.
+  await slider.handlers.change();
+  assert.deepEqual(popup.daemonCalls, [{ eagerMaxMb: 7 }]);
+  assert.equal(liveStatus.workspace.eagerMaxMb, 7);
+  assert.equal(label.textContent, "7 MB");
+  const savedMsg = popup.runtimeMessages.find((item) => item.type === "pcbridge:setWorkspaceSettings");
+  assert.deepEqual(JSON.parse(JSON.stringify(savedMsg)), {
+    type: "pcbridge:setWorkspaceSettings",
+    eagerMaxMb: 7,
+    pendingDaemonSync: false,
+  });
 });

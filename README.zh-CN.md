@@ -19,7 +19,7 @@ bun add --global playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-下文命令跟随仓库版 `0.6.1`。npm 安装的是最新稳定版本；测试尚未发布的改动时请使用
+下文命令跟随仓库版 `0.6.2`。npm 安装的是最新稳定版本；测试尚未发布的改动时请使用
 GitHub 安装。
 
 如果要测试尚未发布的改动，也可以直接从这个 GitHub 仓库安装：
@@ -186,9 +186,10 @@ pcbridge daemon stop
 ```text
 1552681-pcbridge-test/
 ├── pcbridge.project.json # 项目信息和供 agent 读取的资源目录
+├── scenes/       # 当前激活场景的可写 .scene.json 与未激活场景的只读镜像
 ├── assets/       # PlayCanvas 文件树的碰撞安全本地投影
-├── tmp/          # 构建产物、缓存、冲突、截图和远端删除隔离副本
-└── .pcbridge/    # 内部同步状态和内容寻址对象缓存，请勿手动修改
+├── tmp/          # 构建产物、缓存、冲突、截图以及本地/远端删除回收站
+└── .pcbridge/    # 内部同步状态、JSON 三方合并基线和内容寻址对象缓存，请勿手动修改
 ```
 
 查看或手动刷新工作区：
@@ -196,28 +197,36 @@ pcbridge daemon stop
 ```bash
 pcbridge workspace status --target editor:<sceneId>
 pcbridge workspace path --target editor:<sceneId>
+pcbridge workspace settings [--eager-max-mb <1..10>]
 pcbridge workspace sync --target editor:<sceneId>
 pcbridge workspace pull --target editor:<sceneId> --asset <assetId>
 ```
 
-脚本默认实时同步到本地；图片、模型、音频、字体等二进制资源默认只同步 Asset 元数据，
-不会在首次建立镜像时下载文件内容。需要本地文件时使用 `workspace pull`，或由 Tiny Builder
-在构建实际依赖时按需拉取。已经存在于 `assets/` 的本地二进制文件会保留并参与双向同步。
-刷新只读取完整 Asset 元数据，并用 PlayCanvas MD5 与本地缓存的 size/mtime/MD5 判断变化。
-本地修改会自动上传，远端修改会按基线判断并下载；同时修改时不会覆盖任一版本，文本和二进制
-冲突副本都写入 `tmp/conflicts/`。
+同步采用 WebSocket 增量事件流（`workspace:delta`）与本地脏路径精确监控，空闲时零轮询。
+未超过直接同步体积上限的文本类资源（`script`、`text`、`json`、`html`、`css`、`shader`）和结构化
+JSON 资源（`material`、`template`、`cubemap`、`sprite`、`animstategraph`、`bundle`，投影为
+`<name>.<type>.json`）默认直接落盘并双向实时同步。可在浏览器插件弹窗中使用 **Direct sync limit**
+滑动条或执行 `pcbridge workspace settings --eager-max-mb <1..10>` 在 **1 MB–10 MB**（默认 **2 MB**）
+范围内调整直接同步上限。当前打开的激活场景同步到 `scenes/<name>.<sceneId>.scene.json`（按场景树
+DFS 排序，支持双向增量同步）；未打开的其他场景落盘为只读（`0o444`，且 `$pcbridge.readonly: true`）`.scene.json` 供跨场景检索，
+编辑前先通过 `pcbridge scene open` 切换为激活场景。
 
-daemon 会监控项目 `assets/` 目录：本地新增文件会上传到对应目录，由 PlayCanvas 自行判断资源
-类型并完成导入，然后重新读取远端 Asset 列表；本地目录会自动映射为 PlayCanvas Folder。
-本地重命名和移动会保持同一个 Asset ID，并同步远端名称和目录。删除本地文件只视为清理本地
-缓存，不会删除 PlayCanvas 远端 Asset；远端删除仍会隔离到 `tmp/trash/remote/`。`tmp/` 下的
-构建、缓存和 agent 临时文件完全不参与 workspace 同步。
+结构化 JSON 资源与激活场景基于 `.pcbridge/baselines/` 做规范化与属性路径级三方合并：两端修改不同
+实体或不同属性时自动无冲突合并并结构化 Patch 回写 Editor；仅当同一叶子属性被同时改成不同值时，
+才将 `.local`、`.remote` 与 `.conflict.json` 隔离到 `tmp/conflicts/`。图片、模型、音频、字体及超过
+直接同步上限的大文件保持懒同步：在 `pcbridge.project.json` 中记录元数据、尺寸规格与 MD5，按需通过
+`workspace pull` 或 Tiny Builder 拉取。本地新增文件（包括新建 `*.<type>.json` 结构化资源）会在对应
+目录自动创建远端 Asset；本地重命名和移动通过内嵌 `$pcbridge.id`、文件 inode 或内容哈希保持原 Asset ID。
+删除本地直接同步（Tier 1）文件会先备份到 `tmp/trash/local/` 并同步删除远端 Asset 以避免状态歧义；
+删除已拉取的懒同步（Tier 2）二进制文件则仅清理本地缓存，远端删除仍隔离到 `tmp/trash/remote/`。
+`tmp/` 下的构建、缓存和 agent 临时文件完全不参与 workspace 同步。
 
 PlayCanvas 可能生成同名的源 Asset 和派生 Asset，例如源 GLB 与 Container/Model，或字体源文件
 与字体图集。manifest 会把网页端显示路径 `folder` 和本地唯一路径 `projectionPath` 分开记录。
-本地优先使用真实的 `file.filename`；只有名称碰撞时，才会在扩展名前加入
-`.__pc_<type>_<assetId>`。source 和 standalone 投影可写；derived 投影按需下载且只读，内容会
-缓存到 `.pcbridge/objects/<assetId>/<md5>/`。修改或移动 derived 投影时，本地副本会隔离到
+派生二进制使用 `file.filename`，源资源和独立资源跟随 `asset.name`；只有名称碰撞时，才会在扩展名前加入
+`.__pc_<type>_<assetId>`。派生二进制按需下载且只读（`0o444`），而关联源模型的结构化 JSON 资源
+（如 FBX/GLB 导入生成的材质）保持可写并参与双向同步，仅在 `$pcbridge.sourceAssetId` 保留来源标记；
+修改或移动只读派生二进制投影时，本地副本会隔离到
 `tmp/conflicts/`，随后从对象缓存恢复正确内容，不会反向上传到 PlayCanvas。
 
 schema v3 的 `pcbridge.project.json` 会记录 `origin`（`source`、`derived` 或 `standalone`）、
@@ -290,6 +299,8 @@ CLI 提供分层 help，方便 agent 只加载当前需要的命令面：
 pcbridge help
 pcbridge help core
 pcbridge help workspace
+pcbridge help processing
+pcbridge help import
 pcbridge help builder
 pcbridge help frontend
 pcbridge help target

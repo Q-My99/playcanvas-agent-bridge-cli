@@ -69,21 +69,26 @@ steps have been acknowledged or verified.
 1. Run `pcbridge targets`. Use `editor:<sceneId>` for Editor writes and `launch:<sceneId>` for
    runtime verification; use `tab:<id>` when either selector is ambiguous.
 2. Run `pcbridge workspace status --target editor:<sceneId>`. Do not write while it reports a conflict or sync error.
-3. Use layered help to load only the command group you need: `pcbridge help`, then `pcbridge help core|workspace|frontend|target|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
-4. Edit asset file contents locally under the selected project's `assets/` tree and let the daemon synchronize them. Keep temporary files, manifests, and captures under `tmp/`, which is not synchronized.
-5. Use structured commands for scene structure and non-file Asset operations that map cleanly to one Editor action.
-6. Use `pcbridge eval` for exploratory API inspection, custom Editor/Engine workflows, Launch runtime debugging, and large multi-step scene edits where one script is clearer than many CLI calls.
-7. Return compact JSON from snippets. Never return raw `editor`, `Entity`, `Asset`, `entities.root`, or app objects.
-8. Use PlayCanvas history options for writes when available and verify writes with a read-only command.
+3. **Inspect local files first (0 RPC)** to understand the project before calling Editor RPCs:
+   - Read `pcbridge.project.json` for `scenes[]` (active/writable vs inactive/read-only), full asset IDs, paths, and lazy binary `meta` (texture dimensions/format, model/audio summaries).
+   - Read `scenes/<name>.<sceneId>.scene.json` (DFS-ordered `entities` + `settings`) and search `scenes/` + `assets/` with `rg` to trace entities, script attachments, `<name>.material.json`, `<name>.template.json`, scripts, and shaders across the entire project.
+4. Use layered help to load only the command group you need: `pcbridge help`, then `pcbridge help core|workspace|processing|import|frontend|target|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
+5. **Choose the right write path** (never mix local file edits and CLI write RPCs on the same target concurrently):
+   - **Edit local files** under `assets/` and `scenes/` for scripts, shaders, CSS/HTML/JSON/text, `<name>.material.json` / `<name>.template.json` / other `*.<type>.json` structured assets (including batch edits and creating new `*.<type>.json` files), file renames/moves, and ordinary property or entity edits in the **active** `.scene.json` (`"$pcbridge": { "active": true }`).
+   - **Use structured CLI commands** for Editor-specific pipelines: `scene open` (required before editing an inactive read-only scene), `template instantiate`, `template create --entity-id`, `template overrides`, `template apply` / `apply-many` (never hand-edit `template_ent_ids`), `script parse`, `import submit/wait`, `viewport focus/capture`, and `launch` diagnostics/logs.
+6. Keep temporary files, manifests, and captures under `tmp/`, which is never synchronized.
+7. Use `pcbridge eval` for exploratory Editor/Engine API inspection, Launch runtime debugging (`runtimeApp`), and custom Editor workflows not covered by local projections or structured commands.
+8. Return compact JSON from snippets. Never return raw `editor`, `Entity`, `Asset`, `entities.root`, or app objects.
 
 ## Workspace
 
 ```text
 <workspace root>/<projectId>-<projectName>/
-  pcbridge.project.json # project metadata and agent-readable asset catalog
-  assets/       # collision-safe projection of the PlayCanvas folder tree
-  tmp/          # agent files, builds, cache, conflicts, captures, and deletion quarantine; never synchronized
-  .pcbridge/    # internal sync state and object cache; do not edit
+  pcbridge.project.json # project metadata, scenes list, and agent-readable asset catalog (with meta summaries)
+  scenes/       # active writable .scene.json plus read-only (0o444) mirrors of inactive scenes
+  assets/       # collision-safe projection of the PlayCanvas folder tree (text, *.<type>.json, pulled binaries)
+  tmp/          # agent files, builds, conflicts, captures, and local/remote deletion trash; never synchronized
+  .pcbridge/    # internal sync state, 3-way JSON baselines, and object cache; do not edit
 ```
 
 Use:
@@ -91,20 +96,24 @@ Use:
 ```bash
 pcbridge workspace status --target editor:<sceneId>
 pcbridge workspace path --target editor:<sceneId>
+pcbridge workspace settings [--eager-max-mb <1..10>]
 pcbridge workspace sync --target editor:<sceneId>
 pcbridge workspace pull --target editor:<sceneId> --asset <assetId>
 ```
 
-Prefer local file operations for file-backed Assets:
+Synchronization is event-driven via WebSocket `workspace:delta` pushes and targeted local `fs.watch` dirty paths (zero idle polling):
 
-- Edit existing scripts directly under `assets/`; the watcher uploads them to PlayCanvas.
-- Create files and folders under `assets/` to upload them into the matching remote folder. Let PlayCanvas infer and process the Asset type.
-- Rename or move a local file to rename or move the same remote Asset ID.
-- Deleting a local file only removes the local lazy cache. It does not delete the remote Asset; use `pcbridge asset delete --id <id>` only when remote deletion is explicitly intended.
-- Scripts are downloaded eagerly. Binary files are lazy; run `workspace pull --asset <id>` before modifying a remote binary that is not present locally.
-- PlayCanvas-generated derivatives such as GLB Model/Container/material outputs and font atlases are lazy, read-only projections. Edit the source Asset, not a derivative. A local derivative edit or move is quarantined under `tmp/conflicts/`, restored from `.pcbridge/objects`, and never uploaded.
+- **Tier 1 (Eager bidirectional)**: Text assets (`script`, `text`, `json`, `html`, `css`, `shader`) and structured JSON data assets (`material`, `template`, `cubemap`, `sprite`, `animstategraph`, `bundle`, projected as `<name>.<type>.json`) up to the direct-sync limit (**default `2 MB`**, adjustable **`1–10 MB`** via the extension popup **Direct sync limit** slider or `pcbridge workspace settings --eager-max-mb <1..10>`) are downloaded automatically and synced bidirectionally.
+- **Scenes (`scenes/<name>.<sceneId>.scene.json`)**: `entities` are ordered in hierarchy DFS pre-order. The open Editor scene has `"$pcbridge": { "id": "...", "kind": "scene", "active": true }` (`0o644` writable); adding/removing entities locally reconciles `parent <-> children` automatically. Inactive scenes have `"$pcbridge": { "id": "...", "kind": "scene", "active": false, "readonly": true }` (`0o444` read-only) — inspect them freely with `rg`, and run `pcbridge scene open --target editor:<currentSceneId> --id <targetSceneId>` before editing one.
+- **Property-path 3-way merge**: Structured JSON assets and the active `.scene.json` merge against `.pcbridge/baselines/` at property/entity granularity, so non-overlapping local and Editor edits merge automatically without false whole-file conflicts. True same-path conflicts write `.local`, `.remote`, and `.conflict.json` under `tmp/conflicts/`.
+- **Create, rename, and move locally**: Creating files under `assets/` (including new `<name>.material.json` or other `*.<type>.json` files without an ID) creates matching remote folders and Assets and writes back `$pcbridge.id`. Renaming or moving local files preserves the remote Asset ID via `$pcbridge.id`, file inode, or content hash (even when renamed and edited together).
+- **Tier 2 (Lazy binary / over-limit files)**: Images, models, audio, fonts, binaries, and files above `eagerMaxMb` record metadata, dimensions, and MD5 in `pcbridge.project.json` without downloading bytes. Run `workspace pull --asset <id>` before modifying a missing binary locally.
+- **Deletion semantics (important distinction)**:
+  - Deleting a local **Tier 1** eagerly synced file (in-limit text/script/shader or `*.<type>.json`) **backs it up under `tmp/trash/local/` AND deletes the remote PlayCanvas Asset** to keep both sides consistent. Delete Tier 1 files only when remote deletion is intended.
+  - Deleting a locally pulled **Tier 2** lazy binary (or over-limit file) only evicts the local cache without deleting the remote Asset; use `pcbridge asset delete --id <id>` to delete a remote Tier 2 Asset.
+- **Derived assets**: Binary derivatives (`source_asset_id != null` with a file, such as GLB `container`/`model` outputs and generated font atlases) remain lazy and read-only (`0o444`); local edits are quarantined to `tmp/conflicts/` and restored. Structured JSON assets linked to a source model (such as FBX/GLB-imported `material` files) **are writable (`0o644`)** and sync bidirectionally while keeping `$pcbridge.sourceAssetId` for provenance.
 
-After a local edit, allow the watcher to react, then poll `workspace status` until it reports
+After a local edit, allow ~0.5–1s for the watcher debounce to flush, then check `workspace status` until it reports
 `synced`. A brief yellow `local-change` is expected. Do not declare completion or alternate to
 remote editing while the same file is pending. If it does not converge, run one explicit
 `workspace sync`, inspect `lastError`, `lastWarning`, and `tmp/conflicts/`, and do not overwrite
@@ -130,9 +139,11 @@ Local file arguments are restricted to the selected project workspace. Never use
 
 ## Safe Commands
 
-Inspect a scene:
+Prefer reading local `pcbridge.project.json`, `scenes/*.scene.json`, and `assets/` first for static inspection. Use CLI commands when you need live Editor/Launch state, pipeline actions, or single targeted RPC mutations:
 
 ```bash
+pcbridge scene list --target editor:<sceneId>
+pcbridge scene open --target editor:<sceneId> --id <otherSceneId>
 pcbridge eval --target editor:<sceneId> --code "return { href: location.href, hasEditor: !!editor, entityCount: editor.api.globals.entities.list().length }"
 ```
 
@@ -175,8 +186,7 @@ Use exactly one of `--asset-id` and `--script-name`. The name form is for a Scri
 by a bundle or runtime asset and therefore lacking a standalone script asset id. Verify such a
 script in Launch; explicit script reordering is not yet a dedicated command.
 
-Work with asset metadata, explicit transfers, and script verification. For ordinary file-content
-edits, prefer editing the tracked local file under `assets/` over `script set-text` or re-uploading it:
+Work with asset pipelines, explicit transfers, and script verification. For ordinary script/shader/text or `*.material.json` / `*.template.json` content edits, prefer editing the tracked local file under `assets/` over CLI `patch` / `set-text` or re-uploading:
 
 ```bash
 pcbridge asset list --target editor:<sceneId> --type script --limit 50
@@ -264,11 +274,11 @@ For multi-asset or game-sized tasks:
 
 1. Choose an explicit target from `pcbridge targets`, preferably `editor:<sceneId>` for writes or
    `launch:<sceneId>` for tests; use `tab:<id>` to resolve ambiguity.
-2. Confirm `workspace status` is `synced`. Put disposable generation inputs under `<project>/tmp/<task name>/`.
-3. Inspect existing asset folders and follow their naming and hierarchy. Group new resources by task within that convention, reuse suitable folders, and create or edit files locally under `<project>/assets/`; wait for synchronization.
+2. Confirm `workspace status` is `synced`. Inspect `pcbridge.project.json`, `scenes/*.scene.json`, and `assets/` locally with `rg` to understand existing hierarchy, conventions, and asset IDs without extra RPC traffic. Put disposable generation inputs under `<project>/tmp/<task name>/`.
+3. Follow existing folder naming and hierarchy. Group new resources within that convention, reuse suitable folders, and create or edit scripts, shaders, `*.material.json` files, and assets locally under `<project>/assets/`; wait for `workspace status` to reach `synced`.
 4. Use `asset upload-many` only when explicit upload settings or a non-watched source path is required. Do not upload a file again when it is already tracked under `assets/`.
 5. For an existing script, edit its local file. Use `script parse` after synchronization when parse verification is needed; reserve `script upsert --parse --wait` for recovery or workflows that intentionally bypass the mirror.
-6. Use `pcbridge eval --target editor:<sceneId> --file ./install.js --args-json ./args.json --timeout-ms 120000` for large scene installation scripts. The JSON object is available as `command.args`; increase `--timeout-ms` instead of splitting a coherent install script just to avoid the default 15s timeout.
+6. For active scene edits, either edit `scenes/<name>.<sceneId>.scene.json` directly (ideal for multi-entity/property tuning with 3-way merge) or use structured `entity` / `template` commands (or `pcbridge eval --target editor:<sceneId> --file ./install.js --args-json ./args.json --timeout-ms 120000` for procedural Editor setup). Do not edit `.scene.json` and run scene-mutating RPCs at the exact same instant.
 7. Wait for `workspace status` to become `synced`, then verify with read-only commands, a small smoke-test eval, and a capture under `<project>/tmp/captures/`.
 
 If repeated manual glue is needed across tasks, improve the CLI or this skill rather than continuing to hand-roll brittle shell/script sequences.

@@ -1,7 +1,14 @@
 const FRONTEND_PREFERENCES_KEY = "pcbridgeFrontendPreferences";
 const SCENE_PROJECTS_KEY = "pcbridgeSceneProjects";
 const TAB_PROJECTS_KEY = "pcbridgeTabProjects";
+const WORKSPACE_SETTINGS_KEY = "pcbridgeWorkspaceSettings";
 const tabProjects = new Map();
+
+function clampEagerMaxMb(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 2;
+  return Math.min(10, Math.max(1, Math.round(parsed)));
+}
 
 function normalizeId(value) {
   const id = String(value || "").trim();
@@ -175,6 +182,7 @@ async function requestDaemon(message, sender) {
   const allowed =
     (path === "/builder/jobs" && method === "POST") ||
     (path === "/workspace/sync" && method === "POST") ||
+    (path === "/workspace/settings" && (method === "GET" || method === "POST")) ||
       (/^\/processing\/(capabilities|begin|chunk|run|status|read|cancel|finish)$/.test(path) && method === "POST") ||
     (/^\/builder\/jobs\/[^/]+$/.test(path) && method === "GET");
   if (!allowed) {
@@ -306,6 +314,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message && message.type === "pcbridge:daemonRequest") {
     requestDaemon(message, sender).then(sendResponse);
+    return true;
+  }
+
+  if (message && message.type === "pcbridge:getWorkspaceSettings") {
+    readObject(chrome.storage && chrome.storage.local, WORKSPACE_SETTINGS_KEY)
+      .then((stored) => sendResponse({
+        ok: true,
+        eagerMaxMb: clampEagerMaxMb(stored.eagerMaxMb),
+        pendingDaemonSync: Boolean(stored.pendingDaemonSync)
+      }))
+      .catch(() => sendResponse({ ok: false, eagerMaxMb: 2, pendingDaemonSync: false }));
+    return true;
+  }
+
+  if (message && message.type === "pcbridge:setWorkspaceSettings") {
+    const eagerMaxMb = clampEagerMaxMb(message.eagerMaxMb);
+    const pendingDaemonSync = Boolean(message.pendingDaemonSync);
+    (async () => {
+      if (chrome.storage && chrome.storage.local) {
+        await chrome.storage.local.set({
+          [WORKSPACE_SETTINGS_KEY]: { eagerMaxMb, pendingDaemonSync }
+        });
+      }
+      return { ok: true, eagerMaxMb, pendingDaemonSync };
+    })()
+      .then(sendResponse)
+      .catch(() => sendResponse({ ok: false, eagerMaxMb, pendingDaemonSync }));
     return true;
   }
 

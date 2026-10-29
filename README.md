@@ -26,7 +26,7 @@ bun add --global github:Q-My99/playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-The commands documented below track repository version `0.6.1`. bun installs the latest stable
+The commands documented below track repository version `0.6.2`. bun installs the latest stable
 release; use the GitHub install when testing changes that have not been released yet.
 
 One-shot with npx:
@@ -192,9 +192,10 @@ When a ready Editor connects, pcbridge creates `<projectId>-<projectName>/` auto
 ```text
 1552681-pcbridge-test/
 ├── pcbridge.project.json # project metadata plus the agent-readable asset catalog
+├── scenes/       # active writable .scene.json plus read-only mirrors of inactive scenes
 ├── assets/       # collision-safe projection of the PlayCanvas folder tree
-├── tmp/          # builds, cache, conflicts, captures, and quarantined remote deletions
-└── .pcbridge/    # internal sync state and content-addressed object cache; do not edit
+├── tmp/          # builds, cache, conflicts, captures, and local/remote deletion trash
+└── .pcbridge/    # internal sync state, 3-way JSON baselines, and object cache; do not edit
 ```
 
 Inspect or refresh the workspace with:
@@ -202,27 +203,43 @@ Inspect or refresh the workspace with:
 ```bash
 pcbridge workspace status --target editor:<sceneId>
 pcbridge workspace path --target editor:<sceneId>
+pcbridge workspace settings [--eager-max-mb <1..10>]
 pcbridge workspace sync --target editor:<sceneId>
 pcbridge workspace pull --target editor:<sceneId> --asset <assetId>
 ```
 
-Scripts are eagerly mirrored and kept close to real time. Images, models, audio, fonts, and other
-binary assets are lazy: refresh records the Asset metadata and PlayCanvas MD5 without downloading
-file contents. Use `workspace pull`, or let Tiny Builder fetch the dependencies needed for a build.
-Existing binary files under `assets/` are retained and remain bidirectional. Local edits upload,
-remote edits download according to the sync baseline, and concurrent edits preserve both copies under
-`tmp/conflicts/`. New local files are uploaded into their matching folder and PlayCanvas decides the
-imported type; local folders are created remotely. Renames and moves preserve the Asset ID. Deleting
-a local file only clears the local cache and never deletes the remote Asset. The `tmp/` tree is
-agent-owned and excluded from workspace synchronization.
+Synchronization is event-driven over WebSocket deltas (`workspace:delta`) and targeted local
+`fs.watch` dirty paths without idle polling. Text assets (`script`, `text`, `json`, `html`, `css`,
+`shader`) and structured JSON data assets (`material`, `template`, `cubemap`, `sprite`,
+`animstategraph`, `bundle`, projected as `<name>.<type>.json`) up to the direct-sync size limit are
+eagerly mirrored and kept bidirectional. Adjust the direct-sync limit from **1 MB to 10 MB**
+(default **2 MB**) with the slider in the browser extension popup or `pcbridge workspace settings
+--eager-max-mb <1..10>`. The active Editor scene is mirrored bidirectionally at
+`scenes/<name>.<sceneId>.scene.json` with DFS-ordered entities, while inactive project scenes are
+mirrored as read-only (`0o444`, `$pcbridge.readonly: true`) files for cross-scene inspection
+(`pcbridge scene open` activates a scene before editing it).
+
+Structured JSON assets and active scenes use canonical formatting and property-path 3-way merge
+against `.pcbridge/baselines/`: non-overlapping local and Editor edits merge automatically, while
+conflicting edits to the same leaf property preserve `.local`, `.remote`, and `.conflict.json` under
+`tmp/conflicts/`. Images, models, audio, fonts, and files above the direct-sync limit remain lazy:
+metadata, dimensions, and MD5 hashes are recorded in `pcbridge.project.json`, and bytes are fetched
+on demand via `workspace pull` or Tiny Builder. New local files (including new `*.<type>.json`
+structured assets) create matching remote Assets and folders; renames and moves preserve the Asset
+ID via embedded `$pcbridge.id`, file inode, or content hash. Deleting an eagerly synced Tier 1 file
+locally backs up the file under `tmp/trash/local/` and deletes the remote Asset to keep both sides
+consistent, whereas deleting a pulled lazy binary file only evicts the local cache. The `tmp/` tree
+is agent-owned and excluded from workspace synchronization.
 
 PlayCanvas may create source and generated Assets with the same display name, for example a source
 GLB plus Container/Model outputs or a font plus generated atlas files. The manifest keeps the remote
 display `folder` separate from the unique local `projectionPath`. The real `file.filename` is used
-when possible; only collisions receive `.__pc_<type>_<assetId>` before the extension. Source and
-standalone projections are writable. Generated derivatives are lazy and read-only: pulling or
-building them stores immutable bytes under `.pcbridge/objects/<assetId>/<md5>/`, and a local edit or
-move is quarantined under `tmp/conflicts/` before the projection is restored.
+for derived files while source/standalone names track `asset.name`; only collisions receive
+`.__pc_<type>_<assetId>` before the extension. Source and standalone projections are writable.
+Generated binary derivatives are lazy and read-only (`0o444`), while structured JSON assets
+linked to a source model (such as FBX/GLB-imported materials) remain writable and bidirectional,
+recording `$pcbridge.sourceAssetId` for provenance; local edits or moves on read-only binary
+derivatives are quarantined under `tmp/conflicts/` before restoration.
 
 `pcbridge.project.json` schema v3 records `origin` (`source`, `derived`, or `standalone`), advertised
 and observed remote file metadata, the effective MD5, and local presence/writability/current/base
@@ -298,6 +315,8 @@ The CLI exposes layered help so agents can load only the command surface they ne
 pcbridge help
 pcbridge help core
 pcbridge help workspace
+pcbridge help processing
+pcbridge help import
 pcbridge help builder
 pcbridge help frontend
 pcbridge help target

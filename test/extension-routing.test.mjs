@@ -434,3 +434,133 @@ test("custom sites require grants, persist scripts, revoke connections and isola
     assert.equal((await extension.sendMessage({ type: "pcbridge:siteStatus", url })).enabled, true);
   }
 });
+
+test("main-world observer events push incremental workspace:delta over WebSocket and defer during pointer drag", async () => {
+  const socket = await loadBridgeWorlds();
+  const assetObservers = new Map();
+  const entityObservers = new Map();
+
+  function makeAsset(id, name, type, data = {}) {
+    const handlers = new Map();
+    assetObservers.set(id, handlers);
+    const state = { id, name, type, path: [], tags: [], preload: true, file: null, data };
+    return {
+      observer: {
+        on(ev, fn) { handlers.set(ev, fn); },
+        json: () => structuredClone(state),
+      },
+      on(ev, fn) { handlers.set(ev, fn); },
+      get(path) {
+        if (path.startsWith("data.")) return state.data[path.slice(5)];
+        return state[path];
+      },
+      set(path, val) {
+        if (path.startsWith("data.")) state.data[path.slice(5)] = val;
+        else state[path] = val;
+        const h = handlers.get("*:set");
+        if (h) h(path, val);
+      },
+      unset(path) {
+        if (path.startsWith("data.")) delete state.data[path.slice(5)];
+        const h = handlers.get("*:unset");
+        if (h) h(path);
+      },
+      json: () => structuredClone(state),
+    };
+  }
+
+  function makeEntity(id, name, parent, position = [0, 0, 0]) {
+    const handlers = new Map();
+    entityObservers.set(id, handlers);
+    const state = {
+      resource_id: id,
+      name,
+      enabled: true,
+      parent,
+      children: [],
+      tags: [],
+      position,
+      rotation: [0, 0, 0],
+      scale: [1, 1, 1],
+      components: {},
+    };
+    return {
+      observer: {
+        on(ev, fn) { handlers.set(ev, fn); },
+        json: () => structuredClone(state),
+      },
+      on(ev, fn) { handlers.set(ev, fn); },
+      get: (p) => state[p],
+      set(p, v) {
+        state[p] = v;
+        const h = handlers.get("*:set");
+        if (h) h(p, v);
+      },
+      json: () => structuredClone(state),
+    };
+  }
+
+  const mat = makeAsset(11, "Hero", "material", { diffuse: [1, 0, 0] });
+  const rootEnt = makeEntity("root", "Root", null);
+  const boxEnt = makeEntity("box", "Box", "root");
+  rootEnt.set("children", ["box"]);
+
+  const assetMap = new Map([[11, mat]]);
+  const entMap = new Map([["root", rootEnt], ["box", boxEnt]]);
+  socket.window.config = { scene: { id: "1", name: "Main" } };
+  socket.window.editor.api.globals = {
+    assets: {
+      list: () => [...assetMap.values()],
+      get: (id) => assetMap.get(Number(id)),
+      on() {},
+    },
+    entities: {
+      root: rootEnt,
+      list: () => [...entMap.values()],
+      get: (id) => entMap.get(String(id)),
+      on() {},
+    },
+    settings: {
+      scene: { json: () => ({ exposure: 1 }), on() {} },
+    },
+  };
+
+  // Trigger bridge:workspaceSnapshot to install workspace + scene observers.
+  socket.dispatch("message", {
+    data: JSON.stringify({
+      type: "request",
+      id: "snap-1",
+      method: "bridge:workspaceSnapshot",
+      timeoutMs: 2000,
+      params: {},
+    }),
+  });
+  await waitFor(() => socket.sent.find((m) => m.id === "snap-1"), "snapshot response missing");
+  socket.sent.length = 0;
+
+  // Bridge-initiated patchAssetData suppresses echo workspace:delta!
+  socket.dispatch("message", {
+    data: JSON.stringify({
+      type: "request",
+      id: "patch-1",
+      method: "bridge:patchAssetData",
+      timeoutMs: 2000,
+      params: { assetId: "11", sets: [{ path: "gloss", value: 0.8 }], unsets: [] },
+    }),
+  });
+  await waitFor(() => socket.sent.find((m) => m.id === "patch-1"), "patch response missing");
+  await new Promise((r) => setTimeout(r, 360));
+  assert.equal(
+    socket.sent.some((m) => m.type === "workspace:delta"),
+    false,
+    "bridge write must suppress outbound echo delta",
+  );
+
+  // User edit in Editor UI pushes incremental workspace:delta directly over WebSocket!
+  mat.set("data.diffuse", [0, 1, 0]);
+  await new Promise((r) => setTimeout(r, 360));
+  const matDelta = socket.sent.find((m) => m.type === "workspace:delta" && m.delta?.upsertedAssets);
+  assert.ok(matDelta);
+  assert.equal(matDelta.delta.upsertedAssets.length, 1);
+  assert.deepEqual(matDelta.delta.upsertedAssets[0].data.diffuse, [0, 1, 0]);
+});

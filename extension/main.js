@@ -14,7 +14,24 @@
   let selectedTemplateId = null;
   let selectedTemplateAsset = null;
   let workspaceEventsInstalled = false;
+  let sceneEventsInstalled = false;
+  let observedAssets = new WeakSet();
+  let observedEntities = new WeakSet();
   let workspaceSyncTimer = null;
+  let sceneSyncTimer = null;
+  let sceneInteractionHoldStartedAt = 0;
+  let pointerDownActive = false;
+  let workspaceMutationDepth = 0;
+  const dirtyAssetIds = new Set();
+  const removedAssetIds = new Set();
+  const dirtyEntityIds = new Set();
+  const removedEntityIds = new Set();
+  let sceneSettingsDirty = false;
+  let fullSceneDirty = false;
+
+  const TEXT_ASSET_TYPES = new Set(["script", "text", "json", "html", "css", "shader"]);
+  const DATA_JSON_ASSET_TYPES = new Set(["material", "template", "cubemap", "sprite", "animstategraph", "bundle"]);
+  const META_SUMMARY_KEYS = ["width", "height", "format", "alpha", "depth", "srgb", "meshes", "vertices", "triangles", "nodes", "materials", "textures", "animations", "duration", "channels", "sampleRate"];
 
   function formatLogArg(value) {
     if (typeof value === "string") return value;
@@ -85,6 +102,15 @@
   }
 
   patchConsoleCapture();
+
+  function installPointerTracking() {
+    if (typeof window.addEventListener !== "function") return;
+    const onDown = () => { pointerDownActive = true; };
+    const onUp = () => { pointerDownActive = false; };
+    for (const ev of ["pointerdown", "mousedown"]) window.addEventListener(ev, onDown, true);
+    for (const ev of ["pointerup", "pointercancel", "mouseup", "blur"]) window.addEventListener(ev, onUp, true);
+  }
+  installPointerTracking();
 
   function safeGetEditorValue(value, path) {
     try {
@@ -515,17 +541,48 @@
       }
     };
     const path = get("path") || [];
-    return {
+    const type = get("type");
+    const result = {
       id: get("id"),
       name: get("name"),
-      type: get("type"),
+      type,
       source: get("source") || false,
       source_asset_id: get("source_asset_id") || null,
       path,
       folder: Array.isArray(path) && path.length ? path[path.length - 1] : null,
       tags: get("tags") || [],
+      preload: get("preload") !== false,
       file: get("file") || null
     };
+    if (DATA_JSON_ASSET_TYPES.has(type)) {
+      const plain = plainAssetJson(asset);
+      const rawData = plain && plain.data !== undefined ? plain.data : get("data");
+      result.data = clonePlainJson(rawData) || {};
+    }
+    const metaSummary = summarizeAssetMeta(get("meta"));
+    if (metaSummary) result.meta = metaSummary;
+    return result;
+  }
+
+  function summarizeAssetMeta(rawMeta) {
+    if (!rawMeta || typeof rawMeta !== "object" || Array.isArray(rawMeta)) return null;
+    const summary = {};
+    for (const key of META_SUMMARY_KEYS) {
+      const val = rawMeta[key];
+      if (typeof val === "number" || typeof val === "boolean" || typeof val === "string") {
+        summary[key] = val;
+      }
+    }
+    return Object.keys(summary).length ? summary : null;
+  }
+
+  function clonePlainJson(value) {
+    if (value === undefined) return null;
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch {
+      return null;
+    }
   }
 
   function splitAssetPath(path) {
@@ -620,43 +677,334 @@
     return { response, filename };
   }
 
-  function workspaceSnapshot() {
+  function getActiveSceneId() {
+    const config = window.config || {};
+    const id = (config.scene && config.scene.id ? String(config.scene.id) : "") || getSceneIdFromUrl() || "";
+    return id || null;
+  }
+
+  function getActiveSceneName() {
+    const liveName = window.editor?.api?.globals?.realtime?.scenes?.current?.data?.name;
+    if (liveName) return String(liveName);
+    const config = window.config || {};
+    return (config.scene && config.scene.name ? String(config.scene.name) : "") || null;
+  }
+
+  function readEntityPlain(entity) {
+    if (!entity) return null;
+    if (typeof entity.json === "function") return clonePlainJson(entity.json());
+    if (entity.observer && typeof entity.observer.json === "function") return clonePlainJson(entity.observer.json());
+    return null;
+  }
+
+  function readActiveScene() {
+    const globals = window.editor && window.editor.api && window.editor.api.globals;
+    const entitiesApi = globals && globals.entities;
+    if (!entitiesApi || !entitiesApi.root || typeof entitiesApi.list !== "function") return null;
+    const id = getActiveSceneId();
+    if (!id) return null;
+    const entities = {};
+    for (const entity of entitiesApi.list()) {
+      const data = readEntityPlain(entity);
+      if (data && data.resource_id) {
+        entities[String(data.resource_id)] = data;
+      }
+    }
+    const settingsApi = globals.settings && globals.settings.scene;
+    const settings = settingsApi && typeof settingsApi.json === "function"
+      ? clonePlainJson(settingsApi.json()) || {}
+      : {};
+    return {
+      id,
+      name: getActiveSceneName() || "Scene",
+      active: true,
+      settings,
+      entities
+    };
+  }
+
+  function listProjectScenesIfSupported() {
+    if (!window.editor || typeof window.editor.call !== "function") return Promise.resolve(null);
+    if (!window.editor.methods || typeof window.editor.methods.has !== "function" || !window.editor.methods.has("scenes:list")) {
+      return Promise.resolve(null);
+    }
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(null), 5000);
+      try {
+        window.editor.call(
+          "scenes:list",
+          (list) => {
+            clearTimeout(timer);
+            if (!Array.isArray(list)) { resolve(null); return; }
+            resolve(list.map((item) => ({
+              id: String(item.id),
+              uniqueId: item.uniqueId !== undefined ? String(item.uniqueId) : undefined,
+              name: String(item.name || "Scene"),
+              modified: item.modified ? String(item.modified) : null
+            })));
+          },
+          () => {
+            clearTimeout(timer);
+            resolve(null);
+          }
+        );
+      } catch {
+        clearTimeout(timer);
+        resolve(null);
+      }
+    });
+  }
+
+  async function workspaceSnapshot() {
     if (!window.editor || !window.editor.api || !window.editor.api.globals) {
       throw new Error("Workspace operations require a ready PlayCanvas Editor target.");
     }
-    return {
+    const result = {
       assets: window.editor.api.globals.assets.list().map(readAsset)
     };
+    const activeScene = readActiveScene();
+    if (activeScene) result.activeScene = activeScene;
+    const scenes = await listProjectScenesIfSupported();
+    if (scenes) result.scenes = scenes;
+    return result;
   }
 
-  function scheduleWorkspaceSync() {
+  async function withWorkspaceMutationSuppression(fn) {
+    workspaceMutationDepth += 1;
+    try {
+      return await fn();
+    } finally {
+      workspaceMutationDepth = Math.max(0, workspaceMutationDepth - 1);
+    }
+  }
+
+  function emitWorkspaceDelta(delta) {
+    window.postMessage({
+      channel: CHANNEL,
+      side: "main",
+      type: "workspace-delta",
+      delta
+    }, "*");
+  }
+
+  function flushAssetDelta() {
+    workspaceSyncTimer = null;
+    if (!window.editor?.api?.globals?.assets) return;
+    const assetsApi = window.editor.api.globals.assets;
+    const upsertedAssets = [];
+    for (const id of dirtyAssetIds) {
+      if (removedAssetIds.has(id)) continue;
+      const asset = assetsApi.get(Number(id));
+      if (asset) upsertedAssets.push(readAsset(asset));
+    }
+    const removed = [...removedAssetIds];
+    dirtyAssetIds.clear();
+    removedAssetIds.clear();
+    if (!upsertedAssets.length && !removed.length) return;
+    emitWorkspaceDelta({
+      upsertedAssets,
+      removedAssetIds: removed
+    });
+  }
+
+  function scheduleAssetDelta(assetId, removed = false) {
+    if (workspaceMutationDepth > 0) return;
+    if (assetId !== undefined && assetId !== null) {
+      const id = String(assetId);
+      if (removed) {
+        dirtyAssetIds.delete(id);
+        removedAssetIds.add(id);
+      } else {
+        removedAssetIds.delete(id);
+        dirtyAssetIds.add(id);
+      }
+    }
     if (workspaceSyncTimer) clearTimeout(workspaceSyncTimer);
-    workspaceSyncTimer = setTimeout(() => {
-      workspaceSyncTimer = null;
-      void daemonRequest("/workspace/sync", "POST", {}, 60000).catch(() => undefined);
-    }, 250);
+    workspaceSyncTimer = setTimeout(flushAssetDelta, 300);
+  }
+
+  function flushSceneDelta() {
+    sceneSyncTimer = null;
+    if (pointerDownActive && Date.now() - sceneInteractionHoldStartedAt < 5000) {
+      sceneSyncTimer = setTimeout(flushSceneDelta, 400);
+      return;
+    }
+    sceneInteractionHoldStartedAt = 0;
+    const sceneId = getActiveSceneId();
+    const globals = window.editor?.api?.globals;
+    if (!sceneId || !globals?.entities?.root) {
+      dirtyEntityIds.clear();
+      removedEntityIds.clear();
+      sceneSettingsDirty = false;
+      fullSceneDirty = false;
+      return;
+    }
+    if (fullSceneDirty) {
+      dirtyEntityIds.clear();
+      removedEntityIds.clear();
+      sceneSettingsDirty = false;
+      fullSceneDirty = false;
+      const activeScene = readActiveScene();
+      if (activeScene) emitWorkspaceDelta({ activeScene });
+      return;
+    }
+    const upsertedEntities = {};
+    for (const id of dirtyEntityIds) {
+      if (removedEntityIds.has(id)) continue;
+      const entity = globals.entities.get(id);
+      const plain = readEntityPlain(entity);
+      if (plain && plain.resource_id) upsertedEntities[String(plain.resource_id)] = plain;
+    }
+    const removed = [...removedEntityIds];
+    const includeSettings = sceneSettingsDirty;
+    dirtyEntityIds.clear();
+    removedEntityIds.clear();
+    sceneSettingsDirty = false;
+    if (!Object.keys(upsertedEntities).length && !removed.length && !includeSettings) return;
+    const sceneDelta = {
+      sceneId,
+      sceneName: getActiveSceneName() || "Scene",
+      upsertedEntities,
+      removedEntityIds: removed
+    };
+    if (includeSettings && globals.settings?.scene?.json) {
+      sceneDelta.settings = clonePlainJson(globals.settings.scene.json()) || {};
+    }
+    emitWorkspaceDelta({ sceneDelta });
+  }
+
+  function scheduleSceneDelta(options = {}) {
+    if (workspaceMutationDepth > 0) return;
+    if (options.full) fullSceneDirty = true;
+    if (options.settings) sceneSettingsDirty = true;
+    if (options.entityId) {
+      const id = String(options.entityId);
+      if (options.removed) {
+        dirtyEntityIds.delete(id);
+        removedEntityIds.add(id);
+      } else {
+        removedEntityIds.delete(id);
+        dirtyEntityIds.add(id);
+      }
+    }
+    if (!sceneInteractionHoldStartedAt) sceneInteractionHoldStartedAt = Date.now();
+    if (sceneSyncTimer) clearTimeout(sceneSyncTimer);
+    sceneSyncTimer = setTimeout(flushSceneDelta, 800);
   }
 
   function installWorkspaceEvents() {
-    if (workspaceEventsInstalled || !window.editor?.api?.globals?.assets) return;
-    const assets = window.editor.api.globals.assets;
-    workspaceEventsInstalled = true;
-    const observe = (asset) => {
-      if (!asset || typeof asset.on !== "function") return;
-      for (const event of ["file:hash:set", "file:filename:set", "path:set", "name:set"]) {
-        try { asset.on(event, scheduleWorkspaceSync); } catch { /* optional observer event */ }
+    const globals = window.editor?.api?.globals;
+    if (globals?.assets && !workspaceEventsInstalled) {
+      const assets = globals.assets;
+      workspaceEventsInstalled = true;
+      const observeAsset = (asset) => {
+        if (!asset || typeof asset.on !== "function" || observedAssets.has(asset)) return;
+        observedAssets.add(asset);
+        const id = () => safeGetEditorValue(asset, "id");
+        const target = asset.observer && typeof asset.observer.on === "function" ? asset.observer : asset;
+        try {
+          target.on("*:set", (path) => {
+            if (!path) return;
+            if (path.startsWith("thumbnails") || path === "has_thumbnail" || path === "file.url") return;
+            scheduleAssetDelta(id(), false);
+          });
+          target.on("*:unset", (path) => {
+            if (!path || path.startsWith("thumbnails")) return;
+            scheduleAssetDelta(id(), false);
+          });
+          target.on("*:insert", () => scheduleAssetDelta(id(), false));
+          target.on("*:remove", () => scheduleAssetDelta(id(), false));
+          target.on("*:move", () => scheduleAssetDelta(id(), false));
+        } catch {
+          for (const event of ["file:hash:set", "file:filename:set", "path:set", "name:set"]) {
+            try { asset.on(event, () => scheduleAssetDelta(id(), false)); } catch { /* optional */ }
+          }
+        }
+      };
+      for (const asset of assets.list()) observeAsset(asset);
+      try {
+        assets.on("add", (asset) => {
+          observeAsset(asset);
+          scheduleAssetDelta(safeGetEditorValue(asset, "id"), false);
+        });
+      } catch { /* optional */ }
+      try {
+        assets.on("remove", (asset) => {
+          scheduleAssetDelta(safeGetEditorValue(asset, "id"), true);
+        });
+      } catch { /* optional */ }
+      try {
+        assets.on("move", (asset) => {
+          scheduleAssetDelta(safeGetEditorValue(asset, "id"), false);
+        });
+      } catch { /* optional */ }
+      try {
+        assets.on("load:all", () => {
+          for (const asset of assets.list()) observeAsset(asset);
+          if (workspaceMutationDepth === 0) {
+            void daemonRequest("/workspace/sync", "POST", {}, 60000).catch(() => undefined);
+          }
+        });
+      } catch { /* optional */ }
+    }
+
+    if (globals?.entities && typeof globals.entities.list === "function" && !sceneEventsInstalled) {
+      sceneEventsInstalled = true;
+      const entities = globals.entities;
+      const observeEntity = (entity) => {
+        if (!entity || observedEntities.has(entity)) return;
+        const target = entity.observer && typeof entity.observer.on === "function"
+          ? entity.observer
+          : typeof entity.on === "function" ? entity : null;
+        if (!target) return;
+        observedEntities.add(entity);
+        const id = () => safeGetEditorValue(entity, "resource_id");
+        for (const ev of ["*:set", "*:unset", "*:insert", "*:remove", "*:move"]) {
+          try { target.on(ev, () => scheduleSceneDelta({ entityId: id() })); } catch { /* optional */ }
+        }
+      };
+      for (const entity of entities.list()) observeEntity(entity);
+      if (typeof entities.on === "function") {
+        try {
+          entities.on("add", (entity) => {
+            observeEntity(entity);
+            scheduleSceneDelta({ entityId: safeGetEditorValue(entity, "resource_id") });
+          });
+        } catch { /* optional */ }
+        try {
+          entities.on("remove", (entity) => {
+            scheduleSceneDelta({ entityId: safeGetEditorValue(entity, "resource_id"), removed: true });
+          });
+        } catch { /* optional */ }
       }
-    };
-    for (const asset of assets.list()) observe(asset);
-    for (const event of ["add", "remove", "move", "load:all"]) {
-      try { assets.on(event, (asset) => { observe(asset); scheduleWorkspaceSync(); }); } catch { /* optional assets event */ }
+      const sceneSettings = globals.settings?.scene;
+      const settingsTarget = sceneSettings?.observer && typeof sceneSettings.observer.on === "function"
+        ? sceneSettings.observer
+        : typeof sceneSettings?.on === "function" ? sceneSettings : null;
+      if (settingsTarget) {
+        for (const ev of ["*:set", "*:unset", "*:insert", "*:remove", "*:move"]) {
+          try { settingsTarget.on(ev, () => scheduleSceneDelta({ settings: true })); } catch { /* optional */ }
+        }
+      }
+      if (window.editor && typeof window.editor.on === "function") {
+        try {
+          window.editor.on("scene:load", () => {
+            for (const entity of entities.list()) observeEntity(entity);
+            scheduleSceneDelta({ full: true });
+          });
+          window.editor.on("scene:name", () => {
+            scheduleSceneDelta({ settings: true });
+          });
+        } catch { /* optional */ }
+      }
     }
   }
 
   async function readAssetText(params) {
     const asset = requireEditorAsset(params.assetId);
-    if (asset.get("type") !== "script") {
-      throw new Error("Asset is not a script: " + params.assetId);
+    const type = String(asset.get("type") || "");
+    if (!TEXT_ASSET_TYPES.has(type)) {
+      throw new Error("Asset is not a text asset: " + params.assetId);
     }
     const { response, filename } = await fetchAssetFile(asset);
     return {
@@ -717,7 +1065,7 @@
     };
   }
 
-  async function writeAssetFile(params) {
+  async function writeAssetFileInner(params) {
     const asset = requireEditorAsset(params.assetId);
     if (asset.get("type") === "script") {
       throw new Error("Use the script text writer for script assets: " + params.assetId);
@@ -757,7 +1105,11 @@
     };
   }
 
-  async function renameAsset(params) {
+  function writeAssetFile(params) {
+    return withWorkspaceMutationSuppression(() => writeAssetFileInner(params));
+  }
+
+  async function renameAssetInner(params) {
     const asset = requireEditorAsset(params.assetId);
     const assets = window.editor.api.globals.assets;
     const folderResult = await resolveFolder(assets, params);
@@ -781,15 +1133,31 @@
     return { asset: readAsset(asset), createdFolders: folderResult.created.map(readAsset) };
   }
 
-  async function writeScriptText(params) {
+  function renameAsset(params) {
+    return withWorkspaceMutationSuppression(() => renameAssetInner(params));
+  }
+
+  function textMimeForAssetType(type) {
+    if (type === "script") return "text/javascript";
+    if (type === "css") return "text/css";
+    if (type === "html") return "text/html";
+    if (type === "json") return "application/json";
+    return "text/plain";
+  }
+
+  async function writeAssetTextInner(params, requireScript = false) {
     const asset = requireEditorAsset(params.assetId);
-    if (asset.get("type") !== "script") {
+    const type = String(asset.get("type") || "");
+    if (requireScript && type !== "script") {
       throw new Error("Asset is not a script: " + params.assetId);
     }
-    const filename = asset.get("file.filename") || asset.get("name");
+    if (!TEXT_ASSET_TYPES.has(type)) {
+      throw new Error("Asset is not a text asset: " + params.assetId);
+    }
+    const filename = String(params.filename || asset.get("file.filename") || asset.get("name") || "asset.txt");
     const form = new FormData();
     form.append("filename", filename);
-    form.append("file", new Blob([String(params.text || "")], { type: "text/javascript" }), filename);
+    form.append("file", new Blob([String(params.text || "")], { type: textMimeForAssetType(type) }), filename);
     const branchId =
       (window.config && window.config.self && window.config.self.branch && window.config.self.branch.id) ||
       (window.config && window.config.branch && window.config.branch.id);
@@ -807,19 +1175,279 @@
       throw new Error(body.error || "Failed to update script asset.");
     }
 
-    const parseResult = await new Promise((resolve, reject) => {
-      window.editor.call("scripts:parse", asset.observer, (error, data) => {
-        if (error) reject(new Error(String(error)));
-        else resolve(data || {});
+    let scripts = {};
+    let parsed = false;
+    if (type === "script" && window.editor && typeof window.editor.call === "function") {
+      const parseResult = await new Promise((resolve, reject) => {
+        window.editor.call("scripts:parse", asset.observer, (error, data) => {
+          if (error) reject(new Error(String(error)));
+          else resolve(data || {});
+        });
       });
-    });
+      scripts = parseResult.scripts || {};
+      parsed = true;
+    }
     return {
       assetId: String(asset.get("id")),
       filename,
-      parsed: true,
-      scripts: parseResult.scripts || {},
+      parsed,
+      scripts,
       response: body
     };
+  }
+
+  function writeScriptText(params) {
+    return withWorkspaceMutationSuppression(() => writeAssetTextInner(params, true));
+  }
+
+  function writeAssetText(params) {
+    return withWorkspaceMutationSuppression(() => writeAssetTextInner(params, false));
+  }
+
+  function createDataAsset(params) {
+    return withWorkspaceMutationSuppression(async () => {
+      if (!window.editor || !window.editor.api || !window.editor.api.globals) {
+        throw new Error("Workspace operations require a ready PlayCanvas Editor target.");
+      }
+      const type = String(params.type || "");
+      if (!DATA_JSON_ASSET_TYPES.has(type)) {
+        throw new Error("Unsupported structured JSON asset type: " + type);
+      }
+      const name = String(params.name || "New Asset");
+      const assets = window.editor.api.globals.assets;
+      const folderResult = await resolveFolder(assets, params);
+      const defaultData = window.editor.api.globals.schema?.assets?.getDefaultData?.(type) || {};
+      const incomingData = params.data && typeof params.data === "object" && !Array.isArray(params.data)
+        ? params.data
+        : {};
+      const mergedData = { ...defaultData, ...incomingData };
+      const asset = await assets.upload(
+        {
+          name,
+          type,
+          folder: folderResult.folder || undefined,
+          preload: params.preload !== false,
+          tags: Array.isArray(params.tags) ? params.tags : [],
+          data: mergedData
+        },
+        null
+      );
+      if (asset && typeof asset.set === "function") {
+        if (Array.isArray(params.tags)) asset.set("tags", params.tags);
+        if (typeof params.preload === "boolean") asset.set("preload", params.preload);
+        for (const [key, value] of Object.entries(incomingData)) {
+          asset.set("data." + key, value);
+        }
+      }
+      return {
+        asset: readAsset(asset),
+        createdFolders: folderResult.created.map(readAsset)
+      };
+    });
+  }
+
+  function patchAssetData(params) {
+    return withWorkspaceMutationSuppression(async () => {
+      const asset = requireEditorAsset(params.assetId);
+      const type = String(asset.get("type") || "");
+      if (!DATA_JSON_ASSET_TYPES.has(type)) {
+        throw new Error("Asset is not a structured JSON asset: " + params.assetId);
+      }
+      if (typeof params.name === "string" && params.name && params.name !== asset.get("name")) {
+        await new Promise((resolve, reject) => {
+          const error = window.editor.call("assets:rename", asset.observer, params.name, (callbackError) => {
+            if (callbackError) reject(new Error(String(callbackError)));
+            else resolve();
+          });
+          if (error) reject(new Error(String(error)));
+        });
+      }
+      if (Object.prototype.hasOwnProperty.call(params, "folder")) {
+        const assets = window.editor.api.globals.assets;
+        const folderResult = await resolveFolder(assets, params);
+        if (typeof window.editor.call === "function") {
+          const error = window.editor.call(
+            "assets:fs:move",
+            [asset.observer],
+            folderResult.folder ? folderResult.folder.observer : null
+          );
+          if (error) throw new Error(String(error));
+        }
+      }
+      if (typeof params.preload === "boolean") asset.set("preload", params.preload);
+      if (Array.isArray(params.tags)) asset.set("tags", params.tags);
+      for (const path of Array.isArray(params.unsets) ? params.unsets : []) {
+        if (typeof asset.unset === "function") asset.unset("data." + path);
+        else if (asset.observer && typeof asset.observer.unset === "function") asset.observer.unset("data." + path);
+      }
+      for (const change of Array.isArray(params.sets) ? params.sets : []) {
+        if (change && typeof change.path === "string") {
+          asset.set("data." + change.path, change.value);
+        }
+      }
+      return { asset: readAsset(asset) };
+    });
+  }
+
+  function deleteAssets(params) {
+    return withWorkspaceMutationSuppression(async () => {
+      if (!window.editor || !window.editor.api || !window.editor.api.globals) {
+        throw new Error("Workspace operations require a ready PlayCanvas Editor target.");
+      }
+      const assets = window.editor.api.globals.assets;
+      const ids = Array.isArray(params.assetIds) ? params.assetIds : [params.assetId];
+      const found = [];
+      const deletedIds = [];
+      for (const rawId of ids) {
+        if (rawId === undefined || rawId === null) continue;
+        const asset = assets.get(Number(rawId));
+        if (asset) {
+          found.push(asset);
+          deletedIds.push(String(asset.get("id")));
+        }
+      }
+      if (!found.length) return { deletedIds: [] };
+      if (typeof assets.delete === "function") {
+        await assets.delete(found);
+      } else if (typeof window.editor.call === "function") {
+        window.editor.call("assets:delete", found.map((item) => item.observer || item));
+      } else {
+        throw new Error("Editor assets delete API is unavailable.");
+      }
+      return { deletedIds };
+    });
+  }
+
+  async function readScene(params) {
+    if (!window.editor || !window.editor.api || !window.editor.api.globals) {
+      throw new Error("Scene operations require a ready PlayCanvas Editor target.");
+    }
+    const requestedId = String(params.sceneId || getActiveSceneId() || "");
+    if (!requestedId) throw new Error("sceneId is required.");
+    const activeId = getActiveSceneId();
+    if (activeId && requestedId === activeId) {
+      const activeScene = readActiveScene();
+      if (activeScene) return activeScene;
+    }
+    if (typeof window.editor.call !== "function") {
+      throw new Error("Editor scenes:get method is unavailable.");
+    }
+    const data = await new Promise((resolve, reject) => {
+      window.editor.call("scenes:get", requestedId, (error, sceneData) => {
+        if (error) reject(new Error(typeof error === "string" ? error : JSON.stringify(error)));
+        else resolve(sceneData);
+      });
+    });
+    if (!data || typeof data !== "object") {
+      throw new Error("Scene not found: " + requestedId);
+    }
+    return {
+      id: String(data.id || requestedId),
+      name: String(data.name || "Scene"),
+      active: false,
+      modified: data.modified ? String(data.modified) : null,
+      settings: clonePlainJson(data.settings) || {},
+      entities: clonePlainJson(data.entities) || {}
+    };
+  }
+
+  function patchScene(params) {
+    return withWorkspaceMutationSuppression(async () => {
+      const globals = window.editor && window.editor.api && window.editor.api.globals;
+      if (!globals || !globals.entities || !globals.entities.root) {
+        throw new Error("Active scene is not loaded in the PlayCanvas Editor.");
+      }
+      const activeId = getActiveSceneId();
+      if (params.sceneId && activeId && String(params.sceneId) !== activeId) {
+        throw new Error(`Scene ${params.sceneId} is not active in the Editor (active: ${activeId}).`);
+      }
+      if (typeof params.name === "string" && params.name.trim()) {
+        const nextName = params.name.trim();
+        const currentRealtimeScene = globals.realtime && globals.realtime.scenes && globals.realtime.scenes.current;
+        if (currentRealtimeScene && currentRealtimeScene.data && typeof window.editor.call === "function") {
+          const oldName = currentRealtimeScene.data.name || "";
+          if (oldName !== nextName) {
+            window.editor.call("realtime:scene:op", { p: ["name"], od: oldName, oi: nextName });
+            if (typeof window.editor.emit === "function") window.editor.emit("scene:name", nextName);
+          }
+        }
+        if (window.config && window.config.scene) window.config.scene.name = nextName;
+      }
+      const entities = globals.entities;
+
+      for (const item of Array.isArray(params.creates) ? params.creates : []) {
+        if (!item || !item.entity) continue;
+        const data = { ...item.entity, children: [] };
+        if (typeof data.parent === "string") {
+          const parent = entities.get(data.parent);
+          if (!parent) throw new Error("Parent entity not found: " + data.parent);
+          data.parent = parent;
+        } else if (!data.parent) {
+          data.parent = entities.root;
+        }
+        const options = { history: true, select: false };
+        if (Number.isInteger(item.index) && item.index >= 0) options.index = item.index;
+        const created = entities.create(data, options);
+        if (!created) throw new Error("Failed to create entity " + (data.resource_id || data.name || ""));
+      }
+
+      for (const move of Array.isArray(params.reparents) ? params.reparents : []) {
+        const entity = entities.get(move.id);
+        const parent = entities.get(move.parent);
+        if (!entity || !parent) continue;
+        if (typeof entity.reparent === "function") {
+          entity.reparent(parent, move.index, { history: true, preserveTransform: false });
+        } else if (typeof entities.reparent === "function") {
+          await entities.reparent([{ entity, parent, index: move.index }], {
+            history: true,
+            preserveTransform: false
+          });
+        }
+      }
+
+      for (const update of Array.isArray(params.updates) ? params.updates : []) {
+        const entity = entities.get(update.id);
+        if (!entity) continue;
+        for (const comp of Array.isArray(update.removedComponents) ? update.removedComponents : []) {
+          if (entity.get("components." + comp)) entity.removeComponent(comp);
+        }
+        if (update.addedComponents && typeof update.addedComponents === "object") {
+          for (const [comp, compData] of Object.entries(update.addedComponents)) {
+            if (entity.get("components." + comp)) entity.set("components." + comp, compData || {});
+            else entity.addComponent(comp, compData || {});
+          }
+        }
+        for (const path of Array.isArray(update.unsets) ? update.unsets : []) {
+          if (typeof entity.unset === "function") entity.unset(path);
+          else if (entity.observer && typeof entity.observer.unset === "function") entity.observer.unset(path);
+        }
+        for (const change of Array.isArray(update.sets) ? update.sets : []) {
+          if (change && typeof change.path === "string") entity.set(change.path, change.value);
+        }
+      }
+
+      const deleteIds = Array.isArray(params.deletes) ? params.deletes : [];
+      if (deleteIds.length) {
+        const toDelete = deleteIds.map((id) => entities.get(id)).filter(Boolean);
+        if (toDelete.length) {
+          if (typeof entities.delete === "function") await entities.delete(toDelete);
+          else for (const entity of toDelete) entities.remove(entity);
+        }
+      }
+
+      const sceneSettings = globals.settings && globals.settings.scene;
+      if (sceneSettings) {
+        for (const path of Array.isArray(params.settingsUnsets) ? params.settingsUnsets : []) {
+          if (typeof sceneSettings.unset === "function") sceneSettings.unset(path);
+          else if (sceneSettings.observer && typeof sceneSettings.observer.unset === "function") sceneSettings.observer.unset(path);
+        }
+        for (const change of Array.isArray(params.settingsSets) ? params.settingsSets : []) {
+          if (change && typeof change.path === "string") sceneSettings.set(change.path, change.value);
+        }
+      }
+
+      return { scene: readActiveScene() };
+    });
   }
 
   function plainAssetJson(asset) {
@@ -1312,7 +1940,7 @@
     return { affected };
   }
 
-  async function uploadAsset(params) {
+  async function uploadAssetInner(params) {
     if (!params.base64) throw new Error("base64 file content is required.");
     if (!params.name) throw new Error("name is required.");
 
@@ -1337,6 +1965,10 @@
       asset: readAsset(asset),
       createdFolders: folderResult.created.map(readAsset)
     };
+  }
+
+  function uploadAsset(params) {
+    return withWorkspaceMutationSuppression(() => uploadAssetInner(params));
   }
 
   function focusViewport(params) {
@@ -1436,6 +2068,12 @@
     if (method === "bridge:writeAssetFile") return writeAssetFile(params || {});
     if (method === "bridge:renameAsset") return renameAsset(params || {});
     if (method === "bridge:writeScriptText") return writeScriptText(params || {});
+    if (method === "bridge:writeAssetText") return writeAssetText(params || {});
+    if (method === "bridge:createDataAsset") return createDataAsset(params || {});
+    if (method === "bridge:patchAssetData") return patchAssetData(params || {});
+    if (method === "bridge:deleteAssets") return deleteAssets(params || {});
+    if (method === "bridge:readScene") return readScene(params || {});
+    if (method === "bridge:patchScene") return patchScene(params || {});
     throw new Error(`Unknown bridge method: ${method}`);
   }
 

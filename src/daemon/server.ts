@@ -1,6 +1,7 @@
 import { ProcessingManager } from "../processing/manager.js";
 import http from "node:http";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { WebSocketServer } from "ws";
 import type { WebSocket } from "ws";
 import {
@@ -15,7 +16,7 @@ import {
   type FrontendServer,
 } from "../frontend/server.js";
 import { TargetRegistry } from "./target-registry.js";
-import { WorkspaceManager } from "../workspace/manager.js";
+import { WorkspaceManager, type WorkspaceDelta } from "../workspace/manager.js";
 import { BuilderManager } from "../builder/manager.js";
 import {
   fail,
@@ -50,6 +51,12 @@ type IncomingWsMessage =
   | {
       type: "target:update";
       target?: Partial<TargetInfo> & { clientId: string };
+    }
+  | {
+      type: "workspace:delta";
+      clientId?: string;
+      tabId?: number;
+      delta?: WorkspaceDelta;
     }
   | ExtensionResponse;
 
@@ -181,6 +188,7 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
 
   const workspace = new WorkspaceManager({
     rootDir: options.workspaceRoot || process.cwd(),
+    settingsPath: join(options.frontendRootDir || CONFIG_DIR, "workspace-settings.json"),
     requestTarget: (target, method, params = {}, timeoutMs = 15000) => sendToTarget({
       target,
       method,
@@ -289,11 +297,41 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
             port: actualPort,
             workspaceRoot: workspace.rootDir,
             targetCount: registry.list().filter((item) => item.connected).length,
+            eagerMaxMb: workspace.getSettings().eagerMaxMb,
           },
           target: target || null,
           workspace: workspace.statusForTarget(target),
           frontend: await frontend.status() as unknown as JsonValue,
         }));
+        return;
+      }
+
+      if (url.pathname === "/workspace/settings" && req.method === "GET") {
+        if (!requireToken(req)) {
+          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
+          return;
+        }
+        writeJson(res, 200, ok(workspace.getSettings() as unknown as JsonValue));
+        return;
+      }
+
+      if (url.pathname === "/workspace/settings" && req.method === "POST") {
+        if (!requireToken(req)) {
+          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
+          return;
+        }
+        const body = await readBody(req);
+        if (!isJsonObject(body) || body.eagerMaxMb === undefined) {
+          writeJson(res, 400, fail("INVALID_REQUEST", "workspace settings requires eagerMaxMb (1..10)."));
+          return;
+        }
+        const rawMb = Number(body.eagerMaxMb);
+        if (!Number.isFinite(rawMb) || rawMb < 1 || rawMb > 10) {
+          writeJson(res, 400, fail("INVALID_REQUEST", "eagerMaxMb must be between 1 and 10."));
+          return;
+        }
+        const updated = await workspace.updateSettings({ eagerMaxMb: rawMb });
+        writeJson(res, 200, ok(updated as unknown as JsonValue));
         return;
       }
 
@@ -477,6 +515,21 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
           if (result.connected || result.changed) {
             void workspace.handleTarget(result.info).catch((error) => {
               log(`workspace initialization failed for ${result.info.id}: ${String(error)}`);
+            });
+          }
+          return;
+        }
+
+        if (message.type === "workspace:delta" && message.delta && typeof message.delta === "object") {
+          const selector = Number.isInteger(message.tabId)
+            ? `tab:${message.tabId}`
+            : message.clientId
+              ? `client:${message.clientId}`
+              : "";
+          const resolved = selector ? registry.resolve(selector) : null;
+          if (resolved && resolved.ok && resolved.target.ws === ws) {
+            void workspace.handleDelta(resolved.target.info, message.delta).catch((error) => {
+              log(`workspace delta failed for ${resolved.target.info.id}: ${String(error)}`);
             });
           }
           return;

@@ -61,6 +61,8 @@ pcbridge help script
 pcbridge help store
 pcbridge help target
 pcbridge help workspace
+pcbridge help processing
+pcbridge help import
 pcbridge help frontend
 pcbridge help entity
 pcbridge help asset
@@ -76,23 +78,53 @@ Workspace layout:
 
 ```text
 <workspace root>/<projectId>-<projectName>/
-  pcbridge.project.json # project metadata and agent-readable asset catalog
-  assets/       # collision-safe projection of the remote folder tree
-  tmp/          # agent files, builds, cache, conflicts, captures, and deletion quarantine; never synchronized
-  .pcbridge/    # internal state and object cache; do not edit
+  pcbridge.project.json # project metadata, scenes list, and agent-readable asset catalog (with meta summaries)
+  scenes/       # active writable .scene.json plus read-only (0o444) mirrors of inactive scenes
+  assets/       # collision-safe projection of the remote folder tree (text, *.<type>.json, pulled binaries)
+  tmp/          # agent files, builds, conflicts, captures, and local/remote deletion trash; never synchronized
+  .pcbridge/    # internal sync state, 3-way JSON baselines, and object cache; do not edit
 ```
 
-Prefer local operations for file-backed Assets. Edit scripts under `assets/`; create files and
-folders there to upload them through PlayCanvas processing; and rename or move local files to keep
-the same remote Asset ID. Deleting a local file only clears its local cache and does not delete the
-remote Asset. Use `asset delete --id <id>` only for intentional remote deletion. Scripts are eager,
-while binary contents are lazy; use `pcbridge workspace pull --target editor:<sceneId> --asset
-<assetId>` before modifying a missing remote binary. Generated GLB Model/Container/material Assets
-and font atlases are lazy, read-only projections. Edit the source Asset; derivative edits or moves
-are quarantined and restored from `.pcbridge/objects`, never uploaded.
+Inspect local files first (0 RPC) to understand the project: read `pcbridge.project.json` (which
+includes `scenes[]`, full Asset IDs/paths, and lazy binary `meta` such as texture dimensions), read
+`scenes/<name>.<sceneId>.scene.json` (DFS-ordered `entities` + `settings`), and search `scenes/` and
+`assets/` with `rg` instead of issuing `entity list` / `asset list` / `eval` RPCs for static
+inspection.
 
-After local writes, wait for the watcher and poll `workspace status` until `synced`. A brief
-`local-change` is normal. If it does not converge, run one `workspace sync`, inspect status and
+Synchronization is event-driven via WebSocket `workspace:delta` pushes and targeted local `fs.watch`
+dirty paths (zero idle polling):
+- **Tier 1 (Eager bidirectional)**: Text assets (`script`, `text`, `json`, `html`, `css`, `shader`)
+  and structured JSON data assets (`material`, `template`, `cubemap`, `sprite`, `animstategraph`,
+  `bundle`, projected as `<name>.<type>.json`) up to the direct-sync limit (default **2 MB**,
+  adjustable **1–10 MB** via the extension popup **Direct sync limit** slider or
+  `pcbridge workspace settings --eager-max-mb <1..10>`) sync automatically in both directions.
+- **Scenes (`scenes/<name>.<sceneId>.scene.json`)**: The active Editor scene carries
+  `"$pcbridge": { "id": "...", "kind": "scene", "active": true }` (`0o644` writable, automatic
+  `parent <-> children` reconciliation). Inactive scenes carry
+  `"$pcbridge": { "id": "...", "kind": "scene", "active": false, "readonly": true }` (`0o444`
+  read-only); run `pcbridge scene open --target editor:<currentSceneId> --id <targetSceneId>` before
+  editing an inactive scene.
+- **Property-path 3-way merge**: Structured JSON assets and the active `.scene.json` merge against
+  `.pcbridge/baselines/` at property/entity granularity so non-overlapping local and Editor edits
+  merge cleanly; same-path conflicts write `.local`, `.remote`, and `.conflict.json` under
+  `tmp/conflicts/`.
+- **Create, rename, and delete semantics**: Creating files under `assets/` (including new
+  `*.<type>.json` structured assets) creates matching remote folders/Assets and writes back
+  `$pcbridge.id`. Renaming or moving local files preserves the Asset ID via `$pcbridge.id`, file
+  inode, or content hash. **Deleting a local Tier 1 eagerly synced file backs it up to
+  `tmp/trash/local/` AND deletes the remote PlayCanvas Asset**; delete Tier 1 files only when remote
+  deletion is intended. Deleting a pulled Tier 2 lazy binary (images, models, audio, fonts, or
+  over-limit files; pull missing ones with `pcbridge workspace pull --target editor:<sceneId>
+  --asset <assetId>`) only evicts the local cache (`pcbridge asset delete --id <id>` deletes remote
+  Tier 2 assets).
+- **Derived assets**: Binary derivatives (`container`, `model`, generated font atlases) remain lazy
+  and read-only (`0o444`), whereas structured JSON assets linked to a source model (such as
+  FBX/GLB-imported `material` files) are writable (`0o644`) and sync bidirectionally while keeping
+  `$pcbridge.sourceAssetId` for provenance.
+
+After local writes, allow ~0.5–1s for the watcher debounce and poll `workspace status` until
+`synced` (do not mix local file saves and CLI write RPCs on the same asset/scene simultaneously). A
+brief `local-change` is normal. If it does not converge, run one `workspace sync`, inspect status and
 `tmp/conflicts/`, and never overwrite a conflict automatically. Local file
 arguments must stay inside the selected project workspace. Do not use `--allow-external-path`
 unless the user explicitly asks to use a known external file.
@@ -112,10 +144,15 @@ values. CLI equivalents are
 `pcbridge builder start --target editor:<sceneId> --asset <id>` and
 `pcbridge builder status --job <jobId>`.
 
-Use structured commands for scene structure, Asset metadata, explicit transfers, and verification.
-For ordinary file-content edits, prefer the tracked file under `assets/`:
+Prefer local file edits for scripts, shaders, text, `*.material.json` / `*.template.json` data, and
+multi-property edits in the active `.scene.json`. Use structured commands for Editor pipelines
+(`scene open`, `template instantiate/create/overrides/apply`, `script parse`, `import`), explicit
+transfers, and live viewport/Launch verification:
 
 ```bash
+pcbridge workspace settings --eager-max-mb 2
+pcbridge scene list --target editor:<sceneId>
+pcbridge scene open --target editor:<sceneId> --id <otherSceneId>
 pcbridge entity list --target editor:<sceneId> --limit 50
 pcbridge entity create --target editor:<sceneId> --json ./entity.json
 pcbridge entity create-many --target editor:<sceneId> --json ./entities.json

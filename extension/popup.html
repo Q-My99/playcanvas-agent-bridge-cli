@@ -123,6 +123,24 @@
       .metric strong { display: block; font-size: 14px; }
       .metric span { color: var(--muted); display: block; font-size: 9px; margin-top: 2px; text-transform: uppercase; }
 
+      .slider-row { padding: 0 12px 10px; }
+      .slider-header { align-items: center; display: flex; justify-content: space-between; margin-bottom: 5px; }
+      .slider-header label { color: var(--muted); font-size: 11px; }
+      .slider-badge {
+        background: var(--surface-raised);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        color: var(--foreground);
+        padding: 1px 7px;
+      }
+      input[type="range"] {
+        accent-color: var(--accent);
+        cursor: pointer;
+        display: block;
+        margin: 0;
+        width: 100%;
+      }
+
       .note { color: var(--muted); margin: 0; padding: 0 12px 10px; }
       .note.error { color: var(--red); }
       .actions { display: grid; gap: 7px; grid-template-columns: 1fr 1fr; padding: 0 12px 12px; }
@@ -186,6 +204,13 @@
           <div class="metric"><strong id="metric-assets">—</strong><span>Assets</span></div>
           <div class="metric"><strong id="metric-lazy">—</strong><span>Lazy</span></div>
           <div class="metric"><strong id="metric-conflicts">—</strong><span>Conflicts</span></div>
+        </div>
+        <div class="slider-row">
+          <div class="slider-header">
+            <label for="eager-limit">Direct sync limit</label>
+            <span class="mono slider-badge" id="eager-limit-value">2 MB</span>
+          </div>
+          <input id="eager-limit" type="range" min="1" max="10" step="1" value="2">
         </div>
         <p class="note" id="workspace-note">Waiting for a ready Editor target.</p>
       </section>

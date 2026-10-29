@@ -147,6 +147,7 @@
     const allowed =
       (path === "/builder/jobs" && method === "POST") ||
       (path === "/workspace/sync" && method === "POST") ||
+      (path === "/workspace/settings" && (method === "GET" || method === "POST")) ||
       (/^\/processing\/(capabilities|begin|chunk|run|status|read|cancel|finish)$/.test(path) && method === "POST") ||
       (/^\/builder\/jobs\/[^/]+$/.test(path) && method === "GET");
     if (!allowed) throw new Error("Unsupported pcbridge browser request.");
@@ -204,6 +205,22 @@
 
     if (message.type === "daemon-request" && message.id) {
       void handleDaemonRequest(message);
+      return;
+    }
+
+    if (message.type === "workspace-delta" && message.delta) {
+      if (!stopped && ws && ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.send(JSON.stringify({
+            type: "workspace:delta",
+            clientId,
+            tabId: tabInfo.tabId,
+            delta: message.delta
+          }));
+        } catch {
+          // Reconnect loop handles broken sockets.
+        }
+      }
       return;
     }
 
@@ -370,6 +387,18 @@
     socket.addEventListener("open", () => {
       reconnectAttempt = 0;
       setConnectionState("connected");
+      requestRuntime({ type: "pcbridge:getWorkspaceSettings" })
+        .then(async (settings) => {
+          if (settings && settings.pendingDaemonSync && Number.isFinite(Number(settings.eagerMaxMb))) {
+            await callDaemon("/workspace/settings", "POST", { eagerMaxMb: Number(settings.eagerMaxMb) });
+            await requestRuntime({
+              type: "pcbridge:setWorkspaceSettings",
+              eagerMaxMb: Number(settings.eagerMaxMb),
+              pendingDaemonSync: false
+            });
+          }
+        })
+        .catch(() => undefined);
       sendTargetUpdate(true).catch((error) => {
         if (isExtensionContextInvalidated(error)) stopBridge();
       });

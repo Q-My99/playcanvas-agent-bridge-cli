@@ -45,9 +45,12 @@ bun test test/<name>.test.mjs
 
 ## Repository Map
 
-- `src/cli.ts`: CLI parsing, daemon, RPC handling, workspace/frontend orchestration.
+- `src/cli.ts`: CLI parsing, RPC handling, and workspace/frontend/processing command dispatch.
 - `src/config.ts`: shared version, ports, and local configuration paths.
 - `src/snippets.ts`: page-executed PlayCanvas operations used by structured commands.
+- `src/daemon/`: loopback HTTP/WebSocket daemon server and target/session management.
+- `src/workspace/`: event-driven bidirectional asset/scene sync (`manager.ts`) and canonical 3-way JSON merge (`json-sync.ts`).
+- `src/builder/`, `src/processing/`, `src/frontend/`: Tiny Builder S3 pipeline, bounded local asset conversion executor, and custom Editor frontend release manager.
 - `extension/main.js`: MAIN-world access to PlayCanvas page APIs.
 - `extension/isolated.js`: WebSocket and `postMessage` bridge.
 - `extension/service-worker.js`: tab metadata and generated extension configuration.
@@ -80,11 +83,19 @@ CLI -> daemon HTTP API -> extension WebSocket -> isolated script -> MAIN-world s
 
 - The daemon start directory is the workspace root. Keep each PlayCanvas project isolated in its
   generated project directory.
-- Source and standalone projections may be writable. Generated derived projections stay
-  read-only and content-addressed under `.pcbridge/objects`.
-- Preserve simultaneous local and remote changes as conflicts; never silently choose one side.
-- Quarantine confirmed remote deletions under the project trash area rather than mixing them with
-  content conflicts.
+- Synchronization is event-driven via WebSocket `workspace:delta` pushes and targeted `fs.watch`
+  dirty paths (no idle polling). Within the configurable 1–10 MB direct-sync limit (default 2 MB),
+  Tier 1 text assets and structured JSON data assets (`*.<type>.json`, including model-linked
+  materials carrying `$pcbridge.sourceAssetId`) plus the active scene (`scenes/*.scene.json`,
+  `$pcbridge.active: true`) are writable (`0o644`) and bidirectional. Inactive scenes and generated
+  binary derivatives (`container`, `model`, font atlases) stay read-only (`0o444`) and backed by
+  `.pcbridge/objects` or `.pcbridge/baselines`.
+- Structured JSON assets and the active `.scene.json` use property-path 3-way merge against
+  `.pcbridge/baselines/`; preserve conflicting edits to the same leaf property under
+  `tmp/conflicts/` and never silently choose one side.
+- Deleting a local Tier 1 eagerly synced file backs it up under `tmp/trash/local/` and deletes the
+  remote Asset; deleting a pulled Tier 2 lazy binary file only evicts local cache. Quarantine
+  confirmed remote deletions under `tmp/trash/remote/` rather than mixing them with conflicts.
 - Keep file inputs and generated outputs inside the selected project unless the user explicitly
   passes `--allow-external-path`.
 - Keep daemon and frontend servers loopback-only. Do not log session tokens, credentials, `.env`

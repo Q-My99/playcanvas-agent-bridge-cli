@@ -1,3 +1,30 @@
+function clampEagerMaxMb(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 2;
+  return Math.min(10, Math.max(1, Math.round(parsed)));
+}
+
+async function updateDaemonWorkspaceSettings(config, eagerMaxMb) {
+  if (!config || !config.token) return null;
+  try {
+    const host = config.host || "127.0.0.1";
+    const port = config.port || 17329;
+    const response = await fetch(`http://${host}:${port}/workspace/settings`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-PCBridge-Token": config.token
+      },
+      body: JSON.stringify({ eagerMaxMb })
+    });
+    if (!response.ok) return null;
+    const envelope = await response.json();
+    return envelope.ok ? envelope.data : null;
+  } catch {
+    return null;
+  }
+}
+
 async function loadConfig() {
   try {
     const response = await fetch(chrome.runtime.getURL("config.json"));
@@ -84,7 +111,7 @@ async function switchFrontend(active, url, custom, projectId) {
 }
 
 function renderStatus(status, context) {
-  const { isEditor, isLaunch, customMode, rememberedMode } = context;
+  const { isEditor, isLaunch, customMode, rememberedMode, sliderActive, fallbackEagerMaxMb } = context;
   const target = status && status.target;
   const workspace = status && status.workspace;
   const frontend = status && status.frontend;
@@ -99,6 +126,19 @@ function renderStatus(status, context) {
   const copyPath = document.getElementById("copy-path");
   const useCustom = document.getElementById("use-custom");
   const useOfficial = document.getElementById("use-official");
+  const eagerLimit = document.getElementById("eager-limit");
+  const eagerLimitValue = document.getElementById("eager-limit-value");
+
+  if (!sliderActive) {
+    const effectiveMb = clampEagerMaxMb(
+      (workspace && workspace.eagerMaxMb) ??
+      (status && status.daemon && status.daemon.eagerMaxMb) ??
+      fallbackEagerMaxMb ??
+      2
+    );
+    eagerLimit.value = String(effectiveMb);
+    eagerLimitValue.textContent = `${effectiveMb} MB`;
+  }
 
   const extensionVersion = chrome.runtime.getManifest().version;
   document.getElementById("version").textContent = status && status.daemon
@@ -245,7 +285,20 @@ async function main() {
     siteStatus.textContent = site.enabled ? "Enabled. Refresh Editor / Launch to connect." : "Disabled. Existing connections closed.";
   });
   const config = await loadConfig();
+  const storedWorkspaceSettings = await sendRuntimeMessage({ type: "pcbridge:getWorkspaceSettings" });
+  let fallbackEagerMaxMb = clampEagerMaxMb(storedWorkspaceSettings && storedWorkspaceSettings.eagerMaxMb);
   let status = await loadStatus(config, active && active.id);
+  if (status && storedWorkspaceSettings && storedWorkspaceSettings.pendingDaemonSync) {
+    const synced = await updateDaemonWorkspaceSettings(config, fallbackEagerMaxMb);
+    if (synced) {
+      await sendRuntimeMessage({
+        type: "pcbridge:setWorkspaceSettings",
+        eagerMaxMb: fallbackEagerMaxMb,
+        pendingDaemonSync: false
+      });
+      status = await loadStatus(config, active && active.id);
+    }
+  }
   let projectId = (status && status.target && status.target.projectId) || projectIdFromUrl(url);
   const frontendPreference = isEditor
     ? await sendRuntimeMessage({
@@ -259,9 +312,40 @@ async function main() {
     isEditor,
     isLaunch,
     customMode,
-    rememberedMode: frontendPreference && frontendPreference.mode
+    rememberedMode: frontendPreference && frontendPreference.mode,
+    sliderActive: false,
+    fallbackEagerMaxMb
   };
   renderStatus(status, context);
+
+  const eagerLimit = document.getElementById("eager-limit");
+  const eagerLimitValue = document.getElementById("eager-limit-value");
+  eagerLimit.addEventListener("input", () => {
+    context.sliderActive = true;
+    const mb = clampEagerMaxMb(eagerLimit.value);
+    context.fallbackEagerMaxMb = mb;
+    eagerLimitValue.textContent = `${mb} MB`;
+  });
+  eagerLimit.addEventListener("change", async () => {
+    const mb = clampEagerMaxMb(eagerLimit.value);
+    context.fallbackEagerMaxMb = mb;
+    eagerLimit.value = String(mb);
+    eagerLimitValue.textContent = `${mb} MB`;
+    try {
+      const updated = await updateDaemonWorkspaceSettings(config, mb);
+      await sendRuntimeMessage({
+        type: "pcbridge:setWorkspaceSettings",
+        eagerMaxMb: mb,
+        pendingDaemonSync: !updated
+      });
+      if (updated) {
+        status = await loadStatus(config, active && active.id);
+      }
+    } finally {
+      context.sliderActive = false;
+      renderStatus(status, context);
+    }
+  });
 
   const copyPath = document.getElementById("copy-path");
   const useCustom = document.getElementById("use-custom");
