@@ -564,3 +564,21 @@ test("main-world observer events push incremental workspace:delta over WebSocket
   assert.equal(matDelta.delta.upsertedAssets.length, 1);
   assert.deepEqual(matDelta.delta.upsertedAssets[0].data.diffuse, [0, 1, 0]);
 });
+
+test("extension manifest and popup reference matching high-DPI PNG icons", async () => {
+  const manifest = JSON.parse(await readFile(join(process.cwd(), "extension/manifest.json"), "utf8"));
+  const popupHtml = await readFile(join(process.cwd(), "extension/popup.html"), "utf8");
+  const expectedSizes = ["16", "32", "48", "128", "256"];
+  assert.deepEqual(Object.keys(manifest.icons), expectedSizes);
+  assert.deepEqual(Object.keys(manifest.action.default_icon), expectedSizes);
+  for (const key of expectedSizes) {
+    const relPath = manifest.icons[key];
+    assert.equal(manifest.action.default_icon[key], relPath);
+    const bytes = await readFile(join(process.cwd(), "extension", relPath));
+    assert.equal(bytes.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+    assert.equal(bytes.readUInt32BE(16), Number(key));
+    assert.equal(bytes.readUInt32BE(20), Number(key));
+  }
+  assert.match(popupHtml, /src="icons\/icon-128\.png"/);
+  assert.match(popupHtml, /icons\/icon-256\.png 2x/);
+});
