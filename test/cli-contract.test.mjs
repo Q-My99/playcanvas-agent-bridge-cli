@@ -1,10 +1,34 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { diagnoseDaemonConnection } from "../dist/cli.js";
 import { normalizeError } from "../dist/shared/protocol.js";
+
+function runCli(args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, {
+      cwd: options.cwd || process.cwd(),
+      env: options.env || process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.once("error", reject);
+    child.once("close", (status) => {
+      resolve({ status, stdout, stderr });
+    });
+  });
+}
 
 test("doctor reports the Bun runtime independently of daemon availability", async (t) => {
   const tmpBase = join(process.cwd(), "tmp");
@@ -16,10 +40,9 @@ test("doctor reports the Bun runtime independently of daemon availability", asyn
     port: 1,
     createdAt: new Date().toISOString(),
   }));
-  const result = spawnSync(process.execPath, ["dist/cli.js", "doctor"], {
+  const result = await runCli(["dist/cli.js", "doctor"], {
     cwd: process.cwd(),
     env: { ...process.env, PCBRIDGE_CONFIG_DIR: configDir },
-    encoding: "utf8",
   });
   assert.equal(result.status, 0, result.stderr);
   const { data } = JSON.parse(result.stdout);
@@ -58,36 +81,32 @@ test("structured page error details survive daemon normalization", () => {
   );
 });
 
-test("known CLI commands return a non-zero exit code for failed envelopes", () => {
-  const result = spawnSync(process.execPath, ["dist/cli.js", "template", "create"], {
+test("known CLI commands return a non-zero exit code for failed envelopes", async () => {
+  const result = await runCli(["dist/cli.js", "template", "create"], {
     cwd: process.cwd(),
-    encoding: "utf8",
   });
   assert.equal(result.status, 1, result.stderr);
   const body = JSON.parse(result.stdout);
   assert.equal(body.ok, false);
   assert.equal(body.error.code, "INVALID_REQUEST");
 
-  const builder = spawnSync(process.execPath, ["dist/cli.js", "builder", "start"], {
+  const builder = await runCli(["dist/cli.js", "builder", "start"], {
     cwd: process.cwd(),
-    encoding: "utf8",
   });
   assert.equal(builder.status, 1, builder.stderr);
   assert.equal(JSON.parse(builder.stdout).error.code, "INVALID_REQUEST");
 });
 
-test("mutation timeouts and target focus selectors are validated before RPC", () => {
-  const timeout = spawnSync(
-    process.execPath,
+test("mutation timeouts and target focus selectors are validated before RPC", async () => {
+  const timeout = await runCli(
     ["dist/cli.js", "template", "apply", "--entity-id", "one", "--timeout-ms", "abc"],
-    { cwd: process.cwd(), encoding: "utf8" },
+    { cwd: process.cwd() },
   );
   assert.equal(timeout.status, 1);
   assert.equal(JSON.parse(timeout.stdout).error.code, "INVALID_REQUEST");
 
-  const focus = spawnSync(process.execPath, ["dist/cli.js", "target", "focus"], {
+  const focus = await runCli(["dist/cli.js", "target", "focus"], {
     cwd: process.cwd(),
-    encoding: "utf8",
   });
   assert.equal(focus.status, 1);
   assert.equal(JSON.parse(focus.stdout).error.code, "INVALID_REQUEST");
@@ -100,10 +119,9 @@ test("install-skill supports one agent under a custom parent directory", async (
   t.after(() => rm(root, { recursive: true, force: true }));
   const cliPath = join(process.cwd(), "dist", "cli.js");
 
-  const codex = spawnSync(
-    process.execPath,
+  const codex = await runCli(
     [cliPath, "install-skill", "--agent", "codex", "--path", "custom skills"],
-    { cwd: root, encoding: "utf8" },
+    { cwd: root },
   );
   assert.equal(codex.status, 0, codex.stderr);
   const codexTarget = join(root, "custom skills", "playcanvas-agent-bridge-cli");
@@ -111,20 +129,18 @@ test("install-skill supports one agent under a custom parent directory", async (
   await access(join(codexTarget, "SKILL.md"));
 
   const cursorParent = join(root, "project", ".cursor", "rules");
-  const cursor = spawnSync(
-    process.execPath,
+  const cursor = await runCli(
     [cliPath, "install-skill", "--agent", "cursor", "--path", cursorParent],
-    { cwd: root, encoding: "utf8" },
+    { cwd: root },
   );
   assert.equal(cursor.status, 0, cursor.stderr);
   const cursorTarget = join(cursorParent, "playcanvas-agent-bridge-cli.mdc");
   assert.equal(JSON.parse(cursor.stdout).data[0].path, cursorTarget);
   await access(cursorTarget);
 
-  const all = spawnSync(
-    process.execPath,
+  const all = await runCli(
     [cliPath, "install-skill", "--agent", "all", "--path", join(root, "all")],
-    { cwd: root, encoding: "utf8" },
+    { cwd: root },
   );
   assert.equal(all.status, 1, all.stderr);
   assert.equal(JSON.parse(all.stdout).error.code, "INVALID_REQUEST");
