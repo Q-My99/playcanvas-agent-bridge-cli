@@ -1103,9 +1103,6 @@ export class WorkspaceManager {
     if (!existsSync(absPath)) return false;
     try {
       const info = await stat(absPath);
-      if (info.size === fp.size && Math.abs(info.mtimeMs - fp.mtimeMs) < 2) {
-        return true;
-      }
       if (info.size === fp.size && hashContent(await readFile(absPath)) === fp.hash) {
         record.recentSelfWrites.set(absPath, {
           ...fp,
@@ -2825,6 +2822,12 @@ export class WorkspaceManager {
     entry.localIno = info.ino;
     entry.localDev = info.dev;
     entry.downloaded = true;
+    record.recentSelfWrites.set(absPath, {
+      size: info.size,
+      mtimeMs: info.mtimeMs,
+      hash,
+      expiresAt: Date.now() + SELF_WRITE_TTL_MS,
+    });
   }
 
   async #writeRawSelfManaged(
