@@ -554,7 +554,7 @@ Configure the npm package's Trusted Publisher with GitHub user `Q-My99`, reposit
 
 ## Self-hosted sites and local asset processing
 
-The extension automatically recognizes official PlayCanvas, localhost and 127.0.0.1 Editor/Launch pages on any port. For another hostname, use **Enable on this site** in the popup, grant Chrome permission, then refresh. Editor and Launch hosts need separate grants. Disabling or revoking a site closes existing connections. Self-hosted pages never inherit the official frontend-switch preference.
+The extension automatically recognizes official PlayCanvas, `pc-editor.sightp.com`, `pc-launch.sightp.com`, `localhost` and `127.0.0.1` Editor/Launch pages on any port. For another hostname, use **Enable on this site** in the popup, grant Chrome permission, then refresh. Editor and Launch hosts need separate grants. Disabling or revoking a site closes existing connections. Self-hosted pages never inherit the official frontend-switch preference.
 
 Local conversion is opt-in and self-hosted only. Install a **trusted** versioned asset-tools manifest and its precompiled archive (macOS arm64 validated; no public release published yet):
 

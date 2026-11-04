@@ -430,7 +430,12 @@ test("custom sites require grants, persist scripts, revoke connections and isola
   assert.equal(extension.registered.size, 2);
   await extension.sendMessage({ type: "pcbridge:setSite", url, enabled: false });
   assert.equal(extension.registered.size, 0);
-  for (const url of ["http://localhost:8080/editor/scene/1", "http://127.0.0.1:9200/launch/1"]) {
+  for (const url of [
+    "http://localhost:8080/editor/scene/1",
+    "http://127.0.0.1:9200/launch/1",
+    "https://pc-editor.sightp.com/editor/scene/1",
+    "http://pc-launch.sightp.com/launch/1",
+  ]) {
     assert.equal((await extension.sendMessage({ type: "pcbridge:siteStatus", url })).enabled, true);
   }
 });

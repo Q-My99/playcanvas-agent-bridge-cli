@@ -416,7 +416,16 @@ function siteOrigin(value) {
   } catch { return null; }
 }
 function builtinSite(value) {
-  try { return ["playcanvas.com", "launch.playcanvas.com", "localhost", "127.0.0.1"].includes(new URL(value).hostname); }
+  try {
+    return [
+      "playcanvas.com",
+      "launch.playcanvas.com",
+      "pc-editor.sightp.com",
+      "pc-launch.sightp.com",
+      "localhost",
+      "127.0.0.1"
+    ].includes(new URL(value).hostname);
+  }
   catch { return false; }
 }
 async function siteStatus(value) {

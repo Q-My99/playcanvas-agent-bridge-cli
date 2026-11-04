@@ -530,7 +530,7 @@ git push origin v<version>
 
 ## 自托管站点与本地资源处理
 
-插件自动识别官方站点及任意端口的 localhost / 127.0.0.1 Editor、Launch 页面。其他域名在 popup 点击 **Enable on this site**，经 Chrome 授权后刷新；Editor 与 Launch 域名分别授权。禁用或撤回权限会关闭现有连接。自托管页面不套用官方 frontend 切换偏好。
+插件自动识别官方站点、`pc-editor.sightp.com`、`pc-launch.sightp.com` 及任意端口的 localhost / 127.0.0.1 Editor、Launch 页面。其他域名在 popup 点击 **Enable on this site**，经 Chrome 授权后刷新；Editor 与 Launch 域名分别授权。禁用或撤回权限会关闭现有连接。自托管页面不套用官方 frontend 切换偏好。
 
 本地计算仅限自托管，默认关闭。安装可信发布者提供的版本化工具 manifest 和预编译包（当前实测 macOS arm64，尚未发布公开工具 release）：
 

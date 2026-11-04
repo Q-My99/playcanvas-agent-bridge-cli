@@ -219,10 +219,10 @@
   }
 
   function getTargetKind() {
-    if (location.hostname === "launch.playcanvas.com") return "launch";
+    if (location.hostname === "launch.playcanvas.com" || location.hostname === "pc-launch.sightp.com") return "launch";
     const selfhost = Boolean(window.config && window.config.selfhost);
-    if (selfhost && /^\/launch\//.test(location.pathname)) return "launch";
-    if ((location.hostname === "playcanvas.com" || selfhost) &&
+    if ((location.hostname === "pc-editor.sightp.com" || selfhost) && /^\/launch\//.test(location.pathname)) return "launch";
+    if ((location.hostname === "playcanvas.com" || location.hostname === "pc-editor.sightp.com" || selfhost) &&
         /^\/editor(?:\/|$)/.test(location.pathname)) return "editor";
     return "playcanvas";
   }
@@ -424,7 +424,10 @@
     const editorMatch = location.href.match(/\/editor\/scene\/([^/?#]+)/);
     if (editorMatch) return editorMatch[1];
 
-    if (location.hostname === "launch.playcanvas.com") {
+    const selfhostLaunchMatch = location.pathname.match(/^\/launch\/([^/?#]+)/);
+    if (selfhostLaunchMatch) return selfhostLaunchMatch[1];
+
+    if (location.hostname === "launch.playcanvas.com" || location.hostname === "pc-launch.sightp.com") {
       const launchMatch = location.pathname.match(/^\/([^/?#]+)/);
       if (launchMatch) return launchMatch[1];
     }

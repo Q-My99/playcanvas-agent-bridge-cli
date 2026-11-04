@@ -111,7 +111,7 @@ async function switchFrontend(active, url, custom, projectId) {
 }
 
 function renderStatus(status, context) {
-  const { isEditor, isLaunch, customMode, rememberedMode, sliderActive, fallbackEagerMaxMb } = context;
+  const { isEditor, isSelfhostEditor, isLaunch, customMode, rememberedMode, sliderActive, fallbackEagerMaxMb } = context;
   const target = status && status.target;
   const workspace = status && status.workspace;
   const frontend = status && status.frontend;
@@ -157,7 +157,7 @@ function renderStatus(status, context) {
 
   document.getElementById("target").textContent = target
     ? `${target.kind === "launch" ? "Launch" : "Editor"} · ${target.ready ? "Ready" : "Initializing"}`
-    : isEditor || isLaunch
+    : isEditor || isSelfhostEditor || isLaunch
       ? "Not connected"
       : "Not a PlayCanvas tab";
   document.getElementById("project").textContent = target
@@ -267,7 +267,17 @@ async function main() {
   const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
   const url = active && active.url ? new URL(active.url) : null;
   const isEditor = isEditorUrl(url);
-  const isLaunch = Boolean(url && (url.hostname === "launch.playcanvas.com" || /^\/launch\//.test(url.pathname)));
+  const isSelfhostEditor = Boolean(
+    url &&
+      (url.protocol === "https:" || url.protocol === "http:") &&
+      /^\/editor(?:\/|$)/.test(url.pathname)
+  );
+  const isLaunch = Boolean(
+    url &&
+      (url.hostname === "launch.playcanvas.com" ||
+        url.hostname === "pc-launch.sightp.com" ||
+        /^\/launch\//.test(url.pathname))
+  );
   const customMode = Boolean(isEditor && url.searchParams.has("use_local_frontend"));
   const site = await sendRuntimeMessage({ type: "pcbridge:siteStatus", url: url?.href });
   const siteToggle = document.getElementById("site-toggle");
@@ -310,6 +320,7 @@ async function main() {
     : null;
   const context = {
     isEditor,
+    isSelfhostEditor,
     isLaunch,
     customMode,
     rememberedMode: frontendPreference && frontendPreference.mode,
