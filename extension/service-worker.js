@@ -180,11 +180,10 @@ async function requestDaemon(message, sender) {
   const path = String(message.path || "");
   const method = String(message.method || "GET").toUpperCase();
   const allowed =
-    (path === "/builder/jobs" && method === "POST") ||
+    (/^\/plugins\/[a-z0-9-]+\/actions\/[\w.-]+$/.test(path) && method === "POST") ||
     (path === "/workspace/sync" && method === "POST") ||
     (path === "/workspace/settings" && (method === "GET" || method === "POST")) ||
-      (/^\/processing\/(capabilities|begin|chunk|run|status|read|cancel|finish)$/.test(path) && method === "POST") ||
-    (/^\/builder\/jobs\/[^/]+$/.test(path) && method === "GET");
+      (/^\/processing\/(capabilities|begin|chunk|run|status|read|cancel|finish)$/.test(path) && method === "POST");
   if (!allowed) {
     return {
       ok: false,

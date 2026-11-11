@@ -72,7 +72,7 @@ steps have been acknowledged or verified.
 3. **Inspect local files first (0 RPC)** to understand the project before calling Editor RPCs:
    - Read `pcbridge.project.json` for `scenes[]` (active/writable vs inactive/read-only), full asset IDs, paths, and lazy binary `meta` (texture dimensions/format, model/audio summaries).
    - Read `scenes/<name>.<sceneId>.scene.json` (DFS-ordered `entities` + `settings`) and search `scenes/` + `assets/` with `rg` to trace entities, script attachments, `<name>.material.json`, `<name>.template.json`, scripts, and shaders across the entire project.
-4. Use layered help to load only the command group you need: `pcbridge help`, then `pcbridge help core|workspace|processing|import|frontend|target|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
+4. Use layered help to load only the command group you need: `pcbridge help`, then `pcbridge help core|workspace|plugin|processing|import|frontend|target|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
 5. **Choose the right write path** (never mix local file edits and CLI write RPCs on the same target concurrently):
    - **Edit local files** under `assets/` and `scenes/` for scripts, shaders, CSS/HTML/JSON/text, `<name>.material.json` / `<name>.template.json` / other `*.<type>.json` structured assets (including batch edits and creating new `*.<type>.json` files), file renames/moves, and ordinary property or entity edits in the **active** `.scene.json` (`"$pcbridge": { "active": true }`).
    - **Use structured CLI commands** for Editor-specific pipelines: `scene open` (required before editing an inactive read-only scene), `template instantiate`, `template create --entity-id`, `template overrides`, `template apply` / `apply-many` (never hand-edit `template_ent_ids`), `script parse`, `import submit/wait`, `viewport focus/capture`, and `launch` diagnostics/logs.
@@ -125,14 +125,21 @@ Only collision paths gain `.__pc_<type>_<assetId>`. The catalog is managed by pc
 to request remote asset operations. Confirmed remote deletions are quarantined under
 `tmp/trash/remote/`; `tmp/conflicts/` is reserved for divergent local and remote contents.
 
-Selecting a Template Asset exposes **pcbridge Tiny Builder** in the Attributes panel. It collects
+Optional features ship as plugins that each user adds and enables. Run `pcbridge plugin list` to
+see installed plugins, their actions, and the official plugins available to add; call an action with
+`pcbridge plugin call <id> <action> --target editor:<sceneId> --params '<json>'`. The extension
+popup **Plugins** tab manages the same list. To create or change a plugin, use the
+`pcbridge-plugin-authoring` skill.
+
+Tiny Builder is the official `tinyapp-builder` plugin (`pcbridge plugin add tinyapp-builder`). While
+it is enabled, selecting a Template Asset exposes **pcbridge Tiny Builder** in the Attributes panel. It collects
 dependencies, materializes missing or remote-updated primary files, texture variants, and additional
 font maps under `assets/`, then uploads individual S3 objects without a ZIP. `local.resources` in the
 schema-v3 manifest identifies managed read-only auxiliary files; `.pcbridge/objects` is only the
 internal content cache. Project `.env` overrides workspace-root `.env`; never read or return
 credential values. CLI equivalents are
-`pcbridge builder start --target editor:<sceneId> --asset <id>` and
-`pcbridge builder status --job <jobId>`.
+`pcbridge plugin call tinyapp-builder start --target editor:<sceneId> --params '{"templateAssetId":"<id>"}'` and
+`pcbridge plugin call tinyapp-builder status --params '{"jobId":"<jobId>"}'`.
 
 Local file arguments are restricted to the selected project workspace. Never use
 `--allow-external-path` unless the user explicitly asks to use a known external file.

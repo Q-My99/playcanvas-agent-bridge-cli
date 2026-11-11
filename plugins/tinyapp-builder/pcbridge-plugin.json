@@ -1,0 +1,27 @@
+{
+  "id": "tinyapp-builder",
+  "name": "Tiny Builder",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "description": "Build a PlayCanvas Template Asset into a TinyApp bundle and upload it to S3-compatible storage.",
+  "node": "node/index.js",
+  "page": {
+    "editor": "page/editor.js"
+  },
+  "actions": {
+    "start": {
+      "description": "Start a Template build job for an Editor target and return the job status.",
+      "params": {
+        "templateAssetId": "Template Asset id (required).",
+        "suffix": "Appended to the build name; ${time} expands to a timestamp.",
+        "prefix": "S3 key prefix; overrides PCBRIDGE_S3_PREFIX."
+      }
+    },
+    "status": {
+      "description": "Return the status of a build job.",
+      "params": {
+        "jobId": "Job id returned by start (required)."
+      }
+    }
+  }
+}

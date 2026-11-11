@@ -224,7 +224,7 @@ against `.pcbridge/baselines/`: non-overlapping local and Editor edits merge aut
 conflicting edits to the same leaf property preserve `.local`, `.remote`, and `.conflict.json` under
 `tmp/conflicts/`. Images, models, audio, fonts, and files above the direct-sync limit remain lazy:
 metadata, dimensions, and MD5 hashes are recorded in `pcbridge.project.json`, and bytes are fetched
-on demand via `workspace pull` or Tiny Builder. New local files (including new `*.<type>.json`
+on demand via `workspace pull` or the Tiny Builder plugin. New local files (including new `*.<type>.json`
 structured assets) create matching remote Assets and folders; renames and moves preserve the Asset
 ID via embedded `$pcbridge.id`, file inode, or content hash. Deleting an eagerly synced Tier 1 file
 locally backs up the file under `tmp/trash/local/` and deletes the remote Asset to keep both sides
@@ -251,9 +251,47 @@ schema-v1 and schema-v2 state is migrated automatically; the v1 hidden index is 
 An empty snapshot received while indexed assets exist is ignored, and a non-empty shrinking
 snapshot must repeat before files are moved to `tmp/trash/remote/`.
 
-## Template builds and S3 uploads
+## Plugins
 
-Selecting a PlayCanvas Template Asset adds a **pcbridge Tiny Builder** section to the Attributes
+Optional features are pcbridge plugins. A pcbridge plugin is not the Chrome extension: the
+extension is a fixed part of pcbridge, while plugins are packages that each user adds, enables,
+disables, and removes. A plugin can contribute two kinds of code:
+
+| Runtime | Runs in | Typical use |
+| --- | --- | --- |
+| `node` | The local daemon | Files, network, credentials, local applications such as Blender |
+| `page.editor` / `page.launch` | The PlayCanvas Editor or Launch page | Editor UI, Editor API access, runtime inspection |
+
+The extension itself is not extensible by plugins; it relays messages between the two sides and
+hosts the management panel. Manage plugins from the extension popup **Plugins** tab or the CLI:
+
+```bash
+pcbridge plugin list                       # installed plugins, their actions, and available official plugins
+pcbridge plugin add tinyapp-builder        # an official plugin shipped with pcbridge
+pcbridge plugin add github:<owner>/<repo>[/<subdir>][#<ref>]
+pcbridge plugin add ./my-plugin [--link]   # --link uses the directory in place for development
+pcbridge plugin enable|disable|remove|update <id>
+pcbridge plugin reload <id>                # re-read a plugin's files after editing them
+pcbridge plugin call <id> <action> --target editor:<sceneId> --params '<json>'
+```
+
+Plugins are stored under `~/.pcbridge/plugins/`. A plugin with npm dependencies gets them from
+`bun install --production` when it is added or updated. Enabling, disabling, and reloading take
+effect in the daemon and in open Editor and Launch tabs without a page refresh. `plugin update`
+re-fetches the plugin from the source it was added from. Plugins run with full local and page
+access, so add only plugins you trust.
+
+To write a plugin, install the agent skills (`pcbridge install-skill --agent all`) and use the
+`pcbridge-plugin-authoring` skill, which defines the manifest (`pcbridge-plugin.json`), both
+runtime APIs, and the rules. `plugins/tinyapp-builder/` in this repository is the reference
+implementation.
+
+## Tiny Builder plugin: Template builds and S3 uploads
+
+Tiny Builder is the official `tinyapp-builder` plugin. Add it once with
+`pcbridge plugin add tinyapp-builder` or **Install** in the popup **Plugins** tab.
+
+With the plugin enabled, selecting a PlayCanvas Template Asset adds a **pcbridge Tiny Builder** section to the Attributes
 panel. **Build and upload to S3** collects recursive Asset references, attached scripts, and child
 Templates in the page. The daemon materializes every dependency under `assets/`: an existing local
 file is reused when it matches the effective remote MD5, while a missing or remote-updated file is
@@ -288,8 +326,8 @@ and uploads use a fixed `Content-MD5` instead of streaming checksum trailers. Bu
 started and inspected from the CLI:
 
 ```bash
-pcbridge builder start --target editor:<sceneId> --asset <templateAssetId> --suffix '-${time}'
-pcbridge builder status --job <jobId>
+pcbridge plugin call tinyapp-builder start --target editor:<sceneId> --params '{"templateAssetId":"<templateAssetId>","suffix":"-${time}"}'
+pcbridge plugin call tinyapp-builder status --params '{"jobId":"<jobId>"}'
 ```
 
 Script, JSON, upload, and capture paths are restricted to the selected project workspace by default.
@@ -317,7 +355,7 @@ pcbridge help core
 pcbridge help workspace
 pcbridge help processing
 pcbridge help import
-pcbridge help builder
+pcbridge help plugin
 pcbridge help frontend
 pcbridge help target
 pcbridge help entity

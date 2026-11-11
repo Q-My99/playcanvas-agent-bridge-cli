@@ -145,11 +145,10 @@
 
   async function callDaemon(path, method, body) {
     const allowed =
-      (path === "/builder/jobs" && method === "POST") ||
+      (/^\/plugins\/[a-z0-9-]+\/actions\/[\w.-]+$/.test(path) && method === "POST") ||
       (path === "/workspace/sync" && method === "POST") ||
       (path === "/workspace/settings" && (method === "GET" || method === "POST")) ||
-      (/^\/processing\/(capabilities|begin|chunk|run|status|read|cancel|finish)$/.test(path) && method === "POST") ||
-      (/^\/builder\/jobs\/[^/]+$/.test(path) && method === "GET");
+      (/^\/processing\/(capabilities|begin|chunk|run|status|read|cancel|finish)$/.test(path) && method === "POST");
     if (!allowed) throw new Error("Unsupported pcbridge browser request.");
     const payload = body && typeof body === "object" ? { ...body } : {};
     if (method === "POST" && !payload.target && Number.isInteger(tabInfo.tabId)) {

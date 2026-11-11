@@ -3,7 +3,7 @@ import http from "node:http";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { BuilderManager, normalizeS3Endpoint } from "../dist/builder/manager.js";
+import { BuilderManager, normalizeS3Endpoint } from "../plugins/tinyapp-builder/node/builder.js";
 
 test("S3 endpoint normalization removes a duplicated bucket hostname", () => {
   assert.equal(
@@ -172,11 +172,9 @@ test("Template builder uses project env precedence and uploads files directly th
   const builder = new BuilderManager({
     rootDir: root,
     workspace,
-    requestTarget: async (_target, method, params) => {
-      if (method === "bridge:collectTemplateDependencies") {
-        return { ok: true, data: descriptor };
-      }
-      throw new Error(`Unexpected method ${method} with ${JSON.stringify(params)}`);
+    collectDependencies: async (_target, assetId) => {
+      assert.equal(assetId, "1");
+      return descriptor;
     },
   });
   const started = builder.start({

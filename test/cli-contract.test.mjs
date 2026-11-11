@@ -90,11 +90,11 @@ test("known CLI commands return a non-zero exit code for failed envelopes", asyn
   assert.equal(body.ok, false);
   assert.equal(body.error.code, "INVALID_REQUEST");
 
-  const builder = await runCli(["dist/cli.js", "builder", "start"], {
+  const plugin = await runCli(["dist/cli.js", "plugin", "call", "tinyapp-builder"], {
     cwd: process.cwd(),
   });
-  assert.equal(builder.status, 1, builder.stderr);
-  assert.equal(JSON.parse(builder.stdout).error.code, "INVALID_REQUEST");
+  assert.equal(plugin.status, 1, plugin.stderr);
+  assert.equal(JSON.parse(plugin.stdout).error.code, "INVALID_REQUEST");
 });
 
 test("mutation timeouts and target focus selectors are validated before RPC", async () => {
@@ -127,6 +127,7 @@ test("install-skill supports one agent under a custom parent directory", async (
   const codexTarget = join(root, "custom skills", "playcanvas-agent-bridge-cli");
   assert.equal(JSON.parse(codex.stdout).data[0].path, codexTarget);
   await access(join(codexTarget, "SKILL.md"));
+  await access(join(root, "custom skills", "pcbridge-plugin-authoring", "SKILL.md"));
 
   const cursorParent = join(root, "project", ".cursor", "rules");
   const cursor = await runCli(
@@ -137,6 +138,7 @@ test("install-skill supports one agent under a custom parent directory", async (
   const cursorTarget = join(cursorParent, "playcanvas-agent-bridge-cli.mdc");
   assert.equal(JSON.parse(cursor.stdout).data[0].path, cursorTarget);
   await access(cursorTarget);
+  await access(join(cursorParent, "pcbridge-plugin-authoring.mdc"));
 
   const all = await runCli(
     [cliPath, "install-skill", "--agent", "all", "--path", join(root, "all")],

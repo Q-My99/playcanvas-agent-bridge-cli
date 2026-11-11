@@ -74,6 +74,143 @@ async function sendRuntimeMessage(message) {
   }
 }
 
+async function pluginRequest(config, path, body) {
+  if (!config || !config.token) {
+    return { ok: false, error: { message: "pcbridge daemon configuration is unavailable." } };
+  }
+  try {
+    const response = await fetch(`http://${config.host || "127.0.0.1"}:${config.port || 17329}${path}`, {
+      method: body ? "POST" : "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "X-PCBridge-Token": config.token
+      },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    return await response.json();
+  } catch {
+    return { ok: false, error: { message: "pcbridge daemon is offline. Run pcbridge daemon start." } };
+  }
+}
+
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function setupPlugins(config) {
+  const view = document.getElementById("view-plugins");
+  const list = document.getElementById("plugin-list");
+  const available = document.getElementById("plugin-available");
+  const note = document.getElementById("plugin-note");
+  const source = document.getElementById("plugin-source");
+  const defaultNote = note.textContent;
+  const states = {
+    active: ["Active", "success"],
+    stopped: ["Stopped", "warning"],
+    disabled: ["Disabled", "neutral"],
+    error: ["Error", "danger"]
+  };
+
+  function showNote(message, isError) {
+    note.textContent = message || defaultNote;
+    note.classList.toggle("error", Boolean(isError));
+  }
+
+  async function run(path, body, pending) {
+    showNote(pending, false);
+    view.inert = true;
+    const result = await pluginRequest(config, path, body);
+    view.inert = false;
+    await refresh();
+    if (!result.ok) showNote(result.error.message, true);
+    return result.ok;
+  }
+
+  function action(label, handler, primary) {
+    const button = element("button", primary ? "primary" : "", label);
+    button.type = "button";
+    button.addEventListener("click", handler);
+    return button;
+  }
+
+  function installedRow(plugin) {
+    const row = element("div", "plugin");
+    const head = element("div", "plugin-head");
+    head.append(element("strong", "", plugin.name), element("span", "mono", plugin.version ? `v${plugin.version}` : ""));
+    const status = element("span", "status");
+    setStatus(status, ...states[plugin.state]);
+    head.append(status);
+    row.append(head);
+    if (plugin.description) row.append(element("p", "", plugin.description));
+    const runtimes = Object.keys(plugin.runtimes).filter((name) => plugin.runtimes[name]);
+    row.append(element("p", "mono", [plugin.id, ...runtimes, plugin.source.type].join(" · ")));
+    if (plugin.error) row.append(element("p", "error", plugin.error));
+    for (const page of plugin.pages || []) {
+      if (!page.ok) row.append(element("p", "error", `${page.target}: ${page.error}`));
+    }
+    const actions = element("div", "plugin-actions");
+    actions.append(
+      plugin.enabled
+        ? action("Disable", () => run(`/plugins/${plugin.id}/disable`, {}, `Disabling ${plugin.name}…`))
+        : action("Enable", () => run(`/plugins/${plugin.id}/enable`, {}, `Enabling ${plugin.name}…`), true),
+      action("Remove", () => run(`/plugins/${plugin.id}/remove`, {}, `Removing ${plugin.name}…`))
+    );
+    row.append(actions);
+    return row;
+  }
+
+  function availableRow(plugin) {
+    const row = element("div", "plugin");
+    const head = element("div", "plugin-head");
+    head.append(element("strong", "", plugin.name), element("span", "mono", `v${plugin.version}`));
+    row.append(head);
+    if (plugin.description) row.append(element("p", "", plugin.description));
+    const actions = element("div", "plugin-actions");
+    actions.append(action("Install", () => run("/plugins/add", { source: plugin.source }, `Installing ${plugin.name}…`), true));
+    row.append(actions);
+    return row;
+  }
+
+  async function refresh() {
+    const result = await pluginRequest(config, "/plugins");
+    const count = document.getElementById("plugin-count");
+    const plugins = result.ok ? result.data.plugins : [];
+    const offered = result.ok ? result.data.available : [];
+    list.replaceChildren(...plugins.map(installedRow));
+    available.replaceChildren(...offered.map(availableRow));
+    document.getElementById("plugin-empty").hidden = !result.ok || plugins.length > 0;
+    document.getElementById("plugin-available-section").hidden = offered.length === 0;
+    document.getElementById("plugin-add").disabled = !result.ok;
+    if (result.ok) {
+      const enabled = plugins.filter((plugin) => plugin.enabled).length;
+      setStatus(count, `${enabled} enabled`, plugins.some((plugin) => plugin.state === "error") ? "danger" : enabled ? "success" : "neutral");
+      showNote("", false);
+    } else {
+      setStatus(count, "Unavailable", "danger");
+      showNote(result.error.message, true);
+    }
+  }
+
+  document.getElementById("plugin-add").addEventListener("click", async () => {
+    const value = source.value.trim();
+    if (value && await run("/plugins/add", { source: value }, "Installing plugin…")) source.value = "";
+  });
+
+  const tabs = { bridge: document.getElementById("tab-bridge"), plugins: document.getElementById("tab-plugins") };
+  for (const [name, tab] of Object.entries(tabs)) {
+    tab.addEventListener("click", () => {
+      for (const [other, button] of Object.entries(tabs)) {
+        button.setAttribute("aria-selected", String(other === name));
+        document.getElementById(`view-${other}`).hidden = other !== name;
+      }
+      if (name === "plugins") void refresh();
+    });
+  }
+}
+
 function setStatus(element, label, state) {
   element.textContent = label;
   element.dataset.state = state;
@@ -295,6 +432,7 @@ async function main() {
     siteStatus.textContent = site.enabled ? "Enabled. Refresh Editor / Launch to connect." : "Disabled. Existing connections closed.";
   });
   const config = await loadConfig();
+  setupPlugins(config);
   const storedWorkspaceSettings = await sendRuntimeMessage({ type: "pcbridge:getWorkspaceSettings" });
   let fallbackEagerMaxMb = clampEagerMaxMb(storedWorkspaceSettings && storedWorkspaceSettings.eagerMaxMb);
   let status = await loadStatus(config, active && active.id);

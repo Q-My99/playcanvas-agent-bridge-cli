@@ -61,6 +61,7 @@ pcbridge help script
 pcbridge help store
 pcbridge help target
 pcbridge help workspace
+pcbridge help plugin
 pcbridge help processing
 pcbridge help import
 pcbridge help frontend
@@ -135,14 +136,21 @@ advertised/observed/effective MD5, presence, writability, and current/base MD5. 
 deletions are quarantined under `tmp/trash/remote/`, while true content
 divergence remains under `tmp/conflicts/`.
 
-Selecting a Template Asset exposes **pcbridge Tiny Builder** in the Attributes panel. It collects
+Optional features ship as plugins that each user adds and enables. Run `pcbridge plugin list` to
+see installed plugins, their actions, and the official plugins available to add; call an action with
+`pcbridge plugin call <id> <action> --target editor:<sceneId> --params '<json>'`. The extension
+popup **Plugins** tab manages the same list. To create or change a plugin, use the
+`pcbridge-plugin-authoring` skill.
+
+Tiny Builder is the official `tinyapp-builder` plugin (`pcbridge plugin add tinyapp-builder`). While
+it is enabled, selecting a Template Asset exposes **pcbridge Tiny Builder** in the Attributes panel. It collects
 dependencies, materializes missing or remote-updated primary files, texture variants, and additional
 font maps under `assets/`, then uploads individual S3 objects without a ZIP. `local.resources` in the
 schema-v3 manifest identifies managed read-only auxiliary files; `.pcbridge/objects` is only the
 internal content cache. Project `.env` overrides workspace-root `.env`; never expose credential
 values. CLI equivalents are
-`pcbridge builder start --target editor:<sceneId> --asset <id>` and
-`pcbridge builder status --job <jobId>`.
+`pcbridge plugin call tinyapp-builder start --target editor:<sceneId> --params '{"templateAssetId":"<id>"}'` and
+`pcbridge plugin call tinyapp-builder status --params '{"jobId":"<jobId>"}'`.
 
 Prefer local file edits for scripts, shaders, text, `*.material.json` / `*.template.json` data, and
 multi-property edits in the active `.scene.json`. Use structured commands for Editor pipelines

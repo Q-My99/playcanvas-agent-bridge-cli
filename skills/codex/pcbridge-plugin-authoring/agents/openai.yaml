@@ -1,0 +1,4 @@
+interface:
+  display_name: "pcbridge Plugin Authoring"
+  short_description: "Build and manage pcbridge plugins for PlayCanvas Editor and Launch."
+  default_prompt: "Create or update a pcbridge plugin, link it, and verify it with pcbridge plugin commands."

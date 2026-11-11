@@ -67,6 +67,10 @@ Read schema-v3 `pcbridge.project.json.assets`: `folder` is the remote display pa
 effective metadata, presence, writability, and hashes. Only collisions gain
 `.__pc_<type>_<assetId>`. Treat that asset catalog as pcbridge-managed. Confirmed remote
 deletions are quarantined under `tmp/trash/remote/`; `tmp/conflicts/` contains content divergence.
+Optional features ship as plugins: `pcbridge plugin list` shows installed and available plugins with
+their actions, and `pcbridge plugin call <id> <action> --target editor:<sceneId> --params '<json>'`
+runs one. Use the pcbridge-plugin-authoring rule to create or change a plugin.
+With the official `tinyapp-builder` plugin enabled (`pcbridge plugin add tinyapp-builder`),
 Template selection exposes pcbridge Tiny Builder for direct S3 object uploads; project `.env`
 overrides workspace-root `.env`. A build materializes every primary dependency plus texture
 variants and additional font maps under the Asset's remote folder in `assets/`, then uploads only
@@ -79,7 +83,7 @@ For the optional published Editor build, use `pcbridge frontend install latest`,
 The popup remembers that choice per project and reapplies it on later project-picker and scene
 Editor navigations; change the remembered choice only through the popup.
 
-Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help core|target|workspace|processing|import|frontend|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
+Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help core|target|workspace|plugin|processing|import|frontend|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
 
 Prefer local file edits for scripts, shaders, text, `*.material.json` / `*.template.json` data, and multi-property
 edits in the active `.scene.json`. Use structured commands for Editor pipelines (`scene open`,

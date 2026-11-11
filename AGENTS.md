@@ -50,14 +50,16 @@ bun test test/<name>.test.mjs
 - `src/snippets.ts`: page-executed PlayCanvas operations used by structured commands.
 - `src/daemon/`: loopback HTTP/WebSocket daemon server and target/session management.
 - `src/workspace/`: event-driven bidirectional asset/scene sync (`manager.ts`) and canonical 3-way JSON merge (`json-sync.ts`).
-- `src/builder/`, `src/processing/`, `src/frontend/`: Tiny Builder S3 pipeline, bounded local asset conversion executor, and custom Editor frontend release manager.
+- `src/processing/`, `src/frontend/`: bounded local asset conversion executor and custom Editor frontend release manager.
+- `src/plugins/`: plugin store (`store.ts`: manifest validation, install/update/remove under `~/.pcbridge/plugins/`) and daemon plugin host (`host.ts`: node activation, action routing, page-script sync).
+- `plugins/`: official plugins shipped with the package. Each has its own `package.json`; `plugins/tinyapp-builder/` is the Tiny Builder S3 pipeline and the reference plugin.
 - `extension/main.js`: MAIN-world access to PlayCanvas page APIs.
 - `extension/isolated.js`: WebSocket and `postMessage` bridge.
 - `extension/service-worker.js`: tab metadata and generated extension configuration.
 - `extension/popup.*`: extension status and controls.
 - `test/`: Bun test suite (using the node:test compatibility API) for CLI, daemon, extension, workspace, and frontend behavior.
 - `scripts/check-version.mjs`: release-version consistency check.
-- `skills/`: agent-specific installation artifacts.
+- `skills/`: agent-specific installation artifacts, including the `pcbridge-plugin-authoring` skill that defines the plugin format.
 
 `dist/` is generated and ignored. Edit `src/`, then run `bun run build`; never patch `dist/`
 directly.
@@ -73,6 +75,11 @@ CLI -> daemon HTTP API -> extension WebSocket -> isolated script -> MAIN-world s
 - The daemon binds to `127.0.0.1` and authenticates requests with the session token stored under
   `~/.pcbridge/`.
 - Keep browser-specific access in the extension and PlayCanvas operation code in the page layer.
+- Optional, user-specific features belong in a plugin, not in core. Plugin node code runs in the
+  daemon and plugin page scripts run in the MAIN world; plugins never run in the isolated world,
+  service worker, or popup. Pages may call plugin actions but never plugin management endpoints.
+- When the plugin manifest or either plugin runtime API changes, update every
+  `pcbridge-plugin-authoring` skill variant and `plugins/tinyapp-builder/` in the same change.
 - Keep target selection compatible with Editor and Launch tabs and with selectors such as
   `current`, `tab:`, `scene:`, `project:`, `editor:`, and `launch:`.
 - Treat Engine and Editor APIs as version-sensitive. Use feature detection and existing adapters

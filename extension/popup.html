@@ -161,6 +161,38 @@
       button.primary { background: oklch(0.58 0.16 246); border-color: oklch(0.66 0.16 246); }
       button:disabled { cursor: not-allowed; opacity: 0.4; }
       button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+      nav { border-bottom: 1px solid var(--border); display: grid; grid-template-columns: 1fr 1fr; }
+      nav button {
+        background: none;
+        border: 0;
+        border-bottom: 2px solid transparent;
+        border-radius: 0;
+        color: var(--muted);
+        font-weight: 650;
+      }
+      nav button:hover:not(:disabled) { background: var(--surface); border-color: transparent; }
+      nav button[aria-selected="true"] { border-bottom-color: var(--accent); color: var(--foreground); }
+
+      .plugin { border-top: 1px solid var(--border); display: grid; gap: 5px; padding: 10px 12px; }
+      .plugin-head { align-items: baseline; display: flex; gap: 8px; }
+      .plugin-head strong { font-size: 13px; }
+      .plugin-head .status { margin-left: auto; }
+      .plugin p { color: var(--muted); margin: 0; overflow-wrap: anywhere; }
+      .plugin p.error { color: var(--red); }
+      .plugin-actions { display: flex; gap: 7px; margin-top: 3px; }
+      .plugin-actions button { flex: 1; min-height: 30px; padding: 4px 9px; }
+      .plugin-add { display: flex; gap: 7px; padding: 0 12px 10px; }
+      .plugin-add input {
+        background: var(--background);
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        color: var(--foreground);
+        flex: 1;
+        min-width: 0;
+        padding: 7px 8px;
+      }
+      .plugin-add input:focus-visible { border-color: var(--accent); outline: none; }
       [hidden] { display: none !important; }
     </style>
   </head>
@@ -176,7 +208,12 @@
       <span class="status" id="overall-status" data-state="neutral">Loading</span>
     </header>
 
-    <main>
+    <nav role="tablist">
+      <button id="tab-bridge" type="button" role="tab" aria-selected="true" aria-controls="view-bridge">Bridge</button>
+      <button id="tab-plugins" type="button" role="tab" aria-selected="false" aria-controls="view-plugins">Plugins</button>
+    </nav>
+
+    <main id="view-bridge" role="tabpanel" aria-labelledby="tab-bridge">
       <section aria-labelledby="connection-title">
         <div class="section-heading">
           <h2 id="connection-title">Connection</h2>
@@ -235,6 +272,35 @@
         <h2 id="site-title">Site access</h2>
         <p class="note" id="site-status">Checking site permission…</p>
         <button id="site-toggle" type="button" disabled>Enable on this site</button>
+      </section>
+    </main>
+
+    <main id="view-plugins" role="tabpanel" aria-labelledby="tab-plugins" hidden>
+      <section aria-labelledby="plugins-title">
+        <div class="section-heading">
+          <h2 id="plugins-title">Installed</h2>
+          <span class="status" id="plugin-count" data-state="neutral">Checking</span>
+        </div>
+        <p class="note" id="plugin-empty" hidden>No plugins installed.</p>
+        <div id="plugin-list"></div>
+      </section>
+
+      <section aria-labelledby="plugin-available-title" id="plugin-available-section" hidden>
+        <div class="section-heading">
+          <h2 id="plugin-available-title">Available</h2>
+        </div>
+        <div id="plugin-available"></div>
+      </section>
+
+      <section aria-labelledby="plugin-add-title">
+        <div class="section-heading">
+          <h2 id="plugin-add-title">Add plugin</h2>
+        </div>
+        <div class="plugin-add">
+          <input class="mono" id="plugin-source" type="text" spellcheck="false" aria-label="Plugin source" placeholder="github:owner/repo or /path/to/plugin">
+          <button id="plugin-add" class="primary" type="button">Add</button>
+        </div>
+        <p class="note" id="plugin-note">Plugins run with full local and page access. Add only plugins you trust.</p>
       </section>
     </main>
     <script src="popup.js"></script>

@@ -17,7 +17,8 @@ import {
 } from "../frontend/server.js";
 import { TargetRegistry } from "./target-registry.js";
 import { WorkspaceManager, type WorkspaceDelta } from "../workspace/manager.js";
-import { BuilderManager } from "../builder/manager.js";
+import { PluginHost } from "../plugins/host.js";
+import { parsePluginSource, PluginStore } from "../plugins/store.js";
 import {
   fail,
   normalizeError,
@@ -66,7 +67,7 @@ export type DaemonServer = {
   registry: TargetRegistry;
   frontend: FrontendServer;
   workspace: WorkspaceManager;
-  builder: BuilderManager;
+  plugins: PluginHost;
   closed: Promise<void>;
   close: () => Promise<void>;
   listen: () => Promise<void>;
@@ -196,15 +197,17 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
       timeoutMs,
     }),
   });
-  const builder = new BuilderManager({
-    rootDir: workspace.rootDir,
+  const plugins = new PluginHost({
+    store: new PluginStore(join(options.frontendRootDir || CONFIG_DIR, "plugins")),
+    workspace,
     requestTarget: (target, method, params = {}, timeoutMs = 15000) => sendToTarget({
       target,
       method,
       params,
       timeoutMs,
     }),
-    workspace,
+    listTargets: () => registry.list(),
+    log,
   });
 
   const processing = new ProcessingManager(target => {
@@ -406,44 +409,56 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
         return;
       }
 
-      if (url.pathname === "/builder/jobs" && req.method === "POST") {
+      if (url.pathname === "/plugins" && req.method === "GET") {
+        if (!requireToken(req)) {
+          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
+          return;
+        }
+        writeJson(res, 200, ok(await plugins.list() as unknown as JsonValue));
+        return;
+      }
+
+      const pluginMatch = url.pathname.match(
+        /^\/plugins\/(?:(add)|([a-z0-9-]+)\/(enable|disable|remove|update|reload|actions\/([\w.-]+)))$/,
+      );
+      if (pluginMatch && req.method === "POST") {
         if (!requireToken(req)) {
           writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
           return;
         }
         const body = await readBody(req);
-        if (!isJsonObject(body) || typeof body.templateAssetId !== "string") {
-          writeJson(res, 400, fail("INVALID_REQUEST", "Template build requires templateAssetId."));
-          return;
+        const data = isJsonObject(body) ? body : {};
+        const [, add, id, operation, action] = pluginMatch;
+        try {
+          let result: unknown;
+          if (add) {
+            if (typeof data.source !== "string") {
+              writeJson(res, 400, fail("INVALID_REQUEST", "plugin add requires source."));
+              return;
+            }
+            result = await plugins.add(parsePluginSource(data.source, data.link === true));
+          } else if (action) {
+            let target: TargetInfo | null = null;
+            const resolved = registry.resolve(typeof data.target === "string" ? data.target : "current");
+            if (resolved.ok) target = resolved.target.info;
+            else if (typeof data.target === "string") {
+              writeJson(res, 400, fail(resolved.code, resolved.message));
+              return;
+            }
+            result = await plugins.callAction(id, action, isJsonObject(data.params) ? data.params : {}, target);
+          } else if (operation === "enable" || operation === "disable") {
+            result = await plugins.setEnabled(id, operation === "enable");
+          } else {
+            result = await plugins[operation as "remove" | "update" | "reload"](id);
+          }
+          writeJson(res, 200, ok(result as JsonValue));
+        } catch (error) {
+          const code = (error as { code?: unknown }).code;
+          writeJson(res, 400, fail(
+            typeof code === "string" ? code : "PLUGIN_ERROR",
+            error instanceof Error ? error.message : String(error),
+          ));
         }
-        const selector = typeof body.target === "string" ? body.target : "current";
-        const resolved = registry.resolve(selector);
-        if (!resolved.ok) {
-          writeJson(res, 400, fail(resolved.code, resolved.message));
-          return;
-        }
-        const suffix = typeof body.suffix === "string" ? body.suffix : undefined;
-        const prefix = typeof body.prefix === "string" ? body.prefix : undefined;
-        writeJson(
-          res,
-          202,
-          ok(builder.start(resolved.target.info, body.templateAssetId, { suffix, prefix }) as unknown as JsonValue),
-        );
-        return;
-      }
-
-      const builderJobMatch = url.pathname.match(/^\/builder\/jobs\/([^/]+)$/);
-      if (builderJobMatch && req.method === "GET") {
-        if (!requireToken(req)) {
-          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
-          return;
-        }
-        const job = builder.get(decodeURIComponent(builderJobMatch[1]));
-        if (!job) {
-          writeJson(res, 404, fail("BUILD_NOT_FOUND", "Template build job was not found."));
-          return;
-        }
-        writeJson(res, 200, ok(job as unknown as JsonValue));
         return;
       }
 
@@ -517,6 +532,7 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
               log(`workspace initialization failed for ${result.info.id}: ${String(error)}`);
             });
           }
+          plugins.handleTarget(result.info);
           return;
         }
 
@@ -582,6 +598,7 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
           });
         }
         else workspace.markDisconnected(info);
+        plugins.forgetTarget(info);
         log(
           `disconnected ${info.id} project=${info.projectId || "unknown"} ` +
           `scene=${info.sceneId || "unknown"}`,
@@ -602,9 +619,9 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
       }
       pending.clear();
 
-      const builderCleanup = await Promise.allSettled([builder.close(), processing.close()]);
+      const pluginCleanup = await Promise.allSettled([plugins.close(), processing.close()]);
       const cleanupResults = [
-        ...builderCleanup,
+        ...pluginCleanup,
         ...await Promise.allSettled([
           workspace.close(),
           frontend.close(),
@@ -649,7 +666,7 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
     registry,
     frontend,
     workspace,
-    builder,
+    plugins,
     closed,
     listen: async () => {
       await new Promise<void>((resolveListen, reject) => {
@@ -665,6 +682,11 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
         await frontend.listen();
       } catch (error) {
         log(`frontend server unavailable: ${String(error)}`);
+      }
+      try {
+        await plugins.start();
+      } catch (error) {
+        log(`plugins unavailable: ${String(error)}`);
       }
     },
     close: closeDaemon,

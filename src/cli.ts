@@ -67,6 +67,13 @@ import {
   templateOverridesSnippet,
 } from "./snippets.js";
 import { fail, ok, type Envelope, type JsonValue } from "./shared/protocol.js";
+import {
+  parsePluginSource,
+  PLUGIN_ID_PATTERN,
+  PluginError,
+  PluginStore,
+  summarizePlugin,
+} from "./plugins/store.js";
 
 type Args = {
   _: string[];
@@ -1041,37 +1048,21 @@ async function installSkill(args: Args): Promise<Envelope> {
   const agents = agent === "all" ? ["codex", "claude", "cursor", "windsurf"] : [agent];
 
   for (const item of agents) {
-    if (item === "codex") {
-      const dest = customParent || join(process.env.CODEX_HOME || join(homedir(), ".codex"), "skills");
-      const source = join(root, "skills", "codex", "playcanvas-agent-bridge-cli");
-      const target = join(dest, "playcanvas-agent-bridge-cli");
-      await copyDir(source, target, { clean: true });
-      installed.push({ agent: item, path: target });
-    } else if (item === "claude") {
-      const target = join(
-        customParent || join(homedir(), ".claude", "skills"),
-        "playcanvas-agent-bridge-cli",
-      );
-      await copyDir(join(root, "skills", "claude", "playcanvas-agent-bridge-cli"), target, {
-        clean: true,
-      });
-      installed.push({ agent: item, path: target });
-    } else if (item === "cursor") {
-      const target = join(
-        customParent || join(homedir(), ".cursor", "rules"),
-        "playcanvas-agent-bridge-cli.mdc",
-      );
-      await mkdir(dirname(target), { recursive: true });
-      await writeFile(target, await readFile(join(root, "skills", "cursor", "playcanvas-agent-bridge-cli.mdc")));
-      installed.push({ agent: item, path: target });
-    } else if (item === "windsurf") {
-      const target = join(
-        customParent || join(homedir(), ".windsurf", "rules"),
-        "playcanvas-agent-bridge-cli.md",
-      );
-      await mkdir(dirname(target), { recursive: true });
-      await writeFile(target, await readFile(join(root, "skills", "windsurf", "playcanvas-agent-bridge-cli.md")));
-      installed.push({ agent: item, path: target });
+    for (const skill of ["playcanvas-agent-bridge-cli", "pcbridge-plugin-authoring"]) {
+      if (item === "codex" || item === "claude") {
+        const parent = customParent || (item === "codex"
+          ? join(process.env.CODEX_HOME || join(homedir(), ".codex"), "skills")
+          : join(homedir(), ".claude", "skills"));
+        const target = join(parent, skill);
+        await copyDir(join(root, "skills", item, skill), target, { clean: true });
+        installed.push({ agent: item, path: target });
+      } else {
+        const file = `${skill}.${item === "cursor" ? "mdc" : "md"}`;
+        const target = join(customParent || join(homedir(), `.${item}`, "rules"), file);
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, await readFile(join(root, "skills", item, file)));
+        installed.push({ agent: item, path: target });
+      }
     }
   }
 
@@ -1842,31 +1833,87 @@ async function handleWorkspace(args: Args): Promise<Envelope> {
   return fail("UNKNOWN_COMMAND", `Unknown workspace command: ${subcommand}`);
 }
 
-async function handleBuilder(args: Args): Promise<Envelope> {
-  const subcommand = args._[1] || "status";
-  if (subcommand === "start" || subcommand === "build") {
-    const templateAssetId = flagString(args, "asset") ||
-      flagString(args, "asset-id") ||
-      flagString(args, "id");
-    if (!templateAssetId) {
-      return fail("INVALID_REQUEST", "builder start requires --asset <templateAssetId>.");
-    }
-    return fetchDaemon("/builder/jobs", {
+async function handlePlugin(args: Args): Promise<Envelope> {
+  const subcommand = args._[1] || "list";
+  const id = args._[2];
+
+  if (subcommand === "call") {
+    const action = args._[3];
+    if (!id || !action) return fail("INVALID_REQUEST", "plugin call requires <id> <action>.");
+    const inline = flagString(args, "params");
+    const params = inline === undefined ? await readJsonFlag(args, "params-json") : parseJsonValue(inline);
+    const target = flagString(args, "target");
+    return fetchDaemon(`/plugins/${id}/actions/${encodeURIComponent(action)}`, {
       method: "POST",
       body: JSON.stringify({
-        target: flagString(args, "target", "current") || "current",
-        templateAssetId,
-        suffix: flagString(args, "suffix") || "",
-        prefix: flagString(args, "prefix") || "",
+        ...(target ? { target } : {}),
+        params: objectJson(params, "plugin params"),
       }),
     });
   }
-  if (subcommand === "status") {
-    const jobId = flagString(args, "job") || flagString(args, "id");
-    if (!jobId) return fail("INVALID_REQUEST", "builder status requires --job <jobId>.");
-    return fetchDaemon(`/builder/jobs/${encodeURIComponent(jobId)}`);
+
+  // Management falls back to the on-disk registry so a plugin that breaks daemon startup can still be disabled.
+  const store = new PluginStore(join(CONFIG_DIR, "plugins"));
+  const manage = async (path: string, body: JsonValue, offline: () => Promise<JsonValue>): Promise<Envelope> => {
+    try {
+      return await fetchDaemon(path, body === null ? {} : { method: "POST", body: JSON.stringify(body) });
+    } catch (error) {
+      if (!(error instanceof DaemonConnectionError) || error.diagnosis.code !== "DAEMON_NOT_LISTENING") throw error;
+    }
+    try {
+      return ok(await offline());
+    } catch (error) {
+      if (error instanceof PluginError) return fail(error.code, error.message);
+      throw error;
+    }
+  };
+  const summary = async (pluginId: string) => summarizePlugin(await store.get(pluginId)) as unknown as JsonValue;
+
+  if (subcommand === "list") {
+    return manage("/plugins", null, async () => ({
+      plugins: (await store.list()).map(summarizePlugin),
+      available: await store.available(),
+    }) as unknown as JsonValue);
   }
-  return fail("UNKNOWN_COMMAND", `Unknown builder command: ${subcommand}`);
+  if (subcommand === "add") {
+    if (!id) {
+      return fail("INVALID_REQUEST", "plugin add requires an official name, github:owner/repo[/subdir][#ref], or a directory.");
+    }
+    const source = id.startsWith("github:") || PLUGIN_ID_PATTERN.test(id) ? id : resolve(id);
+    const link = flagBool(args, "link");
+    return manage("/plugins/add", { source, link }, async () =>
+      summarizePlugin(await store.add(parsePluginSource(source, link))) as unknown as JsonValue);
+  }
+  if (!id) return fail("INVALID_REQUEST", `plugin ${subcommand} requires a plugin id.`);
+  if (subcommand === "info") {
+    const listed = await handlePlugin({ _: ["plugin", "list"], flags: {} });
+    if (!listed.ok) return listed;
+    const plugin = (objectJson(listed.data, "plugin list").plugins as JsonValue[])
+      .find((item) => (item as Record<string, JsonValue>).id === id);
+    return plugin ? ok(plugin) : fail("PLUGIN_NOT_FOUND", `Plugin ${id} is not installed.`);
+  }
+  if (subcommand === "enable" || subcommand === "disable") {
+    return manage(`/plugins/${id}/${subcommand}`, {}, async () => {
+      await store.setEnabled(id, subcommand === "enable");
+      return summary(id);
+    });
+  }
+  if (subcommand === "remove") {
+    return manage(`/plugins/${id}/remove`, {}, async () => {
+      await store.remove(id);
+      return { id, removed: true };
+    });
+  }
+  if (subcommand === "update") {
+    return manage(`/plugins/${id}/update`, {}, async () => {
+      const { previousVersion } = await store.update(id);
+      return { ...(await summary(id) as Record<string, JsonValue>), previousVersion };
+    });
+  }
+  if (subcommand === "reload") {
+    return fetchDaemon(`/plugins/${id}/reload`, { method: "POST", body: "{}" });
+  }
+  return fail("UNKNOWN_COMMAND", `Unknown plugin command: ${subcommand}`);
 }
 
 async function handleProcessing(args: Args): Promise<Envelope> {
@@ -1931,7 +1978,7 @@ function help(group = "overview"): Envelope {
     overview: [
       "pcbridge help core",
       "pcbridge help workspace",
-      "pcbridge help builder",
+      "pcbridge help plugin",
       "pcbridge help processing",
       "pcbridge help import",
       "pcbridge help frontend",
@@ -1989,11 +2036,16 @@ function help(group = "overview"): Envelope {
       "Complete means server publication. --sync-workspace separately waits for local metadata synchronization.",
       "New files use the existing asset upload command; model uploads create the same import jobs.",
     ],
-    builder: [
-      "pcbridge builder start --target editor:<sceneId> --asset <template_asset_id> [--suffix '-${time}'] [--prefix assets]",
-      "pcbridge builder status --job <build_job_id>",
-      "Template assets also show a pcbridge Tiny Builder panel in the PlayCanvas Editor.",
-      "S3 settings come from the project .env, then the workspace-root .env; files upload directly without a ZIP.",
+    plugin: [
+      "pcbridge plugin list",
+      "pcbridge plugin info <id>",
+      "pcbridge plugin add <official-name> | github:<owner>/<repo>[/<subdir>][#<ref>] | <directory> [--link]",
+      "pcbridge plugin enable|disable|remove|update <id>",
+      "pcbridge plugin reload <id>",
+      "pcbridge plugin call <id> <action> [--target editor:<sceneId>] [--params '<json>' | --params-json ./params.json]",
+      "list shows installed plugins, their actions, activation errors, and official plugins available to add.",
+      "--link uses a local directory in place for development; reload re-reads its files without reinstalling.",
+      "Plugins run with full local and page access. Add only plugins you trust.",
     ],
     frontend: [
       "pcbridge frontend install [latest|playcanvas-editor-v<version>-r<revision>] [--no-activate]",
@@ -2154,8 +2206,8 @@ async function main(): Promise<void> {
       print(await handleTarget(args));
     } else if (command === "workspace") {
       print(await handleWorkspace(args));
-    } else if (command === "builder" || command === "build") {
-      print(await handleBuilder(args));
+    } else if (command === "plugin" || command === "plugins") {
+      print(await handlePlugin(args));
     } else if (command === "eval") {
       const commandArgs = await readJsonFlag(args, "args-json");
       print(

@@ -330,7 +330,55 @@ test("eval preserves structured page error codes and details", async () => {
   assert.equal(response.error.details.parserCompleted, true);
 });
 
-test("Template dependency collection follows asset references and excludes sds scripts", async () => {
+test("page plugins load once, serve node calls, isolate failures, and dispose on sync", async () => {
+  const runtime = await loadMainWorld({ app: null, editorLocation: true, exposeEditorApi: true });
+  const demo = {
+    id: "demo",
+    version: "1.0.0",
+    code: `
+      window.demoLoads = (window.demoLoads || 0) + 1;
+      plugin.handle("echo", (params) => ({ id: plugin.id, kind: plugin.kind, value: params.value, hasEditor: !!editor }));
+      plugin.onDispose(() => { window.demoDisposed = true; });
+      void plugin.call("ping", { from: "page" });
+    `,
+  };
+  const broken = { id: "broken", version: "1.0.0", code: "throw new Error('boom');" };
+
+  const first = await runtime.call("bridge:syncPlugins", { plugins: [demo, broken] });
+  assert.deepEqual(JSON.parse(JSON.stringify(first.plugins)), [
+    { id: "demo", ok: true },
+    { id: "broken", ok: false, error: "boom" },
+  ]);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await runtime.call("plugin:demo:echo", { value: 7 }))),
+    { id: "demo", kind: "editor", value: 7, hasEditor: true },
+  );
+  const request = runtime.messages.find((message) => message.type === "daemon-request");
+  assert.equal(request.path, "/plugins/demo/actions/ping");
+  assert.equal(request.method, "POST");
+  assert.deepEqual(JSON.parse(JSON.stringify(request.body)), { params: { from: "page" } });
+
+  await runtime.call("bridge:syncPlugins", { plugins: [demo] });
+  assert.equal(runtime.window.demoLoads, 1, "unchanged plugin code must not be re-run");
+
+  await runtime.call("bridge:syncPlugins", { plugins: [{ ...demo, code: `${demo.code}\n// changed` }] });
+  assert.equal(runtime.window.demoDisposed, true);
+  assert.equal(runtime.window.demoLoads, 2);
+
+  await runtime.call("bridge:syncPlugins", { plugins: [] });
+  const missing = await runtime.callRaw("plugin:demo:echo", {});
+  assert.equal(missing.ok, false);
+});
+
+async function syncTinyBuilder(runtime) {
+  const code = await readFile(join(process.cwd(), "plugins/tinyapp-builder/page/editor.js"), "utf8");
+  const result = await runtime.call("bridge:syncPlugins", {
+    plugins: [{ id: "tinyapp-builder", version: "1.0.0", code }],
+  });
+  assert.equal(result.plugins[0].ok, true, result.plugins[0].error);
+}
+
+test("Tiny Builder plugin collects Template dependencies and excludes sds scripts", async () => {
   const asset = (data) => ({
     get(path) {
       return path.split(".").reduce((value, key) => value && value[key], data);
@@ -399,13 +447,14 @@ test("Template dependency collection follows asset references and excludes sds s
     assetsApi,
     exposeEditorApi: true,
   });
-  const result = await runtime.call("bridge:collectTemplateDependencies", { assetId: "1" });
+  await syncTinyBuilder(runtime);
+  const result = await runtime.call("plugin:tinyapp-builder:collectTemplateDependencies", { assetId: "1" });
   assert.deepEqual(Array.from(result.assets, (item) => item.id).sort(), [2, 3, 4]);
   assert.deepEqual(Array.from(result.scripts, (item) => item.name), ["mover"]);
   assert.deepEqual(Array.from(result.childTemplateIds), ["9"]);
 });
 
-test("Template selection injects the pcbridge builder panel into the attributes layout", async () => {
+test("Tiny Builder plugin injects its panel for a selected Template and removes it when disabled", async () => {
   class Element {
     constructor(args = {}) {
       Object.assign(this, args);
@@ -454,8 +503,8 @@ test("Template selection injects the pcbridge builder panel into the attributes 
   runtime.window.editor.selection = {
     on(type, handler) { selectionHandlers.set(type, handler); },
   };
+  await syncTinyBuilder(runtime);
   assert.equal(runtime.intervals.length, 1);
-  runtime.intervals[0]();
   assert.equal(layout.children.length, 1);
   const panel = layout.children[0];
   assert.equal(panel.children[0].text, "pcbridge Tiny Builder");
@@ -473,4 +522,7 @@ test("Template selection injects the pcbridge builder panel into the attributes 
   runtime.intervals[0]();
   assert.equal(layout.children.length, 1, "an Inspector rebuild must reattach the panel");
   assert.notEqual(layout.children[0], panel);
+
+  await runtime.call("bridge:syncPlugins", { plugins: [] });
+  assert.equal(layout.children.length, 0, "disabling the plugin must remove its panel");
 });

@@ -215,7 +215,7 @@ DFS 排序，支持双向增量同步）；未打开的其他场景落盘为只�
 实体或不同属性时自动无冲突合并并结构化 Patch 回写 Editor；仅当同一叶子属性被同时改成不同值时，
 才将 `.local`、`.remote` 与 `.conflict.json` 隔离到 `tmp/conflicts/`。图片、模型、音频、字体及超过
 直接同步上限的大文件保持懒同步：在 `pcbridge.project.json` 中记录元数据、尺寸规格与 MD5，按需通过
-`workspace pull` 或 Tiny Builder 拉取。本地新增文件（包括新建 `*.<type>.json` 结构化资源）会在对应
+`workspace pull` 或 Tiny Builder 插件拉取。本地新增文件（包括新建 `*.<type>.json` 结构化资源）会在对应
 目录自动创建远端 Asset；本地重命名和移动通过内嵌 `$pcbridge.id`、文件 inode 或内容哈希保持原 Asset ID。
 删除本地直接同步（Tier 1）文件会先备份到 `tmp/trash/local/` 并同步删除远端 Asset 以避免状态歧义；
 删除已拉取的懒同步（Tier 2）二进制文件则仅清理本地缓存，远端删除仍隔离到 `tmp/trash/remote/`。
@@ -238,9 +238,45 @@ pcbridge 管理。schema v1
 收到的空快照会被忽略；
 非空但缩小的快照必须连续出现两次，文件才会被移动到 `tmp/trash/remote/`。
 
-## Template 构建与 S3 上传
+## 插件
 
-选中 PlayCanvas Template Asset 后，Attributes 面板会出现 **pcbridge Tiny Builder**。点击
+可选功能以 pcbridge 插件的形式提供。pcbridge 插件不等于 Chrome 浏览器插件：浏览器插件是
+pcbridge 固定的组成部分，而 pcbridge 插件是每个用户按需添加、开启、关闭和删除的功能包。
+一个插件可以包含两类代码：
+
+| 运行环境 | 运行位置 | 典型用途 |
+| --- | --- | --- |
+| `node` | 本地 daemon | 文件、网络、密钥、连接 Blender 等本地程序 |
+| `page.editor` / `page.launch` | PlayCanvas Editor 或 Launch 页面 | 编辑器 UI、Editor API 读写、运行时检查 |
+
+浏览器插件本身不能被 pcbridge 插件扩展，它只负责在两端之间转发消息并提供管理面板。可以在
+浏览器插件弹窗的 **Plugins** 标签页或通过 CLI 管理插件：
+
+```bash
+pcbridge plugin list                       # 已安装插件、各自的 action，以及可添加的官方插件
+pcbridge plugin add tinyapp-builder        # 随 pcbridge 发布的官方插件
+pcbridge plugin add github:<owner>/<repo>[/<subdir>][#<ref>]
+pcbridge plugin add ./my-plugin [--link]   # --link 直接使用该目录，便于开发调试
+pcbridge plugin enable|disable|remove|update <id>
+pcbridge plugin reload <id>                # 修改插件文件后重新加载
+pcbridge plugin call <id> <action> --target editor:<sceneId> --params '<json>'
+```
+
+插件保存在 `~/.pcbridge/plugins/`。带 npm 依赖的插件会在添加或更新时通过
+`bun install --production` 安装依赖。开启、关闭和重新加载会立即作用于 daemon 以及已打开的
+Editor / Launch 页面，无需刷新页面。`plugin update` 会从添加时记录的来源重新拉取。插件拥有
+完整的本地和页面权限，请只添加可信来源的插件。
+
+开发插件时，先安装 Agent 技能（`pcbridge install-skill --agent all`），再使用
+`pcbridge-plugin-authoring` 技能；它定义了清单文件（`pcbridge-plugin.json`）、两端运行时 API
+和编写规则。本仓库的 `plugins/tinyapp-builder/` 是参考实现。
+
+## Tiny Builder 插件：Template 构建与 S3 上传
+
+Tiny Builder 是官方插件 `tinyapp-builder`，执行一次 `pcbridge plugin add tinyapp-builder`
+或在弹窗 **Plugins** 标签页点击 **Install** 即可添加。
+
+插件开启后，选中 PlayCanvas Template Asset，Attributes 面板会出现 **pcbridge Tiny Builder**。点击
 **构建并上传到 S3** 后，网页只负责收集 Template、递归 Asset 引用、挂载脚本和子 Template；
 daemon 会把全部依赖物化到 `assets/`：本地文件与有效远端 MD5 一致时直接复用，不存在或远端
 已更新时先从 PlayCanvas 同步。贴图 variant 和字体附加图集会作为主 Asset 同目录下的只读
@@ -272,8 +308,8 @@ R2 等兼容服务；自定义服务是否需要 path-style URL 由
 发起和查看任务：
 
 ```bash
-pcbridge builder start --target editor:<sceneId> --asset <templateAssetId> --suffix '-${time}'
-pcbridge builder status --job <jobId>
+pcbridge plugin call tinyapp-builder start --target editor:<sceneId> --params '{"templateAssetId":"<templateAssetId>","suffix":"-${time}"}'
+pcbridge plugin call tinyapp-builder status --params '{"jobId":"<jobId>"}'
 ```
 
 CLI 的脚本、JSON、上传文件和截图路径默认必须位于对应项目工作区内。只有明确需要使用
@@ -301,7 +337,7 @@ pcbridge help core
 pcbridge help workspace
 pcbridge help processing
 pcbridge help import
-pcbridge help builder
+pcbridge help plugin
 pcbridge help frontend
 pcbridge help target
 pcbridge help entity

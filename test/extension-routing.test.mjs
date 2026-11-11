@@ -274,7 +274,7 @@ test("structured main-world errors keep details through isolated WebSocket forwa
   });
 });
 
-test("isolated bridge forwards Template builder jobs through the extension background", async () => {
+test("isolated bridge forwards plugin actions through the extension background", async () => {
   const socket = await loadBridgeWorlds({
     fetchImpl: async () => { throw new Error("the isolated page must not fetch the daemon"); },
   });
@@ -282,14 +282,14 @@ test("isolated bridge forwards Template builder jobs through the extension backg
     channel: "playcanvas-agent-bridge",
     side: "main",
     type: "daemon-request",
-    id: "builder-request",
-    path: "/builder/jobs",
+    id: "plugin-request",
+    path: "/plugins/tinyapp-builder/actions/start",
     method: "POST",
-    body: { templateAssetId: "123" },
+    body: { params: { templateAssetId: "123" } },
   });
   const response = await waitFor(
     () => socket.pageMessages.find((message) =>
-      message.type === "daemon-response" && message.id === "builder-request"
+      message.type === "daemon-response" && message.id === "plugin-request"
     ),
     "isolated bridge did not return the daemon response",
   );
@@ -297,16 +297,16 @@ test("isolated bridge forwards Template builder jobs through the extension backg
   const request = socket.runtimeRequests.find((item) => item.type === "pcbridge:daemonRequest");
   assert.deepEqual(JSON.parse(JSON.stringify(request)), {
     type: "pcbridge:daemonRequest",
-    path: "/builder/jobs",
+    path: "/plugins/tinyapp-builder/actions/start",
     method: "POST",
     body: {
-      templateAssetId: "123",
+      params: { templateAssetId: "123" },
       target: "tab:1",
     },
   });
 });
 
-test("extension background authenticates Template builder requests to the local daemon", async () => {
+test("extension background authenticates plugin actions and blocks plugin management from pages", async () => {
   const requests = [];
   const extension = await loadServiceWorker(async (url, options) => {
     if (url === "chrome-extension://test/config.json") {
@@ -318,29 +318,31 @@ test("extension background authenticates Template builder requests to the local 
     return new Response(JSON.stringify({
       ok: true,
       data: { id: "build-1", state: "queued" },
-    }), { status: 202, headers: { "Content-Type": "application/json" } });
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
   });
   const response = await extension.sendMessage({
     type: "pcbridge:daemonRequest",
-    path: "/builder/jobs",
+    path: "/plugins/tinyapp-builder/actions/start",
     method: "POST",
-    body: { templateAssetId: "123" },
+    body: { params: { templateAssetId: "123" } },
   }, { tab: { id: 41, url: "https://playcanvas.com/editor/scene/1" } });
   assert.equal(response.ok, true);
-  assert.equal(requests[0].url, "http://127.0.0.1:17329/builder/jobs");
+  assert.equal(requests[0].url, "http://127.0.0.1:17329/plugins/tinyapp-builder/actions/start");
   assert.equal(requests[0].options.headers["X-PCBridge-Token"], "test");
   assert.deepEqual(JSON.parse(requests[0].options.body), {
-    templateAssetId: "123",
+    params: { templateAssetId: "123" },
     target: "tab:41",
   });
-  const blocked = await extension.sendMessage({
-    type: "pcbridge:daemonRequest",
-    path: "/rpc",
-    method: "POST",
-    body: {},
-  }, { tab: { id: 41, url: "https://playcanvas.com/editor/scene/1" } });
-  assert.equal(blocked.ok, false);
-  assert.equal(blocked.error.code, "UNSUPPORTED_DAEMON_REQUEST");
+  for (const path of ["/rpc", "/plugins/add", "/plugins/tinyapp-builder/remove"]) {
+    const blocked = await extension.sendMessage({
+      type: "pcbridge:daemonRequest",
+      path,
+      method: "POST",
+      body: {},
+    }, { tab: { id: 41, url: "https://playcanvas.com/editor/scene/1" } });
+    assert.equal(blocked.ok, false);
+    assert.equal(blocked.error.code, "UNSUPPORTED_DAEMON_REQUEST");
+  }
   assert.equal(requests.length, 1);
 });
 
