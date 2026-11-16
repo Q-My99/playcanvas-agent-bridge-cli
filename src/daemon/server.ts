@@ -20,6 +20,13 @@ import { WorkspaceManager, type WorkspaceDelta } from "../workspace/manager.js";
 import { PluginHost } from "../plugins/host.js";
 import { parsePluginSource, PluginStore } from "../plugins/store.js";
 import {
+  executeOneClickUpdate,
+  formatHumanUpdateHint,
+  getUpdateReport,
+  readGeneratedExtensionVersion,
+  UPDATE_CACHE_TTL_MS,
+} from "../updates.js";
+import {
   fail,
   normalizeError,
   ok,
@@ -39,6 +46,8 @@ type DaemonOptions = {
   frontendPort?: number;
   frontendRootDir?: string;
   workspaceRoot?: string;
+  enableBackgroundUpdateCheck?: boolean;
+  fetch?: typeof fetch;
 };
 
 type PendingRequest = {
@@ -64,6 +73,7 @@ type IncomingWsMessage =
 export type DaemonServer = {
   host: string;
   port: number;
+  readonly restartRequested: boolean;
   registry: TargetRegistry;
   frontend: FrontendServer;
   workspace: WorkspaceManager;
@@ -118,17 +128,43 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
   const host = options.host || DEFAULT_HOST;
   const port = Number(options.port ?? DEFAULT_PORT);
   let actualPort = port;
+  let restartRequested = false;
+  const configDir = options.frontendRootDir || CONFIG_DIR;
   const registry = new TargetRegistry();
   const pending = new Map<string, PendingRequest>();
+  const autoReloadedClients = new Set<string>();
   const log = options.log || (() => undefined);
   const frontend = createFrontendServer({
     host,
     port: options.frontendPort ?? DEFAULT_FRONTEND_PORT,
-    rootDir: options.frontendRootDir || CONFIG_DIR,
+    rootDir: configDir,
   });
 
   function requireToken(req: http.IncomingMessage): boolean {
     return req.headers["x-pcbridge-token"] === options.token;
+  }
+
+  function connectedExtensionVersions(): string[] {
+    return [
+      ...new Set(
+        registry
+          .list()
+          .filter((item) => item.connected && typeof item.extensionVersion === "string" && item.extensionVersion)
+          .map((item) => item.extensionVersion as string),
+      ),
+    ];
+  }
+
+  async function reloadConnectedExtensions(reloadTabs = true): Promise<boolean> {
+    const connected = registry.list().find((item) => item.connected);
+    if (!connected) return false;
+    const response = await sendToTarget({
+      target: connected.id,
+      method: "bridge:reloadExtension",
+      params: { reloadTabs },
+      timeoutMs: 5000,
+    });
+    return response.ok;
   }
 
   async function sendToTarget(request: RpcRequest): Promise<Envelope> {
@@ -189,7 +225,7 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
 
   const workspace = new WorkspaceManager({
     rootDir: options.workspaceRoot || process.cwd(),
-    settingsPath: join(options.frontendRootDir || CONFIG_DIR, "workspace-settings.json"),
+    settingsPath: join(configDir, "workspace-settings.json"),
     requestTarget: (target, method, params = {}, timeoutMs = 15000) => sendToTarget({
       target,
       method,
@@ -197,8 +233,11 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
       timeoutMs,
     }),
   });
+  const pluginStore = new PluginStore(join(configDir, "plugins"), {
+    fetch: options.fetch,
+  });
   const plugins = new PluginHost({
-    store: new PluginStore(join(options.frontendRootDir || CONFIG_DIR, "plugins")),
+    store: pluginStore,
     workspace,
     requestTarget: (target, method, params = {}, timeoutMs = 15000) => sendToTarget({
       target,
@@ -268,6 +307,107 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
         return;
       }
 
+      if (url.pathname === "/restart" && req.method === "POST") {
+        if (!requireToken(req)) {
+          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
+          return;
+        }
+        restartRequested = true;
+        writeJson(res, 200, ok({
+          service: "pcbridge-daemon",
+          restarting: true,
+          version: VERSION,
+          workspaceRoot: workspace.rootDir,
+        }));
+        res.once("finish", () => {
+          setImmediate(() => {
+            void closeDaemon().catch((error) => {
+              log(`daemon restart shutdown failed: ${String(error)}`);
+            });
+          });
+        });
+        return;
+      }
+
+      if (url.pathname === "/extension/reload" && req.method === "POST") {
+        if (!requireToken(req)) {
+          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
+          return;
+        }
+        const body = await readBody(req);
+        const data = isJsonObject(body) ? body : {};
+        const reloadTabs = data.reloadTabs !== false;
+        const reloaded = await reloadConnectedExtensions(reloadTabs);
+        writeJson(res, 200, ok({ reloaded, reloadTabs }));
+        return;
+      }
+
+      if (url.pathname === "/updates" && req.method === "GET") {
+        if (!requireToken(req)) {
+          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
+          return;
+        }
+        const refresh = url.searchParams.get("refresh") === "1";
+        const report = await getUpdateReport({
+          refresh,
+          allowNetwork: true,
+          configDir,
+          store: pluginStore,
+          daemonVersion: VERSION,
+          connectedExtensionVersions: connectedExtensionVersions(),
+          fetch: options.fetch,
+        });
+        writeJson(res, 200, ok(report as unknown as JsonValue));
+        return;
+      }
+
+      if (url.pathname === "/update" && req.method === "POST") {
+        if (!requireToken(req)) {
+          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
+          return;
+        }
+        const body = await readBody(req);
+        const data = isJsonObject(body) ? body : {};
+        try {
+          const result = await executeOneClickUpdate({
+            configDir,
+            store: pluginStore,
+            includePlugins: Boolean(data.includePlugins),
+            reloadTabs: data.reloadTabs !== false,
+            daemonVersion: VERSION,
+            connectedExtensionVersions: connectedExtensionVersions(),
+            updatePlugins: () => plugins.updateAll(),
+            fetch: options.fetch,
+          });
+          const shouldRestart = result.packageUpdated || result.version !== VERSION;
+          if (shouldRestart) {
+            restartRequested = true;
+            result.daemonRestartTriggered = true;
+          }
+          writeJson(res, 200, ok(result as unknown as JsonValue));
+          if (shouldRestart) {
+            res.once("finish", () => {
+              setImmediate(() => {
+                void closeDaemon().catch((error) => {
+                  log(`daemon update restart failed: ${String(error)}`);
+                });
+              });
+            });
+          }
+        } catch (error) {
+          const code = (error as { code?: unknown }).code;
+          writeJson(
+            res,
+            400,
+            fail(
+              typeof code === "string" ? code : "UPDATE_FAILED",
+              error instanceof Error ? error.message : String(error),
+            ),
+          );
+        }
+        return;
+      }
+
       if (url.pathname === "/frontend/status" && req.method === "GET") {
         if (!requireToken(req)) {
           writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
@@ -292,7 +432,20 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
           return;
         }
         const tabId = Number(url.searchParams.get("tabId"));
+        const refresh = url.searchParams.get("refresh") === "1";
         const target = Number.isFinite(tabId) ? registry.getByTabId(tabId) : undefined;
+        const [frontendStatus, updates] = await Promise.all([
+          frontend.status(),
+          getUpdateReport({
+            refresh,
+            allowNetwork: refresh,
+            configDir,
+            store: pluginStore,
+            daemonVersion: VERSION,
+            connectedExtensionVersions: connectedExtensionVersions(),
+            fetch: options.fetch,
+          }),
+        ]);
         writeJson(res, 200, ok({
           daemon: {
             version: VERSION,
@@ -304,7 +457,8 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
           },
           target: target || null,
           workspace: workspace.statusForTarget(target),
-          frontend: await frontend.status() as unknown as JsonValue,
+          frontend: frontendStatus as unknown as JsonValue,
+          updates: updates as unknown as JsonValue,
         }));
         return;
       }
@@ -414,7 +568,25 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
           writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
           return;
         }
-        writeJson(res, 200, ok(await plugins.list() as unknown as JsonValue));
+        const refresh = url.searchParams.get("refresh") === "1";
+        writeJson(res, 200, ok(await plugins.list({ refresh }) as unknown as JsonValue));
+        return;
+      }
+
+      if (url.pathname === "/plugins/update-all" && req.method === "POST") {
+        if (!requireToken(req)) {
+          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
+          return;
+        }
+        try {
+          writeJson(res, 200, ok(await plugins.updateAll() as unknown as JsonValue));
+        } catch (error) {
+          const code = (error as { code?: unknown }).code;
+          writeJson(res, 400, fail(
+            typeof code === "string" ? code : "PLUGIN_ERROR",
+            error instanceof Error ? error.message : String(error),
+          ));
+        }
         return;
       }
 
@@ -527,6 +699,29 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
               `scene=${result.info.sceneId || "unknown"}`,
             );
           }
+          if (
+            result.info.extensionVersion &&
+            result.info.extensionVersion !== VERSION &&
+            !autoReloadedClients.has(`${result.info.clientId}:${VERSION}`)
+          ) {
+            void readGeneratedExtensionVersion(join(configDir, "extension"))
+              .then((diskExtVersion) => {
+                if (diskExtVersion === VERSION) {
+                  autoReloadedClients.add(`${result.info.clientId}:${VERSION}`);
+                  log(
+                    `reloading stale Chrome extension (${result.info.extensionVersion} -> ${VERSION}) for ${result.info.id}`,
+                  );
+                  return sendToTarget({
+                    target: result.info.id,
+                    method: "bridge:reloadExtension",
+                    params: { reloadTabs: true },
+                    timeoutMs: 5000,
+                  });
+                }
+                return null;
+              })
+              .catch(() => undefined);
+          }
           if (result.connected || result.changed) {
             void workspace.handleTarget(result.info).catch((error) => {
               log(`workspace initialization failed for ${result.info.id}: ${String(error)}`);
@@ -607,11 +802,39 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
     });
   });
 
+  let updateCheckTimer: NodeJS.Timeout | null = null;
+  let lastLoggedUpdateHint: string | null = null;
+
+  async function runBackgroundUpdateCheck(refresh: boolean): Promise<void> {
+    try {
+      const report = await getUpdateReport({
+        refresh,
+        allowNetwork: true,
+        configDir,
+        store: pluginStore,
+        daemonVersion: VERSION,
+        connectedExtensionVersions: connectedExtensionVersions(),
+        fetch: options.fetch,
+      });
+      const hint = formatHumanUpdateHint(report);
+      if (hint && hint !== lastLoggedUpdateHint) {
+        lastLoggedUpdateHint = hint;
+        log(hint.replace(/^\[pcbridge\]\s*/, ""));
+      }
+    } catch {
+      // Background update checks must never disrupt the daemon.
+    }
+  }
+
   function closeDaemon(): Promise<void> {
     if (closePromise) return closePromise;
 
     closePromise = (async () => {
       clearInterval(pingTimer);
+      if (updateCheckTimer) {
+        clearInterval(updateCheckTimer);
+        updateCheckTimer = null;
+      }
 
       for (const waiter of pending.values()) {
         clearTimeout(waiter.timer);
@@ -663,6 +886,9 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
     get port() {
       return actualPort;
     },
+    get restartRequested() {
+      return restartRequested;
+    },
     registry,
     frontend,
     workspace,
@@ -687,6 +913,13 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
         await plugins.start();
       } catch (error) {
         log(`plugins unavailable: ${String(error)}`);
+      }
+      if (options.enableBackgroundUpdateCheck) {
+        void runBackgroundUpdateCheck(false);
+        updateCheckTimer = setInterval(() => {
+          void runBackgroundUpdateCheck(true);
+        }, UPDATE_CACHE_TTL_MS);
+        updateCheckTimer.unref();
       }
     },
     close: closeDaemon,

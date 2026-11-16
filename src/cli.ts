@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { activeTools, installTools, TOOLS_ROOT } from "./processing/tools.js";
 import { spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { readFile, writeFile, mkdir, stat } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
@@ -74,6 +74,15 @@ import {
   PluginStore,
   summarizePlugin,
 } from "./plugins/store.js";
+import {
+  compactUpdatesMeta,
+  detectInstalledSkills,
+  executeOneClickUpdate,
+  formatHumanUpdateHint,
+  getUpdateReport,
+  recordInstalledSkills,
+  type InstalledSkillTarget,
+} from "./updates.js";
 
 type Args = {
   _: string[];
@@ -514,13 +523,15 @@ function bunVersionSupported(version: string): boolean {
   return major > 1 || (major === 1 && minor >= 4);
 }
 
-async function doctor(): Promise<Envelope> {
+async function doctor(args: Args = { _: ["doctor"], flags: {} }): Promise<Envelope> {
   const session = await readSessionIfExists();
   const checks: JsonValue[] = [];
   const nextActions: string[] = [];
   const bunVersion = process.versions.bun;
   let daemonOk = false;
+  let daemonVersion: string | null = null;
   let connectedExtensionVersionsOk = true;
+  let connectedVersions: string[] = [];
 
   checks.push({
     name: "bun",
@@ -536,7 +547,7 @@ async function doctor(): Promise<Envelope> {
   try {
     const health = await fetchDaemon("/health");
     const daemonData = health.ok ? objectJson(health.data, "daemon health") : null;
-    const daemonVersion = daemonData && typeof daemonData.version === "string"
+    daemonVersion = daemonData && typeof daemonData.version === "string"
       ? daemonData.version
       : null;
     daemonOk = health.ok && daemonVersion === VERSION;
@@ -620,9 +631,9 @@ async function doctor(): Promise<Envelope> {
   try {
     const targets = await fetchDaemon("/targets");
     if (targets.ok && Array.isArray(targets.data)) {
-      const connectedVersions = targets.data
+      connectedVersions = targets.data
         .map((target) => (target && typeof target === "object" && !Array.isArray(target) ? target.extensionVersion : null))
-        .filter(Boolean);
+        .filter((item): item is string => typeof item === "string" && Boolean(item));
       const mismatched = connectedVersions.filter((version) => version !== VERSION);
       connectedExtensionVersionsOk = mismatched.length === 0;
       checks.push({
@@ -642,6 +653,35 @@ async function doctor(): Promise<Envelope> {
     // Daemon reachability is already reported above.
   }
 
+  const refreshUpdates = flagBool(args, "refresh");
+  const updates = await getUpdateReport({
+    refresh: refreshUpdates,
+    allowNetwork: refreshUpdates,
+    daemonVersion,
+    connectedExtensionVersions: connectedVersions,
+  });
+  checks.push({
+    name: "updates",
+    ok: !updates.hasUpdates,
+    checkedAt: updates.checkedAt,
+    latestVersion: updates.core.latestVersion,
+    updateAvailable: updates.core.updateAvailable,
+    outdatedPlugins: updates.plugins
+      .filter((item) => item.updateAvailable)
+      .map((item) => ({
+        id: item.id,
+        currentVersion: item.currentVersion,
+        latestVersion: item.latestVersion,
+        compatible: item.compatible,
+      })) as unknown as JsonValue,
+    message: updates.hasUpdates
+      ? formatHumanUpdateHint(updates)?.replace(/^\[pcbridge\]\s*/, "") || "Updates are available."
+      : "pcbridge and installed plugins are up to date.",
+  });
+  for (const action of updates.nextActions) {
+    if (!nextActions.includes(action)) nextActions.push(action);
+  }
+
   return ok({
     version: VERSION,
     healthy:
@@ -652,6 +692,7 @@ async function doctor(): Promise<Envelope> {
       connectedExtensionVersionsOk,
     configDir: CONFIG_DIR,
     checks,
+    updates: updates as unknown as JsonValue,
     nextActions,
   });
 }
@@ -705,6 +746,8 @@ async function runDaemon(
     port,
     token: session.token,
     workspaceRoot,
+    enableBackgroundUpdateCheck:
+      process.env.PCBRIDGE_DISABLE_BACKGROUND_UPDATE_CHECK !== "1",
     log: (message) => daemonLog(args, message),
   });
 
@@ -749,6 +792,47 @@ async function runDaemon(
   } finally {
     process.off("SIGINT", handleSigint);
     process.off("SIGTERM", handleSigterm);
+  }
+
+  if (server.restartRequested) {
+    const cliEntry =
+      process.env.PCBRIDGE_UPDATE_CLI_PATH ||
+      (process.argv[1] && existsSync(process.argv[1])
+        ? process.argv[1]
+        : fileURLToPath(import.meta.url));
+    const childArgs = [
+      cliEntry,
+      "daemon",
+      "start",
+      "--workspace",
+      workspaceRoot,
+      "--restarted",
+      ...(flagBool(args, "json") ? ["--json"] : []),
+    ];
+    const replacement = spawn(process.execPath, childArgs, {
+      cwd: workspaceRoot,
+      env: process.env,
+      stdio: "inherit",
+    });
+    const forwardSignal = (signal: NodeJS.Signals) => {
+      if (replacement.exitCode === null) replacement.kill(signal);
+    };
+    const onInt = () => forwardSignal("SIGINT");
+    const onTerm = () => forwardSignal("SIGTERM");
+    process.on("SIGINT", onInt);
+    process.on("SIGTERM", onTerm);
+    await new Promise<void>((resolveChild) => {
+      replacement.once("exit", (code) => {
+        if (code !== null && code !== 0) process.exitCode = code;
+        resolveChild();
+      });
+      replacement.once("error", () => {
+        process.exitCode = 1;
+        resolveChild();
+      });
+    });
+    process.off("SIGINT", onInt);
+    process.off("SIGTERM", onTerm);
   }
 }
 
@@ -875,7 +959,11 @@ async function daemon(args: Args): Promise<void> {
         return;
       }
     }
-    await runDaemon(args, workspaceRoot, subcommand === "restart");
+    await runDaemon(
+      args,
+      workspaceRoot,
+      subcommand === "restart" || flagBool(args, "restarted"),
+    );
   } else if (subcommand === "stop") {
     print(await stopDaemon());
   } else if (subcommand === "status") {
@@ -1023,6 +1111,40 @@ function openChromeExtensions(): void {
 }
 
 async function installSkill(args: Args): Promise<Envelope> {
+  const root = await findPackageRoot();
+  const installed: JsonValue[] = [];
+
+  async function installOneTarget(targetItem: InstalledSkillTarget): Promise<void> {
+    const { agent: item, customParent } = targetItem;
+    for (const skill of ["playcanvas-agent-bridge-cli", "pcbridge-plugin-authoring"]) {
+      if (item === "codex" || item === "claude") {
+        const parent = customParent || (item === "codex"
+          ? join(process.env.CODEX_HOME || join(homedir(), ".codex"), "skills")
+          : join(homedir(), ".claude", "skills"));
+        const target = join(parent, skill);
+        await copyDir(join(root, "skills", item, skill), target, { clean: true });
+        installed.push({ agent: item, path: target });
+      } else {
+        const file = `${skill}.${item === "cursor" ? "mdc" : "md"}`;
+        const target = join(customParent || join(homedir(), `.${item}`, "rules"), file);
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, await readFile(join(root, "skills", item, file)));
+        installed.push({ agent: item, path: target });
+      }
+    }
+  }
+
+  if (flagBool(args, "refresh-installed")) {
+    const targets = await detectInstalledSkills();
+    for (const targetItem of targets) {
+      await installOneTarget(targetItem);
+    }
+    if (targets.length > 0) {
+      await recordInstalledSkills(targets).catch(() => undefined);
+    }
+    return ok(installed as JsonValue);
+  }
+
   const agent = flagString(args, "agent", "codex") || "codex";
   const supportedAgents = new Set(["codex", "claude", "cursor", "windsurf"]);
   if (agent !== "all" && !supportedAgents.has(agent)) {
@@ -1043,28 +1165,18 @@ async function installSkill(args: Args): Promise<Envelope> {
     );
   }
   const customParent = customPath ? resolve(customPath) : null;
-  const root = await findPackageRoot();
-  const installed: JsonValue[] = [];
-  const agents = agent === "all" ? ["codex", "claude", "cursor", "windsurf"] : [agent];
+  const agents = (agent === "all"
+    ? ["codex", "claude", "cursor", "windsurf"]
+    : [agent]) as Array<InstalledSkillTarget["agent"]>;
+  const targets: InstalledSkillTarget[] = agents.map((item) => ({
+    agent: item,
+    customParent,
+  }));
 
-  for (const item of agents) {
-    for (const skill of ["playcanvas-agent-bridge-cli", "pcbridge-plugin-authoring"]) {
-      if (item === "codex" || item === "claude") {
-        const parent = customParent || (item === "codex"
-          ? join(process.env.CODEX_HOME || join(homedir(), ".codex"), "skills")
-          : join(homedir(), ".claude", "skills"));
-        const target = join(parent, skill);
-        await copyDir(join(root, "skills", item, skill), target, { clean: true });
-        installed.push({ agent: item, path: target });
-      } else {
-        const file = `${skill}.${item === "cursor" ? "mdc" : "md"}`;
-        const target = join(customParent || join(homedir(), `.${item}`, "rules"), file);
-        await mkdir(dirname(target), { recursive: true });
-        await writeFile(target, await readFile(join(root, "skills", item, file)));
-        installed.push({ agent: item, path: target });
-      }
-    }
+  for (const targetItem of targets) {
+    await installOneTarget(targetItem);
   }
+  await recordInstalledSkills(targets).catch(() => undefined);
 
   return ok(installed as JsonValue);
 }
@@ -1867,12 +1979,19 @@ async function handlePlugin(args: Args): Promise<Envelope> {
       throw error;
     }
   };
-  const summary = async (pluginId: string) => summarizePlugin(await store.get(pluginId)) as unknown as JsonValue;
+  const summary = async (pluginId: string) => {
+    const [plugin, catalog] = await Promise.all([
+      store.get(pluginId),
+      store.catalog(),
+    ]);
+    return summarizePlugin(plugin, catalog) as unknown as JsonValue;
+  };
 
   if (subcommand === "list") {
-    return manage("/plugins", null, async () => ({
-      plugins: (await store.list()).map(summarizePlugin),
-      available: await store.available(),
+    const refresh = flagBool(args, "refresh");
+    return manage(`/plugins${refresh ? "?refresh=1" : ""}`, null, async () => ({
+      plugins: await store.summaries({ refresh }),
+      available: await store.available({ refresh }),
     }) as unknown as JsonValue);
   }
   if (subcommand === "add") {
@@ -1882,7 +2001,15 @@ async function handlePlugin(args: Args): Promise<Envelope> {
     const source = id.startsWith("github:") || PLUGIN_ID_PATTERN.test(id) ? id : resolve(id);
     const link = flagBool(args, "link");
     return manage("/plugins/add", { source, link }, async () =>
-      summarizePlugin(await store.add(parsePluginSource(source, link))) as unknown as JsonValue);
+      summarizePlugin(
+        await store.add(parsePluginSource(source, link)),
+        await store.catalog(),
+      ) as unknown as JsonValue);
+  }
+  if (subcommand === "update" && (flagBool(args, "all") || id === "all")) {
+    return manage("/plugins/update-all", {}, async () =>
+      (await store.updateAll()) as unknown as JsonValue,
+    );
   }
   if (!id) return fail("INVALID_REQUEST", `plugin ${subcommand} requires a plugin id.`);
   if (subcommand === "info") {
@@ -1973,6 +2100,109 @@ async function handleImportJob(args: Args): Promise<Envelope> {
   return fail("IMPORT_WAIT_TIMEOUT", "Task is still pending; query the same job before submitting another.");
 }
 
+async function waitForDaemonHealth(timeoutMs = 10000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  await new Promise((resolveWait) => setTimeout(resolveWait, 80));
+  while (Date.now() < deadline) {
+    try {
+      const health = await fetchDaemon("/health");
+      if (health.ok) return true;
+    } catch {
+      // Keep waiting while the replacement daemon starts up.
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 60));
+  }
+  return false;
+}
+
+async function handleUpdate(args: Args): Promise<Envelope> {
+  const subcommand = args._[1] || (flagBool(args, "check") ? "check" : "apply");
+
+  let daemonVersion: string | null = null;
+  let connectedVersions: string[] = [];
+  let daemonReachable = false;
+  try {
+    const health = await fetchDaemon("/health");
+    if (health.ok) {
+      daemonReachable = true;
+      const data = objectJson(health.data, "daemon health");
+      if (typeof data.version === "string") daemonVersion = data.version;
+    }
+    const targets = await fetchDaemon("/targets");
+    if (targets.ok && Array.isArray(targets.data)) {
+      connectedVersions = targets.data
+        .map((t) => (t && typeof t === "object" && !Array.isArray(t) ? t.extensionVersion : null))
+        .filter((v): v is string => typeof v === "string" && Boolean(v));
+    }
+  } catch {
+    // Offline daemon is handled below.
+  }
+
+  if (subcommand === "status" || subcommand === "check") {
+    const refresh = subcommand === "check" || flagBool(args, "refresh") || flagBool(args, "check");
+    if (daemonReachable) {
+      try {
+        return await fetchDaemon(`/updates?refresh=${refresh ? "1" : "0"}`);
+      } catch {
+        // Fall back to direct report below.
+      }
+    }
+    const report = await getUpdateReport({
+      refresh,
+      allowNetwork: true,
+      daemonVersion,
+      connectedExtensionVersions: connectedVersions,
+    });
+    return ok(report as unknown as JsonValue);
+  }
+
+  if (subcommand === "apply") {
+    try {
+      const result = await executeOneClickUpdate({
+        includePlugins: flagBool(args, "plugins"),
+        reloadTabs: !flagBool(args, "no-reload-tabs"),
+        daemonVersion,
+        connectedExtensionVersions: connectedVersions,
+        reloadConnectedExtension: daemonReachable
+          ? async (reloadTabs) => {
+              const res = await fetchDaemon("/extension/reload", {
+                method: "POST",
+                body: JSON.stringify({ reloadTabs }),
+              });
+              return res.ok && Boolean((res.data as Record<string, unknown>)?.reloaded);
+            }
+          : undefined,
+        restartDaemon: daemonReachable
+          ? async () => {
+              const res = await fetchDaemon("/restart", { method: "POST" });
+              if (!res.ok) return false;
+              return waitForDaemonHealth(10000);
+            }
+          : undefined,
+        updatePlugins: daemonReachable
+          ? async () => {
+              const res = await fetchDaemon("/plugins/update-all", { method: "POST" });
+              if (!res.ok) throw new PluginError(res.error.code, res.error.message);
+              return res.data as {
+                updated: Array<{ id: string; previousVersion: string | null; version: string | null }>;
+                skipped: Array<{ id: string; reason: string }>;
+              };
+            }
+          : undefined,
+      });
+      return ok(result as unknown as JsonValue);
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      return fail(
+        typeof code === "string" ? code : "UPDATE_FAILED",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+
+  return fail("UNKNOWN_COMMAND", `Unknown update command: ${subcommand}`);
+}
+
 function help(group = "overview"): Envelope {
   const groups: Record<string, string[]> = {
     overview: [
@@ -1997,6 +2227,8 @@ function help(group = "overview"): Envelope {
     ],
     core: [
       "pcbridge doctor",
+      "pcbridge update [--check] [--plugins] [--no-reload-tabs]",
+      "pcbridge update status [--refresh]",
       "pcbridge install-extension",
       "pcbridge install-skill --agent codex|claude|cursor|windsurf|all [--path <parent_directory>]",
       "--path is allowed only with one agent and appends the standard skill/rule name.",
@@ -2037,10 +2269,11 @@ function help(group = "overview"): Envelope {
       "New files use the existing asset upload command; model uploads create the same import jobs.",
     ],
     plugin: [
-      "pcbridge plugin list",
+      "pcbridge plugin list [--refresh]",
       "pcbridge plugin info <id>",
       "pcbridge plugin add <official-name> | github:<owner>/<repo>[/<subdir>][#<ref>] | <directory> [--link]",
       "pcbridge plugin enable|disable|remove|update <id>",
+      "pcbridge plugin update --all",
       "pcbridge plugin reload <id>",
       "pcbridge plugin call <id> <action> [--target editor:<sceneId>] [--params '<json>' | --params-json ./params.json]",
       "list shows installed plugins, their actions, activation errors, and official plugins available to add.",
@@ -2184,65 +2417,96 @@ async function main(): Promise<void> {
   }
 
   try {
+    let envelope: Envelope;
     if (command !== "help" && args._[1] === "help") {
-      print(help(command));
+      envelope = help(command);
     } else if (command === "help" || command === "--help" || command === "-h") {
-      print(help(args._[1] || "overview"));
+      envelope = help(args._[1] || "overview");
     } else if (command === "doctor") {
-      print(await doctor());
+      envelope = await doctor(args);
+    } else if (command === "update" || command === "updates") {
+      envelope = await handleUpdate(args);
     } else if (command === "install-extension") {
-      print(await installExtension(args));
+      envelope = await installExtension(args);
     } else if (command === "install-skill") {
-      print(await installSkill(args));
+      envelope = await installSkill(args);
     } else if (command === "processing") {
-      print(await handleProcessing(args));
+      envelope = await handleProcessing(args);
     } else if (command === "import") {
-      print(await handleImportJob(args));
+      envelope = await handleImportJob(args);
     } else if (command === "frontend") {
-      print(await handleFrontend(args));
+      envelope = await handleFrontend(args);
     } else if (command === "targets") {
-      print(await fetchDaemon("/targets"));
+      envelope = await fetchDaemon("/targets");
     } else if (command === "target") {
-      print(await handleTarget(args));
+      envelope = await handleTarget(args);
     } else if (command === "workspace") {
-      print(await handleWorkspace(args));
+      envelope = await handleWorkspace(args);
     } else if (command === "plugin" || command === "plugins") {
-      print(await handlePlugin(args));
+      envelope = await handlePlugin(args);
     } else if (command === "eval") {
       const commandArgs = await readJsonFlag(args, "args-json");
-      print(
-        await rpcEval(
-          args,
-          await readCode(args),
-          objectJson(commandArgs, "eval args") as Record<string, JsonValue>,
-        ),
+      envelope = await rpcEval(
+        args,
+        await readCode(args),
+        objectJson(commandArgs, "eval args") as Record<string, JsonValue>,
       );
     } else if (command === "entity") {
-      print(await handleEntity(args));
+      envelope = await handleEntity(args);
     } else if (command === "asset") {
-      print(await handleAsset(args));
+      envelope = await handleAsset(args);
     } else if (command === "material") {
-      print(await handleMaterial(args));
+      envelope = await handleMaterial(args);
     } else if (command === "template") {
-      print(await handleTemplate(args));
+      envelope = await handleTemplate(args);
     } else if (command === "script") {
-      print(await handleScript(args));
+      envelope = await handleScript(args);
     } else if (command === "scene") {
-      print(await handleScene(args));
+      envelope = await handleScene(args);
     } else if (command === "store") {
-      print(await handleStore(args));
+      envelope = await handleStore(args);
     } else if (command === "launch") {
-      print(await handleLaunch(args));
+      envelope = await handleLaunch(args);
     } else if (command === "viewport") {
-      print(await handleViewport(args));
+      envelope = await handleViewport(args);
     } else if (command === "logs" || command === "log") {
-      print(await handleLogs(args));
+      envelope = await handleLogs(args);
     } else if (command === "version" || command === "--version" || command === "-v") {
-      print(ok({ version: VERSION }));
+      envelope = ok({ version: VERSION });
     } else {
-      print(fail("UNKNOWN_COMMAND", `Unknown command: ${command}`));
+      envelope = fail("UNKNOWN_COMMAND", `Unknown command: ${command}`);
       process.exitCode = 1;
     }
+
+    if (
+      command !== "help" &&
+      command !== "--help" &&
+      command !== "-h" &&
+      command !== "version" &&
+      command !== "--version" &&
+      command !== "-v" &&
+      command !== "install-extension" &&
+      command !== "install-skill"
+    ) {
+      try {
+        const cachedReport = await getUpdateReport({ allowNetwork: false });
+        const updatesMeta = compactUpdatesMeta(cachedReport);
+        if (updatesMeta) {
+          envelope = {
+            ...envelope,
+            meta: { ...(envelope.meta || {}), updates: updatesMeta },
+          };
+          if (process.stderr.isTTY && !flagBool(args, "json") && command !== "update" && command !== "updates") {
+            const hint = formatHumanUpdateHint(cachedReport);
+            if (hint) process.stderr.write(`${hint}\n`);
+          }
+        }
+      } catch {
+        // Never fail a CLI command due to update metadata inspection.
+      }
+    }
+
+    print(envelope);
   } catch (error) {
     if (error instanceof DaemonConnectionError) {
       print(fail(

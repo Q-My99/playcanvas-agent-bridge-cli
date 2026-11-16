@@ -176,6 +176,14 @@ async function runPopup(initialUrl, statusData, initialPreference = null) {
         data: { eagerMaxMb: payload.eagerMaxMb, eagerMaxBytes: payload.eagerMaxMb * 1024 * 1024 },
       }));
     }
+    if (String(url).endsWith("/update") && options.method === "POST") {
+      const payload = JSON.parse(String(options.body || "{}"));
+      daemonCalls.push({ endpoint: "/update", ...payload });
+      return new Response(JSON.stringify({
+        ok: true,
+        data: { packageUpdated: true, version: "0.8.0" },
+      }));
+    }
     const currentStatus = typeof statusData === "function" ? statusData() : statusData;
     if (!currentStatus) throw new Error("daemon offline");
     return new Response(JSON.stringify({ ok: true, data: currentStatus }));
@@ -517,4 +525,56 @@ test("extension popup direct-sync slider defaults to 2 MB and syncs 1-10 MB upda
     eagerMaxMb: 7,
     pendingDaemonSync: false,
   });
+});
+
+test("extension popup shows core update banner, plugin update count, and triggers one-click Update & Reload", async () => {
+  const statusWithUpdates = {
+    daemon: { version: "0.6.2", targetCount: 1, eagerMaxMb: 2 },
+    target: {
+      connected: true,
+      ready: true,
+      kind: "editor",
+      projectId: "1552681",
+      projectName: "pcbridge-test",
+    },
+    workspace: {
+      available: true,
+      state: "synced",
+      eagerMaxMb: 2,
+      projectDirectory: "/workspace/1552681-pcbridge-test",
+      counts: { scripts: 1, scriptsSynced: 1, assets: 5, lazyAssets: 2, conflicts: 0 },
+    },
+    frontend: { ready: false, activeRelease: null, server: { listening: false } },
+    updates: {
+      hasUpdates: true,
+      core: {
+        currentVersion: "0.6.2",
+        latestVersion: "0.8.0",
+        updateAvailable: true,
+        canSelfUpdate: true,
+        installKind: "bun-global",
+      },
+      plugins: [
+        {
+          id: "tinyapp-builder",
+          name: "Tiny Builder",
+          currentVersion: "1.0.0",
+          latestVersion: "1.2.0",
+          updateAvailable: true,
+          compatible: true,
+        },
+      ],
+    },
+  };
+
+  const popup = await runPopup("https://playcanvas.com/editor/scene/2558608", statusWithUpdates);
+  assert.equal(popup.elements.get("update-banner").hidden, false);
+  assert.equal(popup.elements.get("update-status").textContent, "v0.8.0");
+  assert.match(popup.elements.get("update-note").textContent, /v0\.6\.2 → v0\.8\.0/);
+  assert.equal(popup.elements.get("tab-plugins").textContent, "Plugins · 1↑");
+  assert.ok(popup.runtimeMessages.some((m) => m.type === "pcbridge:syncUpdateBadge" && m.updates?.hasUpdates === true));
+
+  await popup.elements.get("update-apply").handlers.click();
+  assert.deepEqual(popup.daemonCalls, [{ endpoint: "/update", includePlugins: true, reloadTabs: true }]);
+  assert.ok(popup.runtimeMessages.some((m) => m.type === "pcbridge:reloadExtension" && m.reloadTabs === true));
 });

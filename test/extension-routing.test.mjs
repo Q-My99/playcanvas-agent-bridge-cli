@@ -122,6 +122,7 @@ async function loadBridgeWorlds({ fetchImpl } = {}) {
           "pcbridge:probeDaemon": { reachable: true },
           "pcbridge:daemonRequest": { ok: true, data: { id: "build-1", state: "queued" } },
           "pcbridge:rememberProjectContext": { ok: true },
+          "pcbridge:reloadExtension": { ok: true, reloading: true, reloadTabs: true },
         };
         callback(responses[message.type] || null);
       },
@@ -175,11 +176,28 @@ async function loadServiceWorker(fetchImpl = fetch, sites = false) {
   const local = createStorageArea();
   const session = createStorageArea();
   const updatedTabs = [];
+  const reloadedTabs = [];
   const updatedWindows = [];
+  const badgeTexts = [];
+  const badgeColors = [];
+  let runtimeReloadCalls = 0;
   const chrome = {
     runtime: {
       getURL: (path) => `chrome-extension://test/${path}`,
       onMessage: runtimeMessages,
+      onInstalled: createEvent(),
+      onStartup: createEvent(),
+      reload() {
+        runtimeReloadCalls += 1;
+      },
+    },
+    action: {
+      async setBadgeText(details) {
+        badgeTexts.push(details.text);
+      },
+      async setBadgeBackgroundColor(details) {
+        badgeColors.push(details.color);
+      },
     },
     storage: { local, session },
     windows: {
@@ -190,6 +208,16 @@ async function loadServiceWorker(fetchImpl = fetch, sites = false) {
     tabs: {
       onRemoved: tabRemovals,
       onUpdated: tabUpdates,
+      async query() {
+        return [
+          { id: 12, url: "https://pc-editor.sightp.com/editor/scene/1" },
+          { id: 15, url: "http://pc-launch.sightp.com/launch/1" },
+          { id: 99, url: "https://example.com/" },
+        ];
+      },
+      async reload(tabId) {
+        reloadedTabs.push(tabId);
+      },
       async update(tabId, update) {
         updatedTabs.push({ tabId, ...update });
       },
@@ -197,7 +225,6 @@ async function loadServiceWorker(fetchImpl = fetch, sites = false) {
   };
   const registered = new Map(), permissions = new Set(), disconnected = [];
   if (sites) {
-    chrome.runtime.onInstalled = createEvent(); chrome.runtime.onStartup = createEvent();
     chrome.permissions = { onRemoved: createEvent(), async contains({ origins }) { return origins.every(o => permissions.has(o)); } };
     chrome.scripting = {
       async getRegisteredContentScripts() { return [...registered.values()]; },
@@ -208,7 +235,7 @@ async function loadServiceWorker(fetchImpl = fetch, sites = false) {
     chrome.tabs.sendMessage = async (id, message) => { disconnected.push({ id, message }); };
   }
   const source = await readFile(join(process.cwd(), "extension/service-worker.js"), "utf8");
-  vm.runInNewContext(source, { URL, chrome, fetch: fetchImpl, console, Response });
+  vm.runInNewContext(source, { URL, chrome, fetch: fetchImpl, console, Response, setTimeout });
 
   async function sendMessage(message, sender = {}) {
     return new Promise((resolve) => {
@@ -224,7 +251,11 @@ async function loadServiceWorker(fetchImpl = fetch, sites = false) {
     tabRemovals,
     tabUpdates,
     updatedTabs,
+    reloadedTabs,
     updatedWindows,
+    badgeTexts,
+    badgeColors,
+    getRuntimeReloadCalls: () => runtimeReloadCalls,
     chrome, registered, permissions, disconnected,
   };
 }
@@ -588,4 +619,51 @@ test("extension manifest and popup reference matching high-DPI PNG icons", async
   }
   assert.match(popupHtml, /src="icons\/icon-128\.png"/);
   assert.match(popupHtml, /icons\/icon-256\.png 2x/);
+});
+
+test("extension handles bridge:reloadExtension, refreshes PlayCanvas tabs after reload, and syncs update badge", async () => {
+  const socket = await loadBridgeWorlds();
+  socket.dispatch("message", {
+    data: JSON.stringify({
+      type: "request",
+      id: "reload-req-1",
+      method: "bridge:reloadExtension",
+      timeoutMs: 2000,
+      params: { reloadTabs: true },
+    }),
+  });
+  const wsReply = await waitFor(
+    () => socket.sent.find((message) => message.id === "reload-req-1"),
+    "isolated bridge did not reply to bridge:reloadExtension",
+  );
+  assert.equal(wsReply.ok, true);
+  assert.equal(wsReply.data.reloading, true);
+
+  const extension = await loadServiceWorker();
+  await extension.sendMessage({
+    type: "pcbridge:syncUpdateBadge",
+    updates: { hasUpdates: true },
+  });
+  assert.equal(extension.badgeTexts.at(-1), "↑");
+
+  await extension.sendMessage({
+    type: "pcbridge:syncUpdateBadge",
+    updates: { hasUpdates: false },
+  });
+  assert.equal(extension.badgeTexts.at(-1), "");
+
+  const reloadResponse = await extension.sendMessage({
+    type: "pcbridge:reloadExtension",
+    reloadTabs: true,
+  });
+  assert.equal(reloadResponse.ok, true);
+  assert.equal(extension.local.data.pcbridgePendingReload.reloadTabs, true);
+
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(extension.getRuntimeReloadCalls(), 1);
+
+  extension.chrome.runtime.onInstalled.fire({ reason: "update" });
+  await settleExtensionTasks();
+  assert.deepEqual(extension.reloadedTabs, [12, 15]);
+  assert.deepEqual(extension.local.data.pcbridgePendingReload, {});
 });

@@ -38,15 +38,37 @@ npx playcanvas-agent-bridge-cli install-skill --agent all
 
 ## 更新 pcbridge 各组件
 
-CLI/daemon、已安装的 Agent 技能、生成的 Chrome 插件和可选的本地 Editor 前端是四个独立的
-本地组件，更新其中一个不会自动更新其他组件。
+`pcbridge` 会后台定期检查 npm 上的最新 CLI/浏览器扩展版本，以及 GitHub 仓库（`plugins/index.json`）
+中独立演进的官方插件版本。检测到可用更新时：
 
-### 更新 CLI、daemon 和 Agent 技能
+- **浏览器插件徽标与弹窗**：Chrome 工具栏图标会显示 `↑` 角标；打开弹窗即可在顶部点击
+  **Update & Reload** 一键更新 `pcbridge` 本体，或在 **Plugins** 标签页点击 **Update** /
+  **Update all** 一键热更新官方插件。
+- **CLI 与 AI Agent**：命令返回的 JSON 信封会自动挂载结构化 `meta.updates` 字段，交互式终端会在
+  `stderr` 打印单行更新提示。
+
+### 一键更新（CLI、daemon、Agent 技能、Chrome 插件与官方插件）
+
+```bash
+pcbridge update status --refresh   # 检查 pcbridge 本体与已安装插件的更新状态
+pcbridge update                    # 一键升级 CLI、daemon、已安装技能、Chrome 扩展并刷新标签页
+pcbridge update --plugins          # 同时一键更新所有有新版本的已安装插件
+pcbridge plugin update <id>        # 独立热更新单个插件（无需重启 daemon 或刷新页面）
+pcbridge plugin update --all       # 独立热更新全部有新版本的已安装插件
+```
+
+`pcbridge update` 会自动升级全局 npm 包，调用新版二进制重写 `~/.pcbridge/extension` 并刷新已安装的
+Agent 技能，通知 Chrome 扩展执行 `chrome.runtime.reload()` 自动重载并刷新已打开的 PlayCanvas
+Editor / Launch 标签页（可通过 `--no-reload-tabs` 跳过标签页刷新），同时让正在运行的 daemon 在原终端
+内原地重启并继承原有的 `--workspace` 目录。
+
+### 手动分步更新命令
 
 ```bash
 bun add --global playcanvas-agent-bridge-cli@latest
 pcbridge version
 pcbridge install-skill --agent all
+pcbridge install-extension --no-open
 pcbridge daemon restart --workspace /原来的/workspace/根目录
 ```
 

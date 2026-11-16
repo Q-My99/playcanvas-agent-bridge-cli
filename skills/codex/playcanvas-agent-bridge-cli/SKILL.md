@@ -41,22 +41,27 @@ project-picker and scene Editor navigations; change the remembered mode only thr
 
 ## Updating pcbridge
 
-Treat the CLI/daemon, installed agent skill, generated Chrome extension, and custom Editor frontend
-as separate components. When the user asks to update pcbridge:
+CLI responses attach `meta.updates` whenever cached checks find a newer `pcbridge` release on npm,
+local CLI/daemon/extension version drift, or outdated installed plugins. Check or apply updates with:
 
-1. Record the current workspace root from `pcbridge daemon status`.
-2. Run `bun add --global playcanvas-agent-bridge-cli@latest`, verify `pcbridge version`, and reinstall
-   copied skills with `pcbridge install-skill --agent all`.
-   For a custom or project-local parent directory, use
-   `pcbridge install-skill --agent <one-agent> --path <parent-directory>`; `--path` appends the
-   standard artifact name and cannot be combined with `--agent all`.
-3. Run `pcbridge install-extension --no-open`. The user must click **Reload** for PlayCanvas Agent
-   Bridge in `chrome://extensions` and refresh open Editor/Launch tabs; rewriting the unpacked
-   directory is not enough.
-4. Run `pcbridge daemon restart --workspace <original-root>` and verify with `pcbridge doctor`.
-   When migrating from a daemon version without authenticated shutdown, ask the user to stop that
-   old daemon once with Ctrl+C, then start the updated daemon with the same `--workspace` value.
-5. Update the independently published Editor build with `pcbridge frontend update`, then verify
+```bash
+pcbridge update status --refresh           # inspect core + plugin update availability
+pcbridge update                            # one-click update CLI, skills, Chrome extension, tabs, and daemon
+pcbridge update --plugins                  # update pcbridge core and all outdated plugins together
+pcbridge plugin update <id>                # hot-update a single plugin without restarting daemon or refreshing tabs
+pcbridge plugin update --all               # hot-update all outdated installed plugins
+```
+
+1. `pcbridge update` upgrades the global package (when not running from a git source checkout),
+   rewrites `~/.pcbridge/extension`, refreshes previously installed agent skills, triggers
+   `chrome.runtime.reload()` + open PlayCanvas tab refresh (pass `--no-reload-tabs` to skip tab
+   refresh), and restarts the running daemon in-place while preserving its `--workspace` root.
+   Users can also click **Update & Reload** in the Chrome extension popup banner, or **Update** /
+   **Update all** in the popup **Plugins** tab.
+2. Official plugins track the remote `plugins/index.json` catalog on GitHub independently of CLI
+   releases. `pcbridge plugin list --refresh` shows `version`, `latestVersion`, `updateAvailable`,
+   and `compatible`.
+3. Update the independently published Editor build with `pcbridge frontend update`, then verify
    `frontend status`. A frontend-only update does not require daemon restart, but the user must
    refresh the Editor tab and select **Use custom frontend** in the popup when currently in official
    mode.

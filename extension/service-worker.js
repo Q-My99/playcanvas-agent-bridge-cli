@@ -2,7 +2,62 @@ const FRONTEND_PREFERENCES_KEY = "pcbridgeFrontendPreferences";
 const SCENE_PROJECTS_KEY = "pcbridgeSceneProjects";
 const TAB_PROJECTS_KEY = "pcbridgeTabProjects";
 const WORKSPACE_SETTINGS_KEY = "pcbridgeWorkspaceSettings";
+const PENDING_RELOAD_KEY = "pcbridgePendingReload";
 const tabProjects = new Map();
+
+function syncUpdateBadge(updates) {
+  if (!chrome.action || !chrome.action.setBadgeText) return;
+  const hasUpdates = Boolean(updates && updates.hasUpdates);
+  void chrome.action.setBadgeText({ text: hasUpdates ? "↑" : "" });
+  if (hasUpdates && chrome.action.setBadgeBackgroundColor) {
+    void chrome.action.setBadgeBackgroundColor({ color: "#2563eb" });
+  }
+}
+
+function isPlayCanvasTabUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    if (!["http:", "https:"].includes(url.protocol)) return false;
+    if (url.hostname === "launch.playcanvas.com" || url.hostname === "pc-launch.sightp.com") {
+      return true;
+    }
+    return /^\/(?:editor|launch)(?:\/|$)/.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+async function reloadPlayCanvasTabs() {
+  if (!chrome.tabs || !chrome.tabs.query) return 0;
+  const tabs = await chrome.tabs.query({});
+  let count = 0;
+  for (const tab of tabs) {
+    if (!Number.isInteger(tab.id) || !tab.url || !isPlayCanvasTabUrl(tab.url)) continue;
+    const status = await siteStatus(tab.url);
+    if (!status.enabled) continue;
+    try {
+      if (typeof chrome.tabs.reload === "function") {
+        await chrome.tabs.reload(tab.id);
+      } else if (typeof chrome.tabs.update === "function") {
+        await chrome.tabs.update(tab.id, { url: tab.url });
+      }
+      count += 1;
+    } catch {
+      // Ignore tabs that closed while reloading.
+    }
+  }
+  return count;
+}
+
+async function consumePendingReload() {
+  if (!chrome.storage || !chrome.storage.local) return;
+  const pending = await readObject(chrome.storage.local, PENDING_RELOAD_KEY);
+  if (!pending || !pending.requestedAt) return;
+  await chrome.storage.local.set({ [PENDING_RELOAD_KEY]: {} });
+  if (pending.reloadTabs !== false && Date.now() - Number(pending.requestedAt) < 60000) {
+    await reloadPlayCanvasTabs();
+  }
+}
 
 function clampEagerMaxMb(value) {
   const parsed = Number(value);
@@ -292,6 +347,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message && message.type === "pcbridge:reloadExtension") {
+    const reloadTabs = message.reloadTabs !== false;
+    (async () => {
+      if (chrome.storage && chrome.storage.local) {
+        await chrome.storage.local.set({
+          [PENDING_RELOAD_KEY]: { reloadTabs, requestedAt: Date.now() }
+        });
+      }
+      setTimeout(() => {
+        if (chrome.runtime && typeof chrome.runtime.reload === "function") {
+          chrome.runtime.reload();
+        }
+      }, 50);
+      return { ok: true, reloading: true, reloadTabs };
+    })()
+      .then(sendResponse)
+      .catch((error) => sendResponse({ ok: false, error: String(error) }));
+    return true;
+  }
+
+  if (message && message.type === "pcbridge:syncUpdateBadge") {
+    syncUpdateBadge(message.updates || null);
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (message && message.type === "pcbridge:probeDaemon") {
     loadConfig()
       .then(async (config) => {
@@ -299,9 +380,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const host = config.host || "127.0.0.1";
         const port = config.port || 17329;
         try {
-          const response = await fetch(`http://${host}:${port}/health`, {
+          const response = await fetch(`http://${host}:${port}/status`, {
             headers: { "X-PCBridge-Token": config.token }
           });
+          if (response.ok) {
+            const envelope = await response.json().catch(() => null);
+            if (envelope && envelope.ok && envelope.data && envelope.data.updates) {
+              syncUpdateBadge(envelope.data.updates);
+            }
+          }
           return { reachable: response.ok };
         } catch {
           return { reachable: false };
@@ -464,6 +551,14 @@ function reconcileSites() {
 if (chrome.permissions && chrome.scripting) {
   chrome.permissions.onRemoved.addListener(() => { void reconcileSites(); });
   chrome.runtime.onStartup.addListener(() => { void reconcileSites(); });
-  chrome.runtime.onInstalled.addListener(() => { void reconcileSites(); });
+  chrome.runtime.onInstalled.addListener(() => {
+    void reconcileSites();
+  });
   void reconcileSites();
 }
+if (chrome.runtime && chrome.runtime.onInstalled) {
+  chrome.runtime.onInstalled.addListener(() => {
+    void consumePendingReload();
+  });
+}
+void consumePendingReload();

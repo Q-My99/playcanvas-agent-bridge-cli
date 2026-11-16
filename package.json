@@ -29,6 +29,8 @@
     "build": "tsc -p tsconfig.json && bun -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
     "check": "tsc -p tsconfig.json --noEmit",
     "check:version": "bun scripts/check-version.mjs",
+    "version:bump": "bun scripts/check-version.mjs --bump",
+    "plugins:sync": "bun scripts/check-version.mjs --sync-plugins",
     "test": "bun run check:version && bun run build && bun test --timeout 30000 --isolate ./test",
     "prepack": "bun run build"
   },

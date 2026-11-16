@@ -291,3 +291,149 @@ test("plugin CLI manages the registry on disk while the daemon is not running", 
   assert.deepEqual((await run("remove", "fixture")).body.data, { id: "fixture", removed: true });
   assert.equal((await run("info", "fixture")).body.error.code, "PLUGIN_NOT_FOUND");
 });
+
+test("official plugin catalog detects remote updates, discovers new official plugins, enforces minPcbridgeVersion, and batch updates", async (t) => {
+  const root = await tempRoot(t, "plugin-official-catalog-test-");
+  const localOfficialDir = join(root, "local-official");
+  await writeFixturePlugin(join(localOfficialDir, "tinyapp-builder"), {
+    id: "tinyapp-builder",
+    name: "Tiny Builder",
+    version: "1.0.0",
+    minPcbridgeVersion: "0.7.0",
+  });
+  await writeFile(
+    join(localOfficialDir, "index.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      plugins: [
+        {
+          id: "tinyapp-builder",
+          name: "Tiny Builder",
+          version: "1.0.0",
+          apiVersion: 1,
+          minPcbridgeVersion: "0.7.0",
+          description: "Local v1.0.0",
+          subdir: "plugins/tinyapp-builder",
+        },
+      ],
+    }),
+  );
+
+  // Prepare remote GitHub tarball containing tinyapp-builder v1.2.0 and a new official plugin scene-auditor v0.2.0
+  const remoteRepoRoot = join(root, "remote-archive/repo-main");
+  await writeFixturePlugin(join(remoteRepoRoot, "plugins/tinyapp-builder"), {
+    id: "tinyapp-builder",
+    name: "Tiny Builder",
+    version: "1.2.0",
+    minPcbridgeVersion: "0.7.0",
+  });
+  await writeFixturePlugin(join(remoteRepoRoot, "plugins/scene-auditor"), {
+    id: "scene-auditor",
+    name: "Scene Auditor",
+    version: "0.2.0",
+    minPcbridgeVersion: "0.7.0",
+  });
+  await writeFixturePlugin(join(remoteRepoRoot, "plugins/future-plugin"), {
+    id: "future-plugin",
+    name: "Future Plugin",
+    version: "2.0.0",
+    minPcbridgeVersion: "99.0.0",
+  });
+  const archivePath = join(root, "remote-main.tar.gz");
+  await createTar({ cwd: join(root, "remote-archive"), file: archivePath, gzip: true }, ["repo-main"]);
+
+  let remoteCatalogVersion = "1.0.0";
+  const remoteCatalogUrl = "https://raw.githubusercontent.com/Q-My99/playcanvas-agent-bridge-cli/main/plugins/index.json";
+  const store = new PluginStore(join(root, "plugins"), {
+    officialDir: localOfficialDir,
+    remoteCatalogUrl,
+    fetch: async (url) => {
+      if (String(url) === remoteCatalogUrl) {
+        return new Response(
+          JSON.stringify({
+            schemaVersion: 1,
+            plugins: [
+              {
+                id: "tinyapp-builder",
+                name: "Tiny Builder",
+                version: remoteCatalogVersion,
+                apiVersion: 1,
+                minPcbridgeVersion: "0.7.0",
+                description: `Remote v${remoteCatalogVersion}`,
+                subdir: "plugins/tinyapp-builder",
+              },
+              {
+                id: "scene-auditor",
+                name: "Scene Auditor",
+                version: "0.2.0",
+                apiVersion: 1,
+                minPcbridgeVersion: "0.7.0",
+                description: "New official plugin from GitHub",
+                subdir: "plugins/scene-auditor",
+              },
+              {
+                id: "future-plugin",
+                name: "Future Plugin",
+                version: "2.0.0",
+                apiVersion: 1,
+                minPcbridgeVersion: "99.0.0",
+                description: "Requires future pcbridge",
+                subdir: "plugins/future-plugin",
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (String(url).startsWith("https://codeload.github.com/")) {
+        return new Response(await readFile(archivePath), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    },
+  });
+
+  // Install tinyapp-builder while remote is 1.0.0 (uses local copy)
+  const installed = await store.add(parsePluginSource("tinyapp-builder"));
+  assert.equal(installed.manifest.version, "1.0.0");
+
+  // Available list includes newly added remote official plugins and marks incompatible ones
+  const offered = await store.available({ refresh: true });
+  const sceneAuditor = offered.find((p) => p.id === "scene-auditor");
+  const futurePlugin = offered.find((p) => p.id === "future-plugin");
+  assert.ok(sceneAuditor);
+  assert.equal(sceneAuditor.version, "0.2.0");
+  assert.equal(sceneAuditor.compatible, true);
+  assert.ok(futurePlugin);
+  assert.equal(futurePlugin.compatible, false);
+  assert.equal(futurePlugin.minPcbridgeVersion, "99.0.0");
+
+  // Installing a remote-only official plugin downloads it from GitHub
+  const addedRemoteOfficial = await store.add(parsePluginSource("scene-auditor"));
+  assert.equal(addedRemoteOfficial.manifest.version, "0.2.0");
+
+  // Installing an official plugin that requires a newer pcbridge is rejected
+  await assert.rejects(
+    store.add(parsePluginSource("future-plugin")),
+    { code: "PLUGIN_REQUIRES_NEWER_PCBRIDGE" },
+  );
+
+  // Simulate pushing tinyapp-builder v1.2.0 to GitHub main
+  remoteCatalogVersion = "1.2.0";
+  const summariesBefore = await store.summaries({ refresh: true });
+  const tinySummary = summariesBefore.find((p) => p.id === "tinyapp-builder");
+  assert.equal(tinySummary.version, "1.0.0");
+  assert.equal(tinySummary.latestVersion, "1.2.0");
+  assert.equal(tinySummary.updateAvailable, true);
+  assert.equal(tinySummary.compatible, true);
+
+  // Batch updateAll updates only outdated compatible plugins
+  const batchResult = await store.updateAll();
+  assert.deepEqual(batchResult.updated, [
+    { id: "tinyapp-builder", previousVersion: "1.0.0", version: "1.2.0" },
+  ]);
+
+  const summariesAfter = await store.summaries({ refresh: true });
+  const tinyAfter = summariesAfter.find((p) => p.id === "tinyapp-builder");
+  assert.equal(tinyAfter.version, "1.2.0");
+  assert.equal(tinyAfter.updateAvailable, false);
+});

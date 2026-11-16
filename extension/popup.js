@@ -35,12 +35,13 @@ async function loadConfig() {
   }
 }
 
-async function loadStatus(config, tabId) {
+async function loadStatus(config, tabId, refresh = false) {
   if (!config || !config.token) return null;
   try {
     const host = config.host || "127.0.0.1";
     const port = config.port || 17329;
-    const response = await fetch(`http://${host}:${port}/status?tabId=${encodeURIComponent(tabId || "")}`, {
+    const query = `tabId=${encodeURIComponent(tabId || "")}${refresh ? "&refresh=1" : ""}`;
+    const response = await fetch(`http://${host}:${port}/status?${query}`, {
       headers: { "X-PCBridge-Token": config.token }
     });
     if (!response.ok) return null;
@@ -139,23 +140,40 @@ function setupPlugins(config) {
   function installedRow(plugin) {
     const row = element("div", "plugin");
     const head = element("div", "plugin-head");
-    head.append(element("strong", "", plugin.name), element("span", "mono", plugin.version ? `v${plugin.version}` : ""));
+    const versionLabel = plugin.updateAvailable && plugin.latestVersion
+      ? `v${plugin.version || "?"} → v${plugin.latestVersion}`
+      : plugin.version
+        ? `v${plugin.version}`
+        : "";
+    head.append(element("strong", "", plugin.name), element("span", "mono", versionLabel));
     const status = element("span", "status");
-    setStatus(status, ...states[plugin.state]);
+    if (plugin.updateAvailable) {
+      setStatus(status, plugin.compatible === false ? "Needs pcbridge ↑" : "Update ↑", "warning");
+    } else {
+      setStatus(status, ...states[plugin.state]);
+    }
     head.append(status);
     row.append(head);
     if (plugin.description) row.append(element("p", "", plugin.description));
     const runtimes = Object.keys(plugin.runtimes).filter((name) => plugin.runtimes[name]);
     row.append(element("p", "mono", [plugin.id, ...runtimes, plugin.source.type].join(" · ")));
+    if (plugin.updateAvailable && plugin.compatible === false && plugin.minPcbridgeVersion) {
+      row.append(element("p", "error", `v${plugin.latestVersion} requires pcbridge v${plugin.minPcbridgeVersion}+. Update pcbridge first.`));
+    }
     if (plugin.error) row.append(element("p", "error", plugin.error));
     for (const page of plugin.pages || []) {
       if (!page.ok) row.append(element("p", "error", `${page.target}: ${page.error}`));
     }
     const actions = element("div", "plugin-actions");
+    if (plugin.updateAvailable && plugin.compatible !== false) {
+      actions.append(
+        action("Update", () => run(`/plugins/${plugin.id}/update`, {}, `Updating ${plugin.name}…`), true)
+      );
+    }
     actions.append(
       plugin.enabled
         ? action("Disable", () => run(`/plugins/${plugin.id}/disable`, {}, `Disabling ${plugin.name}…`))
-        : action("Enable", () => run(`/plugins/${plugin.id}/enable`, {}, `Enabling ${plugin.name}…`), true),
+        : action("Enable", () => run(`/plugins/${plugin.id}/enable`, {}, `Enabling ${plugin.name}…`), !plugin.updateAvailable),
       action("Remove", () => run(`/plugins/${plugin.id}/remove`, {}, `Removing ${plugin.name}…`))
     );
     row.append(actions);
@@ -168,31 +186,56 @@ function setupPlugins(config) {
     head.append(element("strong", "", plugin.name), element("span", "mono", `v${plugin.version}`));
     row.append(head);
     if (plugin.description) row.append(element("p", "", plugin.description));
+    if (plugin.compatible === false && plugin.minPcbridgeVersion) {
+      row.append(element("p", "error", `Requires pcbridge v${plugin.minPcbridgeVersion}+`));
+    }
     const actions = element("div", "plugin-actions");
-    actions.append(action("Install", () => run("/plugins/add", { source: plugin.source }, `Installing ${plugin.name}…`), true));
+    const installBtn = action("Install", () => run("/plugins/add", { source: plugin.source }, `Installing ${plugin.name}…`), true);
+    installBtn.disabled = plugin.compatible === false;
+    actions.append(installBtn);
     row.append(actions);
     return row;
   }
 
-  async function refresh() {
-    const result = await pluginRequest(config, "/plugins");
+  async function refresh(forceRefresh = false) {
+    const result = await pluginRequest(config, `/plugins${forceRefresh ? "?refresh=1" : ""}`);
     const count = document.getElementById("plugin-count");
-    const plugins = result.ok ? result.data.plugins : [];
-    const offered = result.ok ? result.data.available : [];
+    const updateAllBtn = document.getElementById("plugin-update-all");
+    const pluginsTab = document.getElementById("tab-plugins");
+    const plugins = result.ok && result.data && Array.isArray(result.data.plugins) ? result.data.plugins : [];
+    const offered = result.ok && result.data && Array.isArray(result.data.available) ? result.data.available : [];
+    const updatable = plugins.filter((plugin) => plugin.updateAvailable && plugin.compatible !== false);
+    const anyUpdate = plugins.filter((plugin) => plugin.updateAvailable);
     list.replaceChildren(...plugins.map(installedRow));
     available.replaceChildren(...offered.map(availableRow));
     document.getElementById("plugin-empty").hidden = !result.ok || plugins.length > 0;
     document.getElementById("plugin-available-section").hidden = offered.length === 0;
     document.getElementById("plugin-add").disabled = !result.ok;
+    updateAllBtn.hidden = updatable.length === 0;
+    pluginsTab.textContent = anyUpdate.length > 0 ? `Plugins · ${anyUpdate.length}↑` : "Plugins";
     if (result.ok) {
       const enabled = plugins.filter((plugin) => plugin.enabled).length;
-      setStatus(count, `${enabled} enabled`, plugins.some((plugin) => plugin.state === "error") ? "danger" : enabled ? "success" : "neutral");
+      setStatus(
+        count,
+        anyUpdate.length > 0 ? `${anyUpdate.length} update${anyUpdate.length === 1 ? "" : "s"}` : `${enabled} enabled`,
+        plugins.some((plugin) => plugin.state === "error")
+          ? "danger"
+          : anyUpdate.length > 0
+            ? "warning"
+            : enabled
+              ? "success"
+              : "neutral"
+      );
       showNote("", false);
     } else {
       setStatus(count, "Unavailable", "danger");
       showNote(result.error.message, true);
     }
   }
+
+  document.getElementById("plugin-update-all").addEventListener("click", async () => {
+    await run("/plugins/update-all", {}, "Updating plugins…");
+  });
 
   document.getElementById("plugin-add").addEventListener("click", async () => {
     const value = source.value.trim();
@@ -206,7 +249,7 @@ function setupPlugins(config) {
         button.setAttribute("aria-selected", String(other === name));
         document.getElementById(`view-${other}`).hidden = other !== name;
       }
-      if (name === "plugins") void refresh();
+      if (name === "plugins") void refresh(true);
     });
   }
 }
@@ -281,6 +324,43 @@ function renderStatus(status, context) {
   document.getElementById("version").textContent = status && status.daemon
     ? `Extension v${extensionVersion} · Daemon v${status.daemon.version} · ${status.daemon.targetCount} target${status.daemon.targetCount === 1 ? "" : "s"}`
     : `Extension v${extensionVersion} · Daemon unavailable`;
+
+  const updateBanner = document.getElementById("update-banner");
+  const updateStatus = document.getElementById("update-status");
+  const updateNote = document.getElementById("update-note");
+  const updateApply = document.getElementById("update-apply");
+  const updates = status && status.updates;
+  const coreUpdate = updates && updates.core;
+  const versionMismatch = Boolean(status && status.daemon && status.daemon.version !== extensionVersion);
+  const pluginUpdates = (updates && Array.isArray(updates.plugins)
+    ? updates.plugins.filter((item) => item.updateAvailable)
+    : []);
+  const pluginsTab = document.getElementById("tab-plugins");
+  if (pluginsTab && updates && Array.isArray(updates.plugins)) {
+    pluginsTab.textContent = pluginUpdates.length > 0 ? `Plugins · ${pluginUpdates.length}↑` : "Plugins";
+  }
+
+  if (!context.updatingCore) {
+    if (coreUpdate && coreUpdate.updateAvailable) {
+      updateBanner.hidden = false;
+      setStatus(updateStatus, `v${coreUpdate.latestVersion}`, "warning");
+      updateNote.classList.toggle("error", false);
+      updateNote.textContent = coreUpdate.canSelfUpdate
+        ? `pcbridge v${coreUpdate.currentVersion} → v${coreUpdate.latestVersion} is available. Updates CLI, daemon, extension, and refreshes PlayCanvas tabs.`
+        : `pcbridge v${coreUpdate.latestVersion} is on npm (running from source v${coreUpdate.currentVersion}). Pull git changes and rebuild.`;
+      updateApply.disabled = !coreUpdate.canSelfUpdate;
+      updateApply.textContent = "Update & Reload";
+    } else if (versionMismatch || (coreUpdate && (coreUpdate.daemonRestartRequired || coreUpdate.extensionReloadRequired))) {
+      updateBanner.hidden = false;
+      setStatus(updateStatus, "Out of sync", "warning");
+      updateNote.classList.toggle("error", false);
+      updateNote.textContent = `Extension v${extensionVersion} and Daemon v${status.daemon.version} are out of sync.`;
+      updateApply.disabled = false;
+      updateApply.textContent = "Sync & Reload";
+    } else {
+      updateBanner.hidden = true;
+    }
+  }
 
   if (!status) {
     setStatus(overallStatus, "Offline", "danger");
@@ -435,7 +515,10 @@ async function main() {
   setupPlugins(config);
   const storedWorkspaceSettings = await sendRuntimeMessage({ type: "pcbridge:getWorkspaceSettings" });
   let fallbackEagerMaxMb = clampEagerMaxMb(storedWorkspaceSettings && storedWorkspaceSettings.eagerMaxMb);
-  let status = await loadStatus(config, active && active.id);
+  let status = await loadStatus(config, active && active.id, true);
+  if (status && status.updates) {
+    void sendRuntimeMessage({ type: "pcbridge:syncUpdateBadge", updates: status.updates });
+  }
   if (status && storedWorkspaceSettings && storedWorkspaceSettings.pendingDaemonSync) {
     const synced = await updateDaemonWorkspaceSettings(config, fallbackEagerMaxMb);
     if (synced) {
@@ -463,9 +546,38 @@ async function main() {
     customMode,
     rememberedMode: frontendPreference && frontendPreference.mode,
     sliderActive: false,
-    fallbackEagerMaxMb
+    fallbackEagerMaxMb,
+    updatingCore: false
   };
   renderStatus(status, context);
+
+  const updateApply = document.getElementById("update-apply");
+  const updateReloadExt = document.getElementById("update-reload-ext");
+  const updateNote = document.getElementById("update-note");
+  updateReloadExt.addEventListener("click", async () => {
+    updateReloadExt.disabled = true;
+    await sendRuntimeMessage({ type: "pcbridge:reloadExtension", reloadTabs: true });
+    window.close();
+  });
+  updateApply.addEventListener("click", async () => {
+    context.updatingCore = true;
+    updateApply.disabled = true;
+    updateReloadExt.disabled = true;
+    updateNote.classList.toggle("error", false);
+    updateNote.textContent = "Updating pcbridge, extension, and skills…";
+    const res = await pluginRequest(config, "/update", { includePlugins: true, reloadTabs: true });
+    if (!res || !res.ok) {
+      context.updatingCore = false;
+      updateApply.disabled = false;
+      updateReloadExt.disabled = false;
+      updateNote.classList.toggle("error", true);
+      updateNote.textContent = (res && res.error && res.error.message) || "Update failed.";
+      return;
+    }
+    updateNote.textContent = "Reloading extension and PlayCanvas tabs…";
+    await sendRuntimeMessage({ type: "pcbridge:reloadExtension", reloadTabs: true });
+    window.close();
+  });
 
   const eagerLimit = document.getElementById("eager-limit");
   const eagerLimitValue = document.getElementById("eager-limit-value");
@@ -511,6 +623,9 @@ async function main() {
 
   setInterval(async () => {
     status = await loadStatus(config, active && active.id);
+    if (status && status.updates) {
+      void sendRuntimeMessage({ type: "pcbridge:syncUpdateBadge", updates: status.updates });
+    }
     projectId = (status && status.target && status.target.projectId) || projectIdFromUrl(url);
     renderStatus(status, context);
   }, 1000);

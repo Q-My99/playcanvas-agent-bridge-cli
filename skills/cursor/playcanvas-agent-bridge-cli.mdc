@@ -17,19 +17,16 @@ pcbridge targets
 Run `pcbridge daemon start` only for `DAEMON_NOT_LISTENING`; for `LOOPBACK_ACCESS_DENIED`, retry
 with local-loopback permission. If no target appears, ask the user to install/reload the extension.
 
-Updates are component-specific. For an explicit update request, record the workspace root from
-`pcbridge daemon status`. Run
-`bun add --global playcanvas-agent-bridge-cli@latest`, verify `pcbridge version`, then rerun
-`pcbridge install-skill --agent all`. For a custom or project-local parent directory, use
-`pcbridge install-skill --agent <one-agent> --path <parent-directory>`; it appends the standard
-artifact name and cannot be combined with `--agent all`. Regenerate the extension with
-`pcbridge install-extension --no-open`; the user must manually click **Reload** in
-`chrome://extensions` and refresh Editor/Launch tabs. Run `pcbridge daemon restart --workspace
-<original-root>` and verify `pcbridge doctor`. A daemon version without authenticated shutdown must
-be stopped once with Ctrl+C before starting the updated daemon. Update the independently published Editor build with
+CLI responses attach `meta.updates` when a newer `pcbridge` release, local component version mismatch,
+or official plugin update is available. Check updates with `pcbridge update status --refresh` or
+`pcbridge plugin list --refresh`. Apply a one-click core update with `pcbridge update` (or
+`pcbridge update --plugins`), which upgrades the global package, refreshes installed skills,
+rewrites `~/.pcbridge/extension`, triggers Chrome extension reload + PlayCanvas tab refresh
+(`--no-reload-tabs` skips tab refresh), and restarts the running daemon in-place. Update official
+plugins independently without restarting the daemon via `pcbridge plugin update <id>` or
+`pcbridge plugin update --all` (or the extension popup **Plugins** tab). Update the independently published Editor build with
 `pcbridge frontend update` and `frontend status`; a frontend-only update needs no daemon restart,
-but the Editor tab must be refreshed and custom mode selected in the popup when necessary. Do not
-claim completion before these manual steps are confirmed.
+but the Editor tab must be refreshed and custom mode selected in the popup when necessary.
 
 The current directory is the default workspace root; `daemon start/restart --workspace <directory>`
 selects it explicitly, and `daemon stop` stops the authenticated daemon. After selecting a target, run

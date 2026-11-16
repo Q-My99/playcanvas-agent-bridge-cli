@@ -31,21 +31,19 @@ project-picker and scene Editor navigations; change the remembered mode only thr
 
 ## Updating pcbridge
 
-The CLI/daemon, copied agent skills, generated Chrome extension, and custom Editor frontend update
-independently. For an explicit update request:
+CLI responses attach `meta.updates` whenever cached checks find a newer `pcbridge` release on npm,
+local CLI/daemon/extension version drift, or outdated installed plugins:
 
-1. Record the workspace root reported by `pcbridge daemon status`.
-2. Run `bun add --global playcanvas-agent-bridge-cli@latest`, check `pcbridge version`, and rerun
-   `pcbridge install-skill --agent all`.
-   For a custom or project-local parent directory, use
-   `pcbridge install-skill --agent <one-agent> --path <parent-directory>`; `--path` appends the
-   standard artifact name and cannot be combined with `--agent all`.
-3. Run `pcbridge install-extension --no-open`; the user must click **Reload** in
-   `chrome://extensions` and refresh every open Editor/Launch tab.
-4. Run `pcbridge daemon restart --workspace <original-root>` and verify `pcbridge doctor`. For a
-   one-time migration from a daemon without authenticated shutdown, have the user stop the old
-   daemon with Ctrl+C, then start the updated daemon with the same `--workspace` value.
-5. Use `pcbridge frontend update` plus `frontend status` for the separately published Editor build.
+1. Run `pcbridge update status --refresh` (or `pcbridge doctor --refresh`) to inspect core and
+   plugin update status.
+2. Run `pcbridge update` (or `pcbridge update --plugins`) for a one-click update of the global CLI,
+   installed agent skills, `~/.pcbridge/extension`, connected Chrome extension + PlayCanvas tabs
+   (use `--no-reload-tabs` to skip tab refresh), and in-place daemon restart. Users can also click
+   **Update & Reload** in the Chrome extension popup.
+3. Official plugins update independently from GitHub (`pcbridge plugin list --refresh`,
+   `pcbridge plugin update <id>`, or `pcbridge plugin update --all`) and hot-reload without
+   restarting the daemon or refreshing PlayCanvas tabs.
+4. Use `pcbridge frontend update` plus `frontend status` for the separately published Editor build.
    That update is read dynamically by a running daemon, but the user must refresh the Editor page
    and choose **Use custom frontend** in the popup if official mode is selected.
 

@@ -38,15 +38,38 @@ npx playcanvas-agent-bridge-cli install-skill --agent all
 
 ## Update pcbridge components
 
-The CLI/daemon, installed agent skills, generated Chrome extension, and optional custom Editor
-frontend are separate local components. Updating one does not update the others automatically.
+`pcbridge` automatically checks npm for newer CLI/extension releases and checks GitHub
+(`plugins/index.json`) for independent official plugin updates. When an update is available:
 
-### Update the CLI, daemon, and agent skills
+- **Extension badge & popup**: The Chrome toolbar icon displays an `↑` badge. Open the popup to
+  click **Update & Reload** (for `pcbridge` core) or **Update** / **Update all** under the
+  **Plugins** tab.
+- **CLI & AI agents**: Commands attach structured `meta.updates` to JSON responses and print a
+  single-line notice to `stderr` in interactive terminals.
+
+### One-click update (CLI, daemon, skills, Chrome extension, and plugins)
+
+```bash
+pcbridge update status --refresh   # check core and plugin update availability
+pcbridge update                    # one-click update CLI, daemon, skills, extension, and open tabs
+pcbridge update --plugins          # also update all outdated installed plugins
+pcbridge plugin update <id>        # hot-update a single plugin without restarting daemon
+pcbridge plugin update --all       # hot-update all outdated installed plugins
+```
+
+`pcbridge update` upgrades the global npm package, rewrites `~/.pcbridge/extension` and installed
+agent skills using the newly installed version, reloads the unpacked Chrome extension via
+`chrome.runtime.reload()`, refreshes open PlayCanvas Editor/Launch tabs (pass `--no-reload-tabs` to
+skip tab refresh), and restarts the running daemon in-place in its original terminal while
+preserving its `--workspace` root.
+
+### Manual component update commands
 
 ```bash
 bun add --global playcanvas-agent-bridge-cli@latest
 pcbridge version
 pcbridge install-skill --agent all
+pcbridge install-extension --no-open
 pcbridge daemon restart --workspace /the/workspace/root
 ```
 

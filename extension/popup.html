@@ -214,6 +214,18 @@
     </nav>
 
     <main id="view-bridge" role="tabpanel" aria-labelledby="tab-bridge">
+      <section id="update-banner" aria-labelledby="update-title" hidden>
+        <div class="section-heading">
+          <h2 id="update-title">Update Available</h2>
+          <span class="status" id="update-status" data-state="warning">Update</span>
+        </div>
+        <p class="note" id="update-note"></p>
+        <div class="actions">
+          <button id="update-apply" class="primary" type="button">Update &amp; Reload</button>
+          <button id="update-reload-ext" type="button">Reload Extension</button>
+        </div>
+      </section>
+
       <section aria-labelledby="connection-title">
         <div class="section-heading">
           <h2 id="connection-title">Connection</h2>
@@ -279,7 +291,10 @@
       <section aria-labelledby="plugins-title">
         <div class="section-heading">
           <h2 id="plugins-title">Installed</h2>
-          <span class="status" id="plugin-count" data-state="neutral">Checking</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <button id="plugin-update-all" class="primary" type="button" hidden style="min-height:24px;padding:2px 8px;font-size:11px;">Update all</button>
+            <span class="status" id="plugin-count" data-state="neutral">Checking</span>
+          </div>
         </div>
         <p class="note" id="plugin-empty" hidden>No plugins installed.</p>
         <div id="plugin-list"></div>

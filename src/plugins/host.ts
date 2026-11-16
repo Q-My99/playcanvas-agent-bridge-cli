@@ -9,6 +9,7 @@ import {
   summarizePlugin,
   type AvailablePlugin,
   type InstalledPlugin,
+  type OfficialPluginCatalogEntry,
   type PluginSource,
   type PluginStore,
   type PluginSummary,
@@ -231,8 +232,11 @@ export class PluginHost {
     this.#pageResults.delete(info.id);
   }
 
-  #status(plugin: InstalledPlugin): PluginStatus {
-    const summary = summarizePlugin(plugin);
+  #status(
+    plugin: InstalledPlugin,
+    catalog?: Map<string, OfficialPluginCatalogEntry>,
+  ): PluginStatus {
+    const summary = summarizePlugin(plugin, catalog);
     const runtime = this.#active.get(plugin.id);
     const pages: PluginStatus["pages"] = [];
     for (const [target, results] of this.#pageResults) {
@@ -248,15 +252,26 @@ export class PluginHost {
     };
   }
 
-  async list(): Promise<{ plugins: PluginStatus[]; available: AvailablePlugin[] }> {
+  async list(
+    options: { refresh?: boolean } = {},
+  ): Promise<{ plugins: PluginStatus[]; available: AvailablePlugin[] }> {
+    const [installed, catalog, available] = await Promise.all([
+      this.#store.list(),
+      this.#store.catalog(options),
+      this.#store.available(options),
+    ]);
     return {
-      plugins: (await this.#store.list()).map((plugin) => this.#status(plugin)),
-      available: await this.#store.available(),
+      plugins: installed.map((plugin) => this.#status(plugin, catalog)),
+      available,
     };
   }
 
   async get(id: string): Promise<PluginStatus> {
-    return this.#status(await this.#store.get(id));
+    const [plugin, catalog] = await Promise.all([
+      this.#store.get(id),
+      this.#store.catalog(),
+    ]);
+    return this.#status(plugin, catalog);
   }
 
   add(source: PluginSource): Promise<PluginStatus> {
@@ -289,6 +304,21 @@ export class PluginHost {
       const { previousVersion } = await this.#store.update(id);
       await this.#restart(id);
       return { ...(await this.get(id)), previousVersion };
+    });
+  }
+
+  updateAll(): Promise<{
+    updated: Array<PluginStatus & { previousVersion: string | null }>;
+    skipped: Array<{ id: string; reason: string }>;
+  }> {
+    return this.#serial(async () => {
+      const { updated, skipped } = await this.#store.updateAll();
+      const results: Array<PluginStatus & { previousVersion: string | null }> = [];
+      for (const item of updated) {
+        await this.#restart(item.id);
+        results.push({ ...(await this.get(item.id)), previousVersion: item.previousVersion });
+      }
+      return { updated: results, skipped };
     });
   }
 

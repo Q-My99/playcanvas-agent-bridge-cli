@@ -421,6 +421,16 @@
             throw new Error((data && data.error) || "Could not focus the PlayCanvas tab.");
           }
           response = { data, meta: {} };
+        } else if (message.method === "bridge:reloadExtension") {
+          const reloadTabs = !message.params || message.params.reloadTabs !== false;
+          const data = await requestRuntime({
+            type: "pcbridge:reloadExtension",
+            reloadTabs
+          });
+          if (!data || !data.ok) {
+            throw new Error((data && data.error) || "Could not reload the Chrome extension.");
+          }
+          response = { data, meta: {} };
         } else {
           response = await callMain(message.method, message.params || {}, message.timeoutMs);
         }
