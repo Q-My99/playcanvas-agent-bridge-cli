@@ -26,7 +26,7 @@ bun add --global github:Q-My99/playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-The commands documented below track repository version `0.6.2`. bun installs the latest stable
+The commands documented below track repository version `0.7.0`. bun installs the latest stable
 release; use the GitHub install when testing changes that have not been released yet.
 
 One-shot with npx:
