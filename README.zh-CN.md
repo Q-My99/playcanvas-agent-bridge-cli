@@ -19,7 +19,7 @@ bun add --global playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-下文命令跟随仓库版 `0.7.0`。npm 安装的是最新稳定版本；测试尚未发布的改动时请使用
+下文命令跟随仓库版 `0.8.0`。npm 安装的是最新稳定版本；测试尚未发布的改动时请使用
 GitHub 安装。
 
 如果要测试尚未发布的改动，也可以直接从这个 GitHub 仓库安装：
@@ -102,20 +102,6 @@ pcbridge install-extension --no-open
 只更新 npm 包不会更新 `~/.pcbridge/extension`；重新写入插件目录后，Chrome 也不会自动 reload
 unpacked 插件。
 
-### 更新 PlayCanvas 本地前端
-
-本地前端使用独立的 Release，不会随 CLI 或插件一起更新：
-
-```bash
-pcbridge frontend update
-pcbridge frontend status
-```
-
-`frontend update` 默认会下载、校验并激活最新发布版。如果 daemon 已经运行，它会在每次请求时
-读取当前激活版本，因此只更新前端不需要重启 daemon；**用户仍然必须刷新 PlayCanvas Editor
-页面**。如果当前项目正在使用官方前端，请打开插件 popup，点击 **Use custom frontend**。
-旧的本地前端版本会继续保留，除非显式执行 `frontend remove`。
-
 ## 安装 Chrome 插件
 
 运行：
@@ -143,43 +129,33 @@ pcbridge install-extension
 
 注意：生成目录里的 `config.json` 包含本地 session token。请加载 `~/.pcbridge/extension`，不要直接加载仓库里的原始 `extension/` 目录。
 
-## 使用自构建 Editor 前端
+## 可选官方插件：本地 Editor 前端（`playcanvas.com`）
 
-Editor 构建产物不会打进 npm 包。下面的命令会从 `Q-My99/playcanvas-editor` 下载最新
-Release，校验发布清单、文件大小和 SHA-256，然后在本地激活：
-
-```bash
-pcbridge frontend install latest
-pcbridge frontend status
-pcbridge daemon start
-```
-
-daemon 会在 `http://localhost:3487` 提供当前激活的构建。打开
-`https://playcanvas.com/editor/...` 页面后，在插件 popup 中点击 **Use custom frontend**。
-点击 **Use official frontend** 会删除 `use_local_frontend` 参数，并用官方前端重新加载同一个
-Editor URL。
-
-插件会按 PlayCanvas project ID 记住最后一次在 popup 中选择的模式。之后进入
-`/editor/project/<projectId>` 场景选择页或 `/editor/scene/<sceneId>` 场景编辑页时，会自动
-添加或删除 `use_local_frontend`，并保留 URL 中其他查询参数和 hash。该偏好只会在用户再次
-点击 **Use custom frontend** 或 **Use official frontend** 时改变；popup 的 **Project
-preference** 会显示当前项目的记忆值。
-
-已记住的 Custom 偏好会始终应用；即使 daemon 或前端监听不可用，Editor 也会明确加载失败，
-不会静默回退到官方前端。popup 会区分显示 daemon 离线、前端监听停止或未安装前端版本。
-pcbridge daemon 与前端监听仍由同一个终端命令一起启动；插件不会尝试启动本地进程。
-
-需要时可以显式管理本地版本：
+自托管 PlayCanvas 服务直接托管你自己的 Editor 前端，不需要本地前端切换功能；访问官方
+`https://playcanvas.com/editor/...` 且需要切换为本地托管前端时，可在浏览器扩展弹窗 **Plugins**
+标签页一键安装，或通过 CLI 安装启用官方插件 `local-frontend`：
 
 ```bash
-pcbridge frontend list
-pcbridge frontend update
-pcbridge frontend use playcanvas-editor-v2.28.1-r1
-pcbridge frontend remove playcanvas-editor-v2.28.1-r1
+pcbridge plugin add local-frontend
+pcbridge plugin call local-frontend install
+pcbridge plugin call local-frontend status
 ```
 
-下载的构建保存在 `~/.pcbridge/frontends/`。当前激活的版本不能直接删除，需要先切换到
-另一个已安装版本。
+启用 `local-frontend` 且 daemon 运行时，插件会在 `http://127.0.0.1:3487` 提供当前激活的构建，并
+仅在官方 `playcanvas.com` 的 Editor 页面左侧工具栏注入 **Local Frontend** 按钮（访问自托管站点时
+不做任何注入或跳转）。可通过工具栏面板或 CLI 切换项目的本地/官方前端模式并更新前端版本：
+
+```bash
+pcbridge plugin call local-frontend update
+pcbridge plugin call local-frontend list
+pcbridge plugin call local-frontend use --params '{"release":"playcanvas-editor-v2.28.1-r4"}'
+pcbridge plugin call local-frontend remove --params '{"release":"playcanvas-editor-v2.28.1-r1"}'
+pcbridge plugin call local-frontend mode --target editor:<sceneId> --params '{"mode":"local"}'
+pcbridge plugin disable local-frontend
+```
+
+下载的前端构建保存在 `~/.pcbridge/frontends/`。禁用或移除 `local-frontend` 插件会立即释放
+`localhost:3487` 端口并移除页面工具栏按钮。
 
 ## 启动桥接
 
@@ -360,7 +336,6 @@ pcbridge help workspace
 pcbridge help processing
 pcbridge help import
 pcbridge help plugin
-pcbridge help frontend
 pcbridge help target
 pcbridge help entity
 pcbridge help asset
@@ -541,9 +516,9 @@ pcbridge install-skill --agent cursor --path ./.cursor/rules
 - Cursor: `~/.cursor/rules/playcanvas-agent-bridge-cli.mdc`
 - Windsurf: `~/.windsurf/rules/playcanvas-agent-bridge-cli.md`
 
-插件 popup 会展示 daemon、当前 tab、项目、scene、branch、工作区路径、同步统计、冲突数
-以及自定义 Editor frontend 状态。红色表示断联或冲突，黄色表示初始化、同步中或本地待处理
-状态，绿色表示 ready / synced。
+插件 popup 会展示 daemon、当前 tab、项目、scene、branch、工作区路径、同步统计、冲突数、
+站点授权以及 **Plugins** 插件管理面板。红色表示断联或冲突，黄色表示初始化、同步中或本地待处理状态，
+绿色表示 ready / synced。
 
 ## 安全模型
 
@@ -552,7 +527,7 @@ pcbridge install-skill --agent cursor --path ./.cursor/rules
 基础防护：
 
 - daemon 只绑定 `127.0.0.1`；
-- frontend 服务只绑定 `127.0.0.1`，会校验 Host，并且只提供当前已校验 Release 目录内的文件；
+- 启用可选的 `local-frontend` 插件时，其静态服务只绑定 `127.0.0.1`，校验 Host，且只提供当前已校验 Release 目录内的文件；
 - CLI、daemon、插件共享本地 session token；
 - 插件只匹配 PlayCanvas Editor 和 Launch URL；
 - CLI 输出统一使用紧凑 JSON envelope；
@@ -588,7 +563,7 @@ git push origin v<version>
 
 ## 自托管站点与本地资源处理
 
-插件自动识别官方站点、`pc-editor.sightp.com`、`pc-launch.sightp.com` 及任意端口的 localhost / 127.0.0.1 Editor、Launch 页面。其他域名在 popup 点击 **Enable on this site**，经 Chrome 授权后刷新；Editor 与 Launch 域名分别授权。禁用或撤回权限会关闭现有连接。自托管页面不套用官方 frontend 切换偏好。
+插件自动识别官方站点、`pc-editor.sightp.com`、`pc-launch.sightp.com` 及任意端口的 localhost / 127.0.0.1 Editor、Launch 页面。其他域名在 popup 点击 **Enable on this site**，经 Chrome 授权后刷新；Editor 与 Launch 域名分别授权。禁用或撤回权限会关闭现有连接。
 
 本地计算仅限自托管，默认关闭。安装可信发布者提供的版本化工具 manifest 和预编译包（当前实测 macOS arm64，尚未发布公开工具 release）：
 

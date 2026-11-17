@@ -116,12 +116,10 @@ async function loadBridgeWorlds({ fetchImpl } = {}) {
         runtimeRequests.push(message);
         const responses = {
           "pcbridge:siteStatus": { enabled: true },
-          "pcbridge:applyFrontendPreference": {},
           "pcbridge:getConfig": { host: "127.0.0.1", port: 17329, token: "test" },
           "pcbridge:getTabInfo": { tabId: 1, windowId: 1 },
           "pcbridge:probeDaemon": { reachable: true },
           "pcbridge:daemonRequest": { ok: true, data: { id: "build-1", state: "queued" } },
-          "pcbridge:rememberProjectContext": { ok: true },
           "pcbridge:reloadExtension": { ok: true, reloading: true, reloadTabs: true },
         };
         callback(responses[message.type] || null);
@@ -377,71 +375,7 @@ test("extension background authenticates plugin actions and blocks plugin manage
   assert.equal(requests.length, 1);
 });
 
-test("extension remembers frontend mode per project and applies it to project and scene URLs", async () => {
-  const extension = await loadServiceWorker();
-  const projectUrl = "https://playcanvas.com/editor/project/1552681?foo=bar#scenes";
-
-  const saved = await extension.sendMessage({
-    type: "pcbridge:setFrontendPreference",
-    tabId: 41,
-    url: projectUrl,
-    mode: "custom",
-  });
-  assert.equal(saved.ok, true);
-  assert.equal(saved.projectId, "1552681");
-  assert.equal(extension.local.data.pcbridgeFrontendPreferences["1552681"], "custom");
-
-  extension.tabUpdates.fire(41, { url: projectUrl });
-  await settleExtensionTasks();
-  const projectRedirect = new URL(extension.updatedTabs.at(-1).url);
-  assert.equal(projectRedirect.searchParams.get("foo"), "bar");
-  assert.equal(projectRedirect.searchParams.has("use_local_frontend"), true);
-  assert.equal(projectRedirect.hash, "#scenes");
-
-  const sceneUrl = "https://playcanvas.com/editor/scene/2533764?foo=scene#viewport";
-  extension.tabUpdates.fire(41, { url: sceneUrl });
-  await settleExtensionTasks();
-  const sceneRedirect = new URL(extension.updatedTabs.at(-1).url);
-  assert.equal(sceneRedirect.pathname, "/editor/scene/2533764");
-  assert.equal(sceneRedirect.searchParams.get("foo"), "scene");
-  assert.equal(sceneRedirect.searchParams.has("use_local_frontend"), true);
-  assert.equal(sceneRedirect.hash, "#viewport");
-
-  const remembered = await extension.sendMessage({
-    type: "pcbridge:rememberProjectContext",
-    projectId: "1552681",
-    sceneId: "2533764",
-    url: sceneRedirect.toString(),
-  }, { tab: { id: 41, url: sceneRedirect.toString() } });
-  assert.equal(remembered.ok, true);
-  assert.equal(extension.local.data.pcbridgeSceneProjects["2533764"], "1552681");
-
-  const official = await extension.sendMessage({
-    type: "pcbridge:setFrontendPreference",
-    tabId: 77,
-    url: sceneRedirect.toString(),
-    mode: "official",
-  });
-  assert.equal(official.ok, true);
-  assert.equal(official.projectId, "1552681");
-
-  extension.tabUpdates.fire(77, { url: sceneRedirect.toString() });
-  await settleExtensionTasks();
-  const officialRedirect = new URL(extension.updatedTabs.at(-1).url);
-  assert.equal(officialRedirect.searchParams.get("foo"), "scene");
-  assert.equal(officialRedirect.searchParams.has("use_local_frontend"), false);
-  assert.equal(officialRedirect.hash, "#viewport");
-
-  const updateCount = extension.updatedTabs.length;
-  extension.tabUpdates.fire(88, {
-    url: "https://playcanvas.com/editor/project/9999999",
-  });
-  await settleExtensionTasks();
-  assert.equal(extension.updatedTabs.length, updateCount);
-});
-
-
-test("custom sites require grants, persist scripts, revoke connections and isolate official frontend preferences", async () => {
+test("custom sites require grants, persist scripts, and revoke connections cleanly", async () => {
   const extension = await loadServiceWorker(fetch, true);
   const url = "https://studio.example/editor/scene/1";
   const status = () => extension.sendMessage({ type: "pcbridge:siteStatus", url });
@@ -452,8 +386,6 @@ test("custom sites require grants, persist scripts, revoke connections and isola
   assert.equal(extension.registered.size, 2);
   assert.deepEqual([...extension.registered.values()].map(s => s.world).sort(), ["ISOLATED", "MAIN"]);
   assert.ok([...extension.registered.values()].every(s => s.persistAcrossSessions && s.runAt === "document_start"));
-  const preference = await extension.sendMessage({ type: "pcbridge:setFrontendPreference", url, projectId: "1", mode: "custom" });
-  assert.equal(preference.ok, false);
   extension.permissions.clear(); extension.chrome.permissions.onRemoved.fire({ origins: ["https://studio.example/*"] });
   await settleExtensionTasks();
   assert.equal(extension.registered.size, 0); assert.equal((await status()).enabled, false);

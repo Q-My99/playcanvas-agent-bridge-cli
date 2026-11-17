@@ -6,15 +6,10 @@ import { WebSocketServer } from "ws";
 import type { WebSocket } from "ws";
 import {
   CONFIG_DIR,
-  DEFAULT_FRONTEND_PORT,
   DEFAULT_HOST,
   DEFAULT_PORT,
   VERSION,
 } from "../config.js";
-import {
-  createFrontendServer,
-  type FrontendServer,
-} from "../frontend/server.js";
 import { TargetRegistry } from "./target-registry.js";
 import { WorkspaceManager, type WorkspaceDelta } from "../workspace/manager.js";
 import { PluginHost } from "../plugins/host.js";
@@ -43,7 +38,7 @@ type DaemonOptions = {
   port?: number;
   token: string;
   log?: (message: string) => void;
-  frontendPort?: number;
+  configDir?: string;
   frontendRootDir?: string;
   workspaceRoot?: string;
   enableBackgroundUpdateCheck?: boolean;
@@ -75,7 +70,6 @@ export type DaemonServer = {
   port: number;
   readonly restartRequested: boolean;
   registry: TargetRegistry;
-  frontend: FrontendServer;
   workspace: WorkspaceManager;
   plugins: PluginHost;
   closed: Promise<void>;
@@ -129,16 +123,11 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
   const port = Number(options.port ?? DEFAULT_PORT);
   let actualPort = port;
   let restartRequested = false;
-  const configDir = options.frontendRootDir || CONFIG_DIR;
+  const configDir = options.configDir || options.frontendRootDir || CONFIG_DIR;
   const registry = new TargetRegistry();
   const pending = new Map<string, PendingRequest>();
   const autoReloadedClients = new Set<string>();
   const log = options.log || (() => undefined);
-  const frontend = createFrontendServer({
-    host,
-    port: options.frontendPort ?? DEFAULT_FRONTEND_PORT,
-    rootDir: configDir,
-  });
 
   function requireToken(req: http.IncomingMessage): boolean {
     return req.headers["x-pcbridge-token"] === options.token;
@@ -269,7 +258,6 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
           writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
           return;
         }
-        const frontendStatus = await frontend.status();
         writeJson(
           res,
           200,
@@ -280,7 +268,6 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
             port: actualPort,
             targetCount: registry.list().filter((target) => target.connected).length,
             workspaceRoot: workspace.rootDir,
-            frontend: frontendStatus as unknown as JsonValue,
           }),
         );
         return;
@@ -408,15 +395,6 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
         return;
       }
 
-      if (url.pathname === "/frontend/status" && req.method === "GET") {
-        if (!requireToken(req)) {
-          writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
-          return;
-        }
-        writeJson(res, 200, ok(await frontend.status() as unknown as JsonValue));
-        return;
-      }
-
       if (url.pathname === "/targets" && req.method === "GET") {
         if (!requireToken(req)) {
           writeJson(res, 403, fail("BAD_TOKEN", "Invalid pcbridge token."));
@@ -434,18 +412,15 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
         const tabId = Number(url.searchParams.get("tabId"));
         const refresh = url.searchParams.get("refresh") === "1";
         const target = Number.isFinite(tabId) ? registry.getByTabId(tabId) : undefined;
-        const [frontendStatus, updates] = await Promise.all([
-          frontend.status(),
-          getUpdateReport({
-            refresh,
-            allowNetwork: refresh,
-            configDir,
-            store: pluginStore,
-            daemonVersion: VERSION,
-            connectedExtensionVersions: connectedExtensionVersions(),
-            fetch: options.fetch,
-          }),
-        ]);
+        const updates = await getUpdateReport({
+          refresh,
+          allowNetwork: refresh,
+          configDir,
+          store: pluginStore,
+          daemonVersion: VERSION,
+          connectedExtensionVersions: connectedExtensionVersions(),
+          fetch: options.fetch,
+        });
         writeJson(res, 200, ok({
           daemon: {
             version: VERSION,
@@ -457,7 +432,6 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
           },
           target: target || null,
           workspace: workspace.statusForTarget(target),
-          frontend: frontendStatus as unknown as JsonValue,
           updates: updates as unknown as JsonValue,
         }));
         return;
@@ -847,7 +821,6 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
         ...pluginCleanup,
         ...await Promise.allSettled([
           workspace.close(),
-          frontend.close(),
         ]),
       ];
 
@@ -890,7 +863,6 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
       return restartRequested;
     },
     registry,
-    frontend,
     workspace,
     plugins,
     closed,
@@ -904,11 +876,6 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
           resolveListen();
         });
       });
-      try {
-        await frontend.listen();
-      } catch (error) {
-        log(`frontend server unavailable: ${String(error)}`);
-      }
       try {
         await plugins.start();
       } catch (error) {

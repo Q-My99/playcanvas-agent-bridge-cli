@@ -17,8 +17,7 @@ test("daemon logs target connection transitions but not repeated target updates"
   const daemon = createDaemonServer({
     token,
     port: 0,
-    frontendPort: 0,
-    frontendRootDir: join(root, "frontend"),
+    configDir: join(root, "config"),
     workspaceRoot: root,
     log: (message) => logs.push(message),
   });
@@ -68,8 +67,7 @@ test("daemon shutdown requires the session token and releases the listener", asy
   const daemon = createDaemonServer({
     token,
     port: 0,
-    frontendPort: 0,
-    frontendRootDir: join(root, "frontend"),
+    configDir: join(root, "config"),
     workspaceRoot: root,
   });
   await daemon.listen();
@@ -112,8 +110,7 @@ test("daemon validates workspace settings 1-10 MB and applies WebSocket workspac
   const daemon = createDaemonServer({
     token,
     port: 0,
-    frontendPort: 0,
-    frontendRootDir: join(root, "frontend"),
+    configDir: join(root, "config"),
     workspaceRoot: root,
   });
   await daemon.listen();

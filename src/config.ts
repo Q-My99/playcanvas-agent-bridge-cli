@@ -13,14 +13,12 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const VERSION = "0.7.0";
+export const VERSION = "0.8.0";
 export const PACKAGE_NAME = "playcanvas-agent-bridge-cli";
 export const DEFAULT_PCBRIDGE_REPOSITORY = "Q-My99/playcanvas-agent-bridge-cli";
 export const DEFAULT_PCBRIDGE_REF = "main";
 export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 17329;
-export const DEFAULT_FRONTEND_PORT = 3487;
-export const DEFAULT_FRONTEND_REPOSITORY = "Q-My99/playcanvas-editor";
 export const CONFIG_DIR = process.env.PCBRIDGE_CONFIG_DIR
   ? resolve(process.env.PCBRIDGE_CONFIG_DIR)
   : join(homedir(), ".pcbridge");

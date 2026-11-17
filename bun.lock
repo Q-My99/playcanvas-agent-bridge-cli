@@ -15,9 +15,16 @@
         "typescript": "5.8.3",
       },
     },
+    "plugins/local-frontend": {
+      "name": "pcbridge-plugin-local-frontend",
+      "version": "1.0.0",
+      "dependencies": {
+        "tar": "7.5.22",
+      },
+    },
     "plugins/tinyapp-builder": {
       "name": "pcbridge-plugin-tinyapp-builder",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "dependencies": {
         "@aws-sdk/client-s3": "3.1102.0",
         "@babel/core": "7.28.4",
@@ -391,6 +398,8 @@
     "node-releases": ["node-releases@2.0.53", "", {}, "sha512-D9UOmYG3UH1V+ENW56t5QXBwJw1YEY18ruVeus89Rw+SyIgjPkCO84bRzO3uNIYosJbNwiabWVn48o3uJLjxFQ=="],
 
     "path-parse": ["path-parse@1.0.7", "", {}, "sha512-LDJzPVEEEPR+y48z93A0Ed0yXb8pAByGWo/k5YYdYgpY2/2EsOsksJrq7lOHxryrVOn1ejG6oAp8ahvOIQD8sw=="],
+
+    "pcbridge-plugin-local-frontend": ["pcbridge-plugin-local-frontend@workspace:plugins/local-frontend"],
 
     "pcbridge-plugin-tinyapp-builder": ["pcbridge-plugin-tinyapp-builder@workspace:plugins/tinyapp-builder"],
 

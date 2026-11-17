@@ -49,7 +49,15 @@ test("doctor reports the Bun runtime independently of daemon availability", asyn
   const runtime = data.checks.find(check => check.name === "bun");
   assert.equal(runtime.ok, true);
   assert.equal(runtime.version, process.versions.bun);
+  assert.equal(data.checks.some(check => check.name === "frontend"), false);
   assert.equal(data.healthy, false);
+
+  const legacyFrontend = await runCli(["dist/cli.js", "frontend", "status"], {
+    cwd: process.cwd(),
+    env: { ...process.env, PCBRIDGE_CONFIG_DIR: configDir },
+  });
+  assert.equal(legacyFrontend.status, 1);
+  assert.equal(JSON.parse(legacyFrontend.stdout).error.code, "UNKNOWN_COMMAND");
 });
 
 test("daemon connection diagnostics distinguish listener and loopback failures", () => {

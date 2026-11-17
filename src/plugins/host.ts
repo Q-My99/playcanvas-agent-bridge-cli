@@ -2,6 +2,7 @@ import { readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { VERSION } from "../config.js";
 import type { Envelope, JsonValue, TargetInfo } from "../shared/protocol.js";
 import type { WorkspaceManager } from "../workspace/manager.js";
 import {
@@ -127,6 +128,7 @@ export class PluginHost {
         await module.activate({
           id: plugin.id,
           version: manifest.version,
+          hostVersion: VERSION,
           dir: directory,
           workspace: {
             rootDir: workspace.rootDir,

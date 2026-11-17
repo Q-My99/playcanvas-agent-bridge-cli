@@ -1,6 +1,6 @@
 ---
 name: playcanvas-agent-bridge-cli
-description: Control an already-open PlayCanvas Editor scene or Launch page and manage the optional custom Editor frontend through pcbridge CLI commands and the bundled Chrome extension. Use for PlayCanvas Editor inspection, entity/asset/script edits, Launch runtime debugging, eval snippets, logs, viewport captures, and published Editor frontend selection without DevTools or browser automation.
+description: Control an already-open PlayCanvas Editor scene or Launch page through pcbridge CLI commands and the bundled Chrome extension. Use for PlayCanvas Editor inspection, entity/asset/script edits, Launch runtime debugging, eval snippets, logs, viewport captures, and optional pcbridge plugin workflows without DevTools or browser automation.
 ---
 
 # PlayCanvas Agent Bridge CLI
@@ -24,10 +24,11 @@ is mirrored into `<projectId>-<projectName>/` below it. After choosing an explic
 `pcbridge workspace status --target editor:<sceneId>` and do not write while it reports a conflict
 or sync error.
 
-Use `pcbridge frontend install latest` and `pcbridge frontend status` when the user wants the
-published custom Editor build. The extension popup switches between custom and official modes.
-The popup remembers that choice per PlayCanvas project and applies it automatically on later
-project-picker and scene Editor navigations; change the remembered mode only through the popup.
+When the user wants a locally served Editor frontend on official `playcanvas.com` (not needed on
+self-hosted PlayCanvas), install the official `local-frontend` plugin (`pcbridge plugin add
+local-frontend`), run `pcbridge plugin call local-frontend install`, and switch modes from the
+Editor toolbar popover or `pcbridge plugin call local-frontend mode --target editor:<sceneId>
+--params '{"mode":"local"}'`.
 
 ## Updating pcbridge
 
@@ -43,9 +44,8 @@ local CLI/daemon/extension version drift, or outdated installed plugins:
 3. Official plugins update independently from GitHub (`pcbridge plugin list --refresh`,
    `pcbridge plugin update <id>`, or `pcbridge plugin update --all`) and hot-reload without
    restarting the daemon or refreshing PlayCanvas tabs.
-4. Use `pcbridge frontend update` plus `frontend status` for the separately published Editor build.
-   That update is read dynamically by a running daemon, but the user must refresh the Editor page
-   and choose **Use custom frontend** in the popup if official mode is selected.
+4. When `local-frontend` is installed, update the separately published Editor build via
+   `pcbridge plugin call local-frontend update` and refresh the `playcanvas.com` Editor page.
 
 Do not report completion before the required manual browser and daemon steps are confirmed.
 
@@ -62,7 +62,6 @@ pcbridge help workspace
 pcbridge help plugin
 pcbridge help processing
 pcbridge help import
-pcbridge help frontend
 pcbridge help entity
 pcbridge help asset
 pcbridge help template

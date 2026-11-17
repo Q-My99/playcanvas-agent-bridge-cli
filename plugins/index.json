@@ -2,6 +2,15 @@
   "schemaVersion": 1,
   "plugins": [
     {
+      "id": "local-frontend",
+      "name": "Local Frontend",
+      "version": "1.0.0",
+      "apiVersion": 1,
+      "minPcbridgeVersion": "0.8.0",
+      "description": "Serve published PlayCanvas Editor frontend builds on localhost:3487 and switch playcanvas.com projects between official and local frontend modes.",
+      "subdir": "plugins/local-frontend"
+    },
+    {
       "id": "tinyapp-builder",
       "name": "Tiny Builder",
       "version": "1.0.1",

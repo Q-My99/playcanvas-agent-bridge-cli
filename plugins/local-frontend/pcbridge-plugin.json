@@ -1,0 +1,53 @@
+{
+  "id": "local-frontend",
+  "name": "Local Frontend",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "minPcbridgeVersion": "0.8.0",
+  "description": "Serve published PlayCanvas Editor frontend builds on localhost:3487 and switch playcanvas.com projects between official and local frontend modes.",
+  "node": "node/index.js",
+  "page": {
+    "editor": "page/editor.js"
+  },
+  "actions": {
+    "status": {
+      "description": "Return installed frontend releases, active release, loopback server status, and per-project mode preferences.",
+      "params": {
+        "projectId": "Optional PlayCanvas project id to query remembered mode for."
+      }
+    },
+    "list": {
+      "description": "List installed PlayCanvas Editor frontend releases."
+    },
+    "install": {
+      "description": "Download, verify, and install a published frontend release from GitHub Releases.",
+      "params": {
+        "release": "Release tag or 'latest' (default 'latest').",
+        "activate": "Set false to keep the current active release (default true)."
+      }
+    },
+    "update": {
+      "description": "Download, verify, and activate the latest published frontend release."
+    },
+    "use": {
+      "description": "Switch the active local frontend release.",
+      "params": {
+        "release": "Installed release name (required)."
+      }
+    },
+    "remove": {
+      "description": "Remove a non-active installed frontend release.",
+      "params": {
+        "release": "Installed release name (required)."
+      }
+    },
+    "mode": {
+      "description": "Get or set the local/official frontend mode for a playcanvas.com project and optionally switch the target Editor tab.",
+      "params": {
+        "mode": "local, official, or clear (omit to read current mode).",
+        "projectId": "PlayCanvas project id (inferred from target when omitted).",
+        "navigate": "Navigate the target playcanvas.com Editor tab when true (default true)."
+      }
+    }
+  }
+}

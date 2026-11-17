@@ -26,7 +26,7 @@ bun add --global github:Q-My99/playcanvas-agent-bridge-cli
 pcbridge install-skill --agent all
 ```
 
-The commands documented below track repository version `0.7.0`. bun installs the latest stable
+The commands documented below track repository version `0.8.0`. bun installs the latest stable
 release; use the GitHub install when testing changes that have not been released yet.
 
 One-shot with npx:
@@ -105,21 +105,6 @@ Then complete these **manual Chrome steps**:
 Updating npm alone does not refresh `~/.pcbridge/extension`, and rewriting that directory does not
 make Chrome reload an unpacked extension automatically.
 
-### Update the custom PlayCanvas Editor frontend
-
-The custom frontend has its own release lifecycle and is not bundled with the CLI or extension:
-
-```bash
-pcbridge frontend update
-pcbridge frontend status
-```
-
-`frontend update` downloads, verifies, and activates the latest published frontend by default. A
-running daemon resolves the active release for each request, so a frontend-only update does not
-require a daemon restart. The **manual step is to refresh the PlayCanvas Editor tab**. If the project
-is currently using the official frontend, open the extension popup and choose **Use custom
-frontend**. Previously downloaded frontend releases remain installed until explicitly removed.
-
 ## Install the Chrome extension
 
 Run:
@@ -147,45 +132,34 @@ Then in Chrome:
 
 The generated extension directory contains a local session token in `config.json`, so load that generated directory rather than the raw `extension/` folder from the repo.
 
-## Use the custom Editor frontend
+## Optional plugin: Local Editor frontend (`playcanvas.com`)
 
-The Editor build is not bundled in the npm package. Download the latest published build from
-`Q-My99/playcanvas-editor`, verify its release metadata and SHA-256, then activate it locally:
-
-```bash
-pcbridge frontend install latest
-pcbridge frontend status
-pcbridge daemon start
-```
-
-The daemon serves the active build from `http://localhost:3487`. On a
-`https://playcanvas.com/editor/...` tab, open the extension popup and choose **Use custom
-frontend**. Choose **Use official frontend** to remove `use_local_frontend` and reload the same
-Editor URL with the official frontend.
-
-The extension remembers the last popup selection per PlayCanvas project ID. Later visits to either
-the `/editor/project/<projectId>` scene picker or an `/editor/scene/<sceneId>` page automatically
-add or remove `use_local_frontend` while preserving other query parameters and the URL hash. The
-preference changes only when the user clicks **Use custom frontend** or **Use official frontend**
-again, and the popup shows the remembered value under **Project preference**.
-
-A remembered custom preference is applied even when the daemon or frontend listener is unavailable,
-so the Editor fails visibly instead of silently falling back to the official frontend. The popup
-reports whether the daemon is offline, the frontend server is stopped, or no release is installed.
-The pcbridge daemon and its frontend listener are started together from the terminal; the extension
-does not attempt to start local processes.
-
-Manage installed releases explicitly when needed:
+Self-hosted PlayCanvas deployments already serve your Editor build directly and do not need a local
+frontend listener. When working on official `https://playcanvas.com/editor/...` projects, install
+and enable the official `local-frontend` plugin (from the extension popup **Plugins** tab or CLI):
 
 ```bash
-pcbridge frontend list
-pcbridge frontend update
-pcbridge frontend use playcanvas-editor-v2.28.1-r1
-pcbridge frontend remove playcanvas-editor-v2.28.1-r1
+pcbridge plugin add local-frontend
+pcbridge plugin call local-frontend install
+pcbridge plugin call local-frontend status
 ```
 
-Downloaded builds live under `~/.pcbridge/frontends/`. Removing the active release is refused
-until another installed release is selected.
+While `local-frontend` is enabled and the daemon is running, it serves the active build from
+`http://127.0.0.1:3487` and adds a **Local Frontend** toolbar button inside `playcanvas.com` Editor
+pages (self-hosted Editor pages are untouched). Use the toolbar popover—or CLI actions—to switch
+between Official and Local (`?use_local_frontend`) modes per project or update to the latest build:
+
+```bash
+pcbridge plugin call local-frontend update
+pcbridge plugin call local-frontend list
+pcbridge plugin call local-frontend use --params '{"release":"playcanvas-editor-v2.28.1-r4"}'
+pcbridge plugin call local-frontend remove --params '{"release":"playcanvas-editor-v2.28.1-r1"}'
+pcbridge plugin call local-frontend mode --target editor:<sceneId> --params '{"mode":"local"}'
+pcbridge plugin disable local-frontend
+```
+
+Downloaded builds live under `~/.pcbridge/frontends/`. Disabling or removing `local-frontend`
+immediately stops the `localhost:3487` listener and removes the Editor toolbar control.
 
 ## Start the bridge
 
@@ -379,7 +353,6 @@ pcbridge help workspace
 pcbridge help processing
 pcbridge help import
 pcbridge help plugin
-pcbridge help frontend
 pcbridge help target
 pcbridge help entity
 pcbridge help asset
@@ -567,8 +540,9 @@ Installed locations:
 - Windsurf: `~/.windsurf/rules/playcanvas-agent-bridge-cli.md`
 
 The extension popup shows daemon and current-tab connectivity, project/scene/branch identity,
-workspace path and sync counts, conflicts, and custom Editor frontend state. Red means disconnected
-or conflicted, yellow means initializing/syncing/local attention, and green means ready/synced.
+workspace path and sync counts, conflicts, site access, and the **Plugins** management tab. Red
+means disconnected or conflicted, yellow means initializing/syncing/local attention, and green
+means ready/synced.
 
 ## Security model
 
@@ -577,8 +551,8 @@ This is a local trusted developer tool. It executes JavaScript inside PlayCanvas
 Safeguards:
 
 - daemon binds only to `127.0.0.1`;
-- the frontend server binds only to `127.0.0.1`, validates the Host header, and serves only files
-  under the active verified release;
+- when the optional `local-frontend` plugin is enabled, its static listener binds only to
+  `127.0.0.1`, validates the Host header, and serves only files under the active verified release;
 - CLI, daemon, and extension share a local session token;
 - extension matches only PlayCanvas Editor and Launch URLs;
 - CLI output uses compact JSON envelopes;

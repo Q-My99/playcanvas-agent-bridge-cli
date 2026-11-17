@@ -20,9 +20,7 @@ or official plugin update is available. Check updates with `pcbridge update stat
 rewrites `~/.pcbridge/extension`, triggers Chrome extension reload + PlayCanvas tab refresh
 (`--no-reload-tabs` skips tab refresh), and restarts the running daemon in-place. Update official
 plugins independently without restarting the daemon via `pcbridge plugin update <id>` or
-`pcbridge plugin update --all` (or the extension popup **Plugins** tab). Update the independently published Editor build with
-`pcbridge frontend update` and `frontend status`; a frontend-only update needs no daemon restart,
-but the Editor tab must be refreshed and custom mode selected in the popup when necessary.
+`pcbridge plugin update --all` (or the extension popup **Plugins** tab).
 
 The current directory is the default workspace root; `daemon start/restart --workspace <directory>`
 selects it explicitly, and `daemon stop` stops the authenticated daemon. After selecting a target, run
@@ -70,12 +68,12 @@ those projected files. Schema-v3 `local.resources` records the managed read-only
 `.pcbridge/objects` is only an internal content cache. New builds do not use `tmp/cache/assets/`,
 and compatible files left there by older versions are migrated into `assets/` when needed.
 
-For the optional published Editor build, use `pcbridge frontend install latest`, verify it with
-`pcbridge frontend status`, and switch custom/official mode from the extension popup.
-The popup remembers that choice per project and reapplies it on later project-picker and scene
-Editor navigations; change the remembered choice only through the popup.
+For switching `playcanvas.com` projects to the optional locally served Editor build (unnecessary on
+self-hosted PlayCanvas), install the official `local-frontend` plugin (`pcbridge plugin add
+local-frontend`), run `pcbridge plugin call local-frontend install`, and switch modes via the
+Editor toolbar popover or `pcbridge plugin call local-frontend mode`.
 
-Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help core|target|workspace|plugin|processing|import|frontend|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
+Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help core|target|workspace|plugin|processing|import|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
 
 Prefer local file edits for scripts, shaders, text, `*.material.json` / `*.template.json` data, and multi-property
 edits in the active `.scene.json`. Use structured commands for Editor pipelines (`scene open`,

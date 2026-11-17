@@ -1,6 +1,6 @@
 ---
 name: playcanvas-agent-bridge-cli
-description: Control an already-open PlayCanvas Editor scene or Launch page and manage the optional custom Editor frontend through the pcbridge CLI and Chrome extension. Use when Codex needs to inspect or modify PlayCanvas Editor targets, debug Launch runtime pages, read logs, run eval snippets, capture viewports, or install and select a published Editor frontend without DevTools, mouse/keyboard automation, MCP, or browser console scripting.
+description: Control an already-open PlayCanvas Editor scene or Launch page through the pcbridge CLI and Chrome extension. Use when Codex needs to inspect or modify PlayCanvas Editor targets, debug Launch runtime pages, read logs, run eval snippets, capture viewports, or manage optional pcbridge plugins without DevTools, mouse/keyboard automation, MCP, or browser console scripting.
 ---
 
 # PlayCanvas Agent Bridge CLI
@@ -33,11 +33,11 @@ Each connected Editor project is mirrored into `<projectId>-<projectName>/` belo
 
 If no target appears, tell the user to run `pcbridge install-extension`, load the printed directory in `chrome://extensions`, then refresh the PlayCanvas Editor or Launch tab.
 
-For the optional custom Editor frontend, use `pcbridge frontend install latest`, confirm
-`pcbridge frontend status`, then use the extension popup to switch between custom and official
-frontend modes. Load focused help with `pcbridge help frontend`.
-The popup remembers that choice per PlayCanvas project and applies it automatically on later
-project-picker and scene Editor navigations; change the remembered mode only through the popup.
+For switching `playcanvas.com` projects to a locally served Editor build (not needed on self-hosted
+PlayCanvas), install the optional official `local-frontend` plugin (`pcbridge plugin add
+local-frontend`), download/update builds with `pcbridge plugin call local-frontend install`, and
+switch modes from the Editor's **Local Frontend** toolbar popover or `pcbridge plugin call
+local-frontend mode --target editor:<sceneId> --params '{"mode":"local"}'`.
 
 ## Updating pcbridge
 
@@ -61,10 +61,9 @@ pcbridge plugin update --all               # hot-update all outdated installed p
 2. Official plugins track the remote `plugins/index.json` catalog on GitHub independently of CLI
    releases. `pcbridge plugin list --refresh` shows `version`, `latestVersion`, `updateAvailable`,
    and `compatible`.
-3. Update the independently published Editor build with `pcbridge frontend update`, then verify
-   `frontend status`. A frontend-only update does not require daemon restart, but the user must
-   refresh the Editor tab and select **Use custom frontend** in the popup when currently in official
-   mode.
+3. When `local-frontend` is installed and enabled, update the published Editor frontend release via
+   `pcbridge plugin call local-frontend update` (or **Install / Update Latest** in the Editor
+   toolbar popover), then refresh the `playcanvas.com` Editor tab.
 
 Do not claim an update is complete until required Chrome reload, page refresh, and daemon restart
 steps have been acknowledged or verified.
@@ -77,7 +76,7 @@ steps have been acknowledged or verified.
 3. **Inspect local files first (0 RPC)** to understand the project before calling Editor RPCs:
    - Read `pcbridge.project.json` for `scenes[]` (active/writable vs inactive/read-only), full asset IDs, paths, and lazy binary `meta` (texture dimensions/format, model/audio summaries).
    - Read `scenes/<name>.<sceneId>.scene.json` (DFS-ordered `entities` + `settings`) and search `scenes/` + `assets/` with `rg` to trace entities, script attachments, `<name>.material.json`, `<name>.template.json`, scripts, and shaders across the entire project.
-4. Use layered help to load only the command group you need: `pcbridge help`, then `pcbridge help core|workspace|plugin|processing|import|frontend|target|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
+4. Use layered help to load only the command group you need: `pcbridge help`, then `pcbridge help core|workspace|plugin|processing|import|target|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
 5. **Choose the right write path** (never mix local file edits and CLI write RPCs on the same target concurrently):
    - **Edit local files** under `assets/` and `scenes/` for scripts, shaders, CSS/HTML/JSON/text, `<name>.material.json` / `<name>.template.json` / other `*.<type>.json` structured assets (including batch edits and creating new `*.<type>.json` files), file renames/moves, and ordinary property or entity edits in the **active** `.scene.json` (`"$pcbridge": { "active": true }`).
    - **Use structured CLI commands** for Editor-specific pipelines: `scene open` (required before editing an inactive read-only scene), `template instantiate`, `template create --entity-id`, `template overrides`, `template apply` / `apply-many` (never hand-edit `template_ent_ids`), `script parse`, `import submit/wait`, `viewport focus/capture`, and `launch` diagnostics/logs.

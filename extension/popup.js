@@ -52,21 +52,6 @@ async function loadStatus(config, tabId, refresh = false) {
   }
 }
 
-function isEditorUrl(url) {
-  return Boolean(
-    url &&
-      (url.protocol === "https:" || url.protocol === "http:") &&
-      url.hostname === "playcanvas.com" &&
-      url.pathname.startsWith("/editor")
-  );
-}
-
-function projectIdFromUrl(url) {
-  if (!isEditorUrl(url)) return null;
-  const match = url.pathname.match(/^\/editor\/project\/(\d+)(?:\/|$)/);
-  return match ? match[1] : null;
-}
-
 async function sendRuntimeMessage(message) {
   try {
     return await chrome.runtime.sendMessage(message);
@@ -275,37 +260,17 @@ function relativeTime(value) {
   return `Synced ${Math.round(minutes / 60)}h ago`;
 }
 
-async function switchFrontend(active, url, custom, projectId) {
-  if (!active || !url) return;
-  await sendRuntimeMessage({
-    type: "pcbridge:setFrontendPreference",
-    tabId: active.id,
-    url: url.toString(),
-    projectId,
-    mode: custom ? "custom" : "official"
-  });
-  if (custom) url.searchParams.set("use_local_frontend", "");
-  else url.searchParams.delete("use_local_frontend");
-  await chrome.tabs.update(active.id, { url: url.toString() });
-  window.close();
-}
-
 function renderStatus(status, context) {
-  const { isEditor, isSelfhostEditor, isLaunch, customMode, rememberedMode, sliderActive, fallbackEagerMaxMb } = context;
+  const { isEditor, isLaunch, sliderActive, fallbackEagerMaxMb } = context;
   const target = status && status.target;
   const workspace = status && status.workspace;
-  const frontend = status && status.frontend;
 
   const overallStatus = document.getElementById("overall-status");
   const daemonStatus = document.getElementById("daemon-status");
   const workspaceStatus = document.getElementById("workspace-status");
-  const frontendStatus = document.getElementById("frontend-status");
   const workspacePath = document.getElementById("workspace-path");
   const workspaceNote = document.getElementById("workspace-note");
-  const frontendNote = document.getElementById("frontend-note");
   const copyPath = document.getElementById("copy-path");
-  const useCustom = document.getElementById("use-custom");
-  const useOfficial = document.getElementById("use-official");
   const eagerLimit = document.getElementById("eager-limit");
   const eagerLimitValue = document.getElementById("eager-limit-value");
 
@@ -374,7 +339,7 @@ function renderStatus(status, context) {
 
   document.getElementById("target").textContent = target
     ? `${target.kind === "launch" ? "Launch" : "Editor"} · ${target.ready ? "Ready" : "Initializing"}`
-    : isEditor || isSelfhostEditor || isLaunch
+    : isEditor || isLaunch
       ? "Not connected"
       : "Not a PlayCanvas tab";
   document.getElementById("project").textContent = target
@@ -440,51 +405,12 @@ function renderStatus(status, context) {
       ? "Workspace synchronization is managed by an Editor target."
       : "Waiting for a ready Editor target.";
   }
-
-  const customExpected = Boolean(isEditor && (customMode || rememberedMode === "custom"));
-  const frontendInstalled = Boolean(frontend && frontend.ready);
-  const serverReady = Boolean(frontendInstalled && frontend.server && frontend.server.listening);
-  setStatus(
-    frontendStatus,
-    serverReady
-      ? "Available"
-      : !status
-        ? "Daemon offline"
-        : frontend && frontend.ready
-          ? "Server stopped"
-          : "Not installed",
-    serverReady ? "success" : customExpected ? "danger" : status && frontendInstalled ? "warning" : "neutral"
-  );
-  document.getElementById("frontend").textContent = frontend && frontend.activeRelease
-    ? frontend.activeRelease
-    : "Not installed";
-  document.getElementById("mode").textContent = isEditor
-    ? customMode ? "Custom" : "Official"
-    : "Unavailable";
-  document.getElementById("frontend-preference").textContent = rememberedMode
-    ? rememberedMode === "custom" ? "Custom · remembered" : "Official · remembered"
-    : isEditor ? "Follow current URL" : "Unavailable";
-
-  const note = !customExpected || serverReady
-    ? ""
-    : !status
-      ? "Custom frontend unavailable: pcbridge daemon is offline."
-      : !frontendInstalled
-        ? "Custom frontend unavailable: no active frontend release is installed."
-        : `Custom frontend unavailable: port ${frontend.server.port} is not listening.`;
-  frontendNote.textContent = note;
-  frontendNote.hidden = !note;
-  frontendNote.classList.toggle("error", Boolean(note));
-
-  useCustom.disabled = !isEditor || !serverReady || customMode;
-  useOfficial.disabled = !isEditor || !customMode;
 }
 
 async function main() {
   const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
   const url = active && active.url ? new URL(active.url) : null;
-  const isEditor = isEditorUrl(url);
-  const isSelfhostEditor = Boolean(
+  const isEditor = Boolean(
     url &&
       (url.protocol === "https:" || url.protocol === "http:") &&
       /^\/editor(?:\/|$)/.test(url.pathname)
@@ -495,7 +421,6 @@ async function main() {
         url.hostname === "pc-launch.sightp.com" ||
         /^\/launch\//.test(url.pathname))
   );
-  const customMode = Boolean(isEditor && url.searchParams.has("use_local_frontend"));
   const site = await sendRuntimeMessage({ type: "pcbridge:siteStatus", url: url?.href });
   const siteToggle = document.getElementById("site-toggle");
   const siteStatus = document.getElementById("site-status");
@@ -530,21 +455,9 @@ async function main() {
       status = await loadStatus(config, active && active.id);
     }
   }
-  let projectId = (status && status.target && status.target.projectId) || projectIdFromUrl(url);
-  const frontendPreference = isEditor
-    ? await sendRuntimeMessage({
-        type: "pcbridge:getFrontendPreference",
-        tabId: active && active.id,
-        url: url && url.toString(),
-        projectId
-      })
-    : null;
   const context = {
     isEditor,
-    isSelfhostEditor,
     isLaunch,
-    customMode,
-    rememberedMode: frontendPreference && frontendPreference.mode,
     sliderActive: false,
     fallbackEagerMaxMb,
     updatingCore: false
@@ -609,10 +522,6 @@ async function main() {
   });
 
   const copyPath = document.getElementById("copy-path");
-  const useCustom = document.getElementById("use-custom");
-  const useOfficial = document.getElementById("use-official");
-  useCustom.addEventListener("click", () => switchFrontend(active, url, true, projectId));
-  useOfficial.addEventListener("click", () => switchFrontend(active, url, false, projectId));
   copyPath.addEventListener("click", async () => {
     const path = copyPath.dataset.path;
     if (!path || !navigator.clipboard) return;
@@ -626,7 +535,6 @@ async function main() {
     if (status && status.updates) {
       void sendRuntimeMessage({ type: "pcbridge:syncUpdateBadge", updates: status.updates });
     }
-    projectId = (status && status.target && status.target.projectId) || projectIdFromUrl(url);
     renderStatus(status, context);
   }, 1000);
 }

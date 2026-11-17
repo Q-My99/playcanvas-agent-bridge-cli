@@ -159,8 +159,7 @@ test("daemon activates plugins, syncs page scripts, routes actions, and hot relo
   const daemon = createDaemonServer({
     token,
     port: 0,
-    frontendPort: 0,
-    frontendRootDir: join(root, "config"),
+    configDir: join(root, "config"),
     workspaceRoot: root,
   });
   await daemon.listen();

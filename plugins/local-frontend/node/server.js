@@ -3,13 +3,13 @@ import http from "node:http";
 import { realpath, stat } from "node:fs/promises";
 import { extname, relative, resolve, sep } from "node:path";
 import {
-  CONFIG_DIR,
+  DEFAULT_FRONTEND_HOST,
   DEFAULT_FRONTEND_PORT,
-  DEFAULT_HOST,
-} from "../config.js";
-import { getFrontendStatus, type FrontendStatus } from "./store.js";
+  getFrontendStatus,
+  resolveFrontendRootDir,
+} from "./store.js";
 
-const MIME_TYPES: Record<string, string> = {
+const MIME_TYPES = {
   ".avif": "image/avif",
   ".bin": "application/octet-stream",
   ".css": "text/css; charset=utf-8",
@@ -34,35 +34,7 @@ const MIME_TYPES: Record<string, string> = {
   ".woff2": "font/woff2",
 };
 
-export type FrontendServerRuntime = {
-  host: string;
-  port: number;
-  listening: boolean;
-  error: string | null;
-};
-
-export type FrontendServerStatus = FrontendStatus & {
-  server: FrontendServerRuntime;
-};
-
-export type FrontendServer = {
-  listen: () => Promise<void>;
-  close: () => Promise<void>;
-  status: () => Promise<FrontendServerStatus>;
-};
-
-type FrontendServerOptions = {
-  host?: string;
-  port?: number;
-  rootDir?: string;
-  log?: (message: string) => void;
-};
-
-function writeHeaders(
-  res: http.ServerResponse,
-  statusCode: number,
-  headers: Record<string, string | number> = {},
-): void {
+function writeHeaders(res, statusCode, headers = {}) {
   res.writeHead(statusCode, {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
@@ -73,12 +45,7 @@ function writeHeaders(
   });
 }
 
-function writeJson(
-  res: http.ServerResponse,
-  statusCode: number,
-  body: unknown,
-  headOnly = false,
-): void {
+function writeJson(res, statusCode, body, headOnly = false) {
   const payload = Buffer.from(`${JSON.stringify(body)}\n`);
   writeHeaders(res, statusCode, {
     "Content-Length": payload.length,
@@ -87,7 +54,7 @@ function writeJson(
   res.end(headOnly ? undefined : payload);
 }
 
-function hostAllowed(hostHeader: string | undefined): boolean {
+function hostAllowed(hostHeader) {
   if (!hostHeader) return false;
   try {
     const hostname = new URL(`http://${hostHeader}`).hostname;
@@ -97,8 +64,8 @@ function hostAllowed(hostHeader: string | undefined): boolean {
   }
 }
 
-async function resolveStaticFile(root: string, pathname: string): Promise<string | null> {
-  let decoded: string;
+async function resolveStaticFile(root, pathname) {
+  let decoded;
   try {
     decoded = decodeURIComponent(pathname);
   } catch {
@@ -120,26 +87,25 @@ async function resolveStaticFile(root: string, pathname: string): Promise<string
   return info?.isFile() ? filePath : null;
 }
 
-export function createFrontendServer(
-  options: FrontendServerOptions = {},
-): FrontendServer {
-  const host = options.host || DEFAULT_HOST;
+export function createFrontendServer(options = {}) {
+  const host = options.host || DEFAULT_FRONTEND_HOST;
   const requestedPort = options.port ?? DEFAULT_FRONTEND_PORT;
-  const rootDir = options.rootDir || CONFIG_DIR;
+  const rootDir = options.rootDir || resolveFrontendRootDir();
+  const hostVersion = options.hostVersion || "0.8.0";
   const log = options.log || (() => undefined);
   let actualPort = requestedPort;
   let listening = false;
-  let runtimeError: string | null = null;
+  let runtimeError = null;
 
-  const runtime = (): FrontendServerRuntime => ({
+  const runtime = () => ({
     host,
     port: actualPort,
     listening,
     error: runtimeError,
   });
 
-  const status = async (): Promise<FrontendServerStatus> => ({
-    ...(await getFrontendStatus({ rootDir })),
+  const status = async () => ({
+    ...(await getFrontendStatus({ rootDir, hostVersion })),
     server: runtime(),
   });
 
@@ -168,7 +134,7 @@ export function createFrontendServer(
         return;
       }
 
-      const current = await getFrontendStatus({ rootDir });
+      const current = await getFrontendStatus({ rootDir, hostVersion });
       if (!current.activePath) {
         writeJson(
           res,
@@ -205,10 +171,15 @@ export function createFrontendServer(
 
   return {
     status,
-    listen: () =>
-      new Promise((resolveListen, reject) => {
-        const onError = (error: Error) => {
+    listen: () => {
+      if (server.listening) {
+        listening = true;
+        return Promise.resolve();
+      }
+      return new Promise((resolveListen, reject) => {
+        const onError = (error) => {
           runtimeError = error.message;
+          listening = false;
           server.off("listening", onListening);
           reject(error);
         };
@@ -224,7 +195,8 @@ export function createFrontendServer(
         server.once("error", onError);
         server.once("listening", onListening);
         server.listen(requestedPort, host);
-      }),
+      });
+    },
     close: () =>
       new Promise((resolveClose, reject) => {
         if (!server.listening) {
@@ -234,11 +206,8 @@ export function createFrontendServer(
         }
         server.close((error) => {
           listening = false;
-          if (error) {
-            reject(error);
-          } else {
-            resolveClose();
-          }
+          if (error) reject(error);
+          else resolveClose();
         });
       }),
   };

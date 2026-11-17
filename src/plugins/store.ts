@@ -11,7 +11,6 @@ import {
   DEFAULT_PCBRIDGE_REF,
   DEFAULT_PCBRIDGE_REPOSITORY,
   findPackageRoot,
-  UPDATE_STATE_FILE,
   VERSION,
 } from "../config.js";
 
@@ -405,17 +404,14 @@ export class PluginStore {
 
   async #cachedRemoteCatalogFromState(): Promise<OfficialPluginCatalogEntry[]> {
     const stateFile = join(dirname(this.rootDir), "update-state.json");
-    const candidates = [stateFile, UPDATE_STATE_FILE];
-    for (const candidate of candidates) {
-      if (!existsSync(candidate)) continue;
-      try {
-        const parsed = JSON.parse(await readFile(candidate, "utf8")) as {
-          officialCatalog?: OfficialPluginCatalogEntry[];
-        };
-        if (Array.isArray(parsed.officialCatalog)) return parsed.officialCatalog;
-      } catch {
-        // Ignore unreadable state cache.
-      }
+    if (!existsSync(stateFile)) return [];
+    try {
+      const parsed = JSON.parse(await readFile(stateFile, "utf8")) as {
+        officialCatalog?: OfficialPluginCatalogEntry[];
+      };
+      if (Array.isArray(parsed.officialCatalog)) return parsed.officialCatalog;
+    } catch {
+      // Ignore unreadable state cache.
     }
     return [];
   }

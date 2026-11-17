@@ -8,13 +8,13 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 import { t as inspectTar, x as extractTar } from "tar";
-import {
-  CONFIG_DIR,
-  DEFAULT_FRONTEND_REPOSITORY,
-  VERSION,
-} from "../config.js";
+
+export const DEFAULT_FRONTEND_HOST = "127.0.0.1";
+export const DEFAULT_FRONTEND_PORT = 3487;
+export const DEFAULT_FRONTEND_REPOSITORY = "Q-My99/playcanvas-editor";
 
 const RELEASE_PATTERN = /^playcanvas-editor-v\d+\.\d+\.\d+-r\d+$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
@@ -32,89 +32,61 @@ const REQUIRED_FILES = [
   "dist/css/launch.css",
 ];
 
-export type FrontendReleaseManifest = {
-  schemaVersion: 1;
-  release: string;
-  editorVersion: string;
-  sourceRepository: string;
-  sourceCommit: string;
-  archive: {
-    name: string;
-    url: string;
-    sha256: string;
-    size: number;
-  };
-  builtAt: string;
-  minPcbridgeVersion: string;
-};
-
-export type FrontendState = {
-  activeRelease: string | null;
-  updatedAt: string;
-};
-
-export type InstalledFrontend = {
-  release: string;
-  editorVersion: string;
-  sourceCommit: string;
-  builtAt: string;
-  path: string;
-  active: boolean;
-};
-
-export type FrontendStatus = {
-  ready: boolean;
-  activeRelease: string | null;
-  activePath: string | null;
-  installed: InstalledFrontend[];
-};
-
-type FrontendStoreOptions = {
-  rootDir?: string;
-  fetch?: typeof fetch;
-};
-
 export class FrontendError extends Error {
-  readonly code: string;
-
-  constructor(code: string, message: string) {
+  constructor(code, message) {
     super(message);
     this.name = "FrontendError";
     this.code = code;
   }
 }
 
-function storePaths(rootDir = CONFIG_DIR) {
-  const frontendsDir = join(rootDir, "frontends");
+export function resolveFrontendRootDir(pluginDir) {
+  if (process.env.PCBRIDGE_FRONTEND_ROOT_DIR) {
+    return resolve(process.env.PCBRIDGE_FRONTEND_ROOT_DIR);
+  }
+  if (process.env.PCBRIDGE_CONFIG_DIR) {
+    return resolve(process.env.PCBRIDGE_CONFIG_DIR);
+  }
+  if (pluginDir) {
+    const normalized = resolve(pluginDir).replaceAll("\\", "/");
+    if (/\/plugins\/installed\/[^/]+$/.test(normalized)) {
+      return resolve(pluginDir, "..", "..", "..");
+    }
+  }
+  return join(homedir(), ".pcbridge");
+}
+
+function storePaths(rootDir = resolveFrontendRootDir()) {
   return {
     rootDir,
-    frontendsDir,
+    frontendsDir: join(rootDir, "frontends"),
     stateFile: join(rootDir, "frontend-state.json"),
+    preferencesFile: join(rootDir, "frontend-preferences.json"),
   };
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
+function isObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
-function assertReleaseName(release: string): void {
-  if (!RELEASE_PATTERN.test(release)) {
+function assertReleaseName(release) {
+  if (typeof release !== "string" || !RELEASE_PATTERN.test(release)) {
     throw new FrontendError(
       "INVALID_FRONTEND_RELEASE",
-      `Invalid frontend release name: ${release}`,
+      `Invalid frontend release name: ${String(release)}`,
     );
   }
 }
 
-function parseVersion(version: string): [number, number, number] {
-  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+function parseVersion(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(String(version || "").trim());
   if (!match) {
-    throw new FrontendError("INVALID_FRONTEND_MANIFEST", `Invalid version: ${version}`);
+    throw new FrontendError("INVALID_FRONTEND_MANIFEST", `Invalid version: ${String(version)}`);
   }
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
-function compareVersions(left: string, right: string): number {
+function compareVersions(left, right) {
   const a = parseVersion(left);
   const b = parseVersion(right);
   for (let index = 0; index < a.length; index += 1) {
@@ -123,7 +95,8 @@ function compareVersions(left: string, right: string): number {
   return 0;
 }
 
-export function validateFrontendManifest(value: unknown): FrontendReleaseManifest {
+export function validateFrontendManifest(value, options = {}) {
+  const hostVersion = options.hostVersion || "0.8.0";
   if (!isObject(value) || value.schemaVersion !== 1) {
     throw new FrontendError("INVALID_FRONTEND_MANIFEST", "Unsupported frontend manifest.");
   }
@@ -133,7 +106,7 @@ export function validateFrontendManifest(value: unknown): FrontendReleaseManifes
     throw new FrontendError("INVALID_FRONTEND_MANIFEST", "Frontend archive metadata is missing.");
   }
 
-  const manifest = value as unknown as FrontendReleaseManifest;
+  const manifest = value;
   assertReleaseName(manifest.release);
 
   if (
@@ -185,7 +158,7 @@ export function validateFrontendManifest(value: unknown): FrontendReleaseManifes
     throw new FrontendError("INVALID_FRONTEND_MANIFEST", "Frontend archive size is invalid.");
   }
 
-  let archiveUrl: URL;
+  let archiveUrl;
   try {
     archiveUrl = new URL(manifest.archive.url);
   } catch {
@@ -204,7 +177,7 @@ export function validateFrontendManifest(value: unknown): FrontendReleaseManifes
     throw new FrontendError("UNTRUSTED_FRONTEND_SOURCE", "Frontend archive URL is not trusted.");
   }
 
-  if (compareVersions(VERSION, manifest.minPcbridgeVersion) < 0) {
+  if (compareVersions(hostVersion, manifest.minPcbridgeVersion) < 0) {
     throw new FrontendError(
       "FRONTEND_REQUIRES_NEWER_CLI",
       `Frontend ${manifest.release} requires pcbridge ${manifest.minPcbridgeVersion} or newer.`,
@@ -214,7 +187,7 @@ export function validateFrontendManifest(value: unknown): FrontendReleaseManifes
   return manifest;
 }
 
-export function frontendManifestUrl(release = "latest"): string {
+export function frontendManifestUrl(release = "latest") {
   if (release === "latest") {
     return `https://github.com/${DEFAULT_FRONTEND_REPOSITORY}/releases/latest/download/release.json`;
   }
@@ -225,17 +198,15 @@ export function frontendManifestUrl(release = "latest"): string {
   );
 }
 
-export async function fetchFrontendManifest(
-  release = "latest",
-  options: FrontendStoreOptions = {},
-): Promise<FrontendReleaseManifest> {
+export async function fetchFrontendManifest(release = "latest", options = {}) {
   const fetchImpl = options.fetch || fetch;
-  let response: Response;
+  const hostVersion = options.hostVersion || "0.8.0";
+  let response;
   try {
     response = await fetchImpl(frontendManifestUrl(release), {
       headers: {
         Accept: "application/json",
-        "User-Agent": `playcanvas-agent-bridge-cli/${VERSION}`,
+        "User-Agent": `playcanvas-agent-bridge-cli/${hostVersion}`,
       },
       redirect: "follow",
     });
@@ -252,7 +223,7 @@ export async function fetchFrontendManifest(
     );
   }
   try {
-    return validateFrontendManifest(await response.json());
+    return validateFrontendManifest(await response.json(), { hostVersion });
   } catch (error) {
     if (error instanceof FrontendError) throw error;
     throw new FrontendError(
@@ -262,17 +233,24 @@ export async function fetchFrontendManifest(
   }
 }
 
-async function readState(rootDir = CONFIG_DIR): Promise<FrontendState> {
+async function writeAtomicJson(filePath, value, rootDir) {
+  await mkdir(rootDir, { recursive: true });
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  await rename(temporary, filePath);
+}
+
+async function readState(rootDir = resolveFrontendRootDir()) {
   const { stateFile } = storePaths(rootDir);
   try {
-    const value = JSON.parse(await readFile(stateFile, "utf8")) as unknown;
+    const value = JSON.parse(await readFile(stateFile, "utf8"));
     if (
       isObject(value) &&
       (value.activeRelease === null || typeof value.activeRelease === "string") &&
       typeof value.updatedAt === "string"
     ) {
       if (typeof value.activeRelease === "string") assertReleaseName(value.activeRelease);
-      return value as FrontendState;
+      return value;
     }
   } catch {
     // Missing or invalid state falls back to no active frontend.
@@ -280,15 +258,62 @@ async function readState(rootDir = CONFIG_DIR): Promise<FrontendState> {
   return { activeRelease: null, updatedAt: "" };
 }
 
-async function writeState(state: FrontendState, rootDir = CONFIG_DIR): Promise<void> {
+async function writeState(state, rootDir = resolveFrontendRootDir()) {
   const { stateFile } = storePaths(rootDir);
-  await mkdir(rootDir, { recursive: true });
-  const temporary = `${stateFile}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
-  await rename(temporary, stateFile);
+  await writeAtomicJson(stateFile, state, rootDir);
 }
 
-async function validateInstalledFrontend(directory: string): Promise<void> {
+export async function readFrontendPreferences(options = {}) {
+  const rootDir = options.rootDir || resolveFrontendRootDir();
+  const { preferencesFile } = storePaths(rootDir);
+  try {
+    const parsed = JSON.parse(await readFile(preferencesFile, "utf8"));
+    const projects = isObject(parsed) && isObject(parsed.projects) ? parsed.projects : parsed;
+    if (!isObject(projects)) return {};
+    const result = {};
+    for (const [projectId, mode] of Object.entries(projects)) {
+      if (!/^\d+$/.test(projectId)) continue;
+      if (mode === "local" || mode === "custom") result[projectId] = "local";
+      else if (mode === "official") result[projectId] = "official";
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+export async function setFrontendPreference(projectId, mode, options = {}) {
+  const id = String(projectId || "").trim();
+  if (!/^\d+$/.test(id)) {
+    throw new FrontendError("INVALID_PROJECT_ID", "A numeric PlayCanvas projectId is required.");
+  }
+  const rootDir = options.rootDir || resolveFrontendRootDir();
+  const { preferencesFile } = storePaths(rootDir);
+  const current = await readFrontendPreferences({ rootDir });
+  let normalizedMode = null;
+  if (mode === "local" || mode === "custom") {
+    normalizedMode = "local";
+    current[id] = "local";
+  } else if (mode === "official") {
+    normalizedMode = "official";
+    current[id] = "official";
+  } else if (mode === "clear" || mode === null) {
+    delete current[id];
+  } else {
+    throw new FrontendError(
+      "INVALID_FRONTEND_MODE",
+      "mode must be 'local', 'official', or 'clear'.",
+    );
+  }
+  await writeAtomicJson(
+    preferencesFile,
+    { schemaVersion: 1, projects: current, updatedAt: new Date().toISOString() },
+    rootDir,
+  );
+  return { projectId: id, mode: normalizedMode, preferences: current };
+}
+
+async function validateInstalledFrontend(directory) {
   for (const file of REQUIRED_FILES) {
     const info = await stat(join(directory, file)).catch(() => null);
     if (!info?.isFile()) {
@@ -309,7 +334,7 @@ async function validateInstalledFrontend(directory: string): Promise<void> {
   }
 }
 
-function validateArchiveEntry(path: string, type: string): void {
+function validateArchiveEntry(path, type) {
   const normalized = path.replaceAll("\\", "/");
   if (
     !normalized ||
@@ -340,12 +365,11 @@ function validateArchiveEntry(path: string, type: string): void {
   }
 }
 
-async function installedManifest(
-  directory: string,
-): Promise<FrontendReleaseManifest | null> {
+async function installedManifest(directory, hostVersion = "0.8.0") {
   try {
     const manifest = validateFrontendManifest(
       JSON.parse(await readFile(join(directory, "release.json"), "utf8")),
+      { hostVersion },
     );
     await validateInstalledFrontend(directory);
     return manifest;
@@ -354,20 +378,18 @@ async function installedManifest(
   }
 }
 
-export async function installFrontend(
-  release = "latest",
-  options: FrontendStoreOptions & { activate?: boolean } = {},
-): Promise<{ manifest: FrontendReleaseManifest; path: string; alreadyInstalled: boolean }> {
-  const rootDir = options.rootDir || CONFIG_DIR;
+export async function installFrontend(release = "latest", options = {}) {
+  const rootDir = options.rootDir || resolveFrontendRootDir();
   const fetchImpl = options.fetch || fetch;
+  const hostVersion = options.hostVersion || "0.8.0";
   const { frontendsDir } = storePaths(rootDir);
-  const manifest = await fetchFrontendManifest(release, { fetch: fetchImpl });
+  const manifest = await fetchFrontendManifest(release, { fetch: fetchImpl, hostVersion });
   const targetDir = join(frontendsDir, manifest.release);
-  const existing = await installedManifest(targetDir);
+  const existing = await installedManifest(targetDir, hostVersion);
 
   if (existing?.archive.sha256 === manifest.archive.sha256) {
     if (options.activate !== false) {
-      await useFrontend(manifest.release, { rootDir });
+      await useFrontend(manifest.release, { rootDir, hostVersion });
     }
     return { manifest: existing, path: targetDir, alreadyInstalled: true };
   }
@@ -378,12 +400,12 @@ export async function installFrontend(
   const extractDir = join(frontendsDir, `.${installId}.extract`);
 
   try {
-    let response: Response;
+    let response;
     try {
       response = await fetchImpl(manifest.archive.url, {
         headers: {
           Accept: "application/gzip, application/octet-stream",
-          "User-Agent": `playcanvas-agent-bridge-cli/${VERSION}`,
+          "User-Agent": `playcanvas-agent-bridge-cli/${hostVersion}`,
         },
         redirect: "follow",
       });
@@ -425,10 +447,7 @@ export async function installFrontend(
         validateArchiveEntry(entry.path, entry.type);
         entryCount += 1;
         extractedSize += entry.size;
-        if (
-          entryCount > MAX_ARCHIVE_ENTRIES ||
-          extractedSize > MAX_EXTRACTED_SIZE
-        ) {
+        if (entryCount > MAX_ARCHIVE_ENTRIES || extractedSize > MAX_EXTRACTED_SIZE) {
           throw new FrontendError(
             "INVALID_FRONTEND_ARCHIVE",
             "Frontend archive expands beyond the safety limit.",
@@ -452,7 +471,7 @@ export async function installFrontend(
     await rm(targetDir, { force: true, recursive: true });
     await rename(extractDir, targetDir);
     if (options.activate !== false) {
-      await useFrontend(manifest.release, { rootDir });
+      await useFrontend(manifest.release, { rootDir, hostVersion });
     }
     return { manifest, path: targetDir, alreadyInstalled: false };
   } finally {
@@ -461,19 +480,18 @@ export async function installFrontend(
   }
 }
 
-export async function listFrontends(
-  options: FrontendStoreOptions = {},
-): Promise<InstalledFrontend[]> {
-  const rootDir = options.rootDir || CONFIG_DIR;
+export async function listFrontends(options = {}) {
+  const rootDir = options.rootDir || resolveFrontendRootDir();
+  const hostVersion = options.hostVersion || "0.8.0";
   const { frontendsDir } = storePaths(rootDir);
   const state = await readState(rootDir);
   const entries = await readdir(frontendsDir, { withFileTypes: true }).catch(() => []);
-  const installed: InstalledFrontend[] = [];
+  const installed = [];
 
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
     const path = join(frontendsDir, entry.name);
-    const manifest = await installedManifest(path);
+    const manifest = await installedManifest(path, hostVersion);
     if (!manifest) continue;
     installed.push({
       release: manifest.release,
@@ -488,12 +506,11 @@ export async function listFrontends(
   return installed.sort((left, right) => right.release.localeCompare(left.release));
 }
 
-export async function getFrontendStatus(
-  options: FrontendStoreOptions = {},
-): Promise<FrontendStatus> {
-  const rootDir = options.rootDir || CONFIG_DIR;
+export async function getFrontendStatus(options = {}) {
+  const rootDir = options.rootDir || resolveFrontendRootDir();
+  const hostVersion = options.hostVersion || "0.8.0";
   const state = await readState(rootDir);
-  const installed = await listFrontends({ rootDir });
+  const installed = await listFrontends({ rootDir, hostVersion });
   const active = installed.find((item) => item.release === state.activeRelease) || null;
   return {
     ready: Boolean(active),
@@ -503,15 +520,13 @@ export async function getFrontendStatus(
   };
 }
 
-export async function useFrontend(
-  release: string,
-  options: FrontendStoreOptions = {},
-): Promise<FrontendStatus> {
+export async function useFrontend(release, options = {}) {
   assertReleaseName(release);
-  const rootDir = options.rootDir || CONFIG_DIR;
+  const rootDir = options.rootDir || resolveFrontendRootDir();
+  const hostVersion = options.hostVersion || "0.8.0";
   const { frontendsDir } = storePaths(rootDir);
   const directory = join(frontendsDir, release);
-  if (!(await installedManifest(directory))) {
+  if (!(await installedManifest(directory, hostVersion))) {
     throw new FrontendError("FRONTEND_NOT_INSTALLED", `Frontend ${release} is not installed.`);
   }
   await writeState(
@@ -521,15 +536,13 @@ export async function useFrontend(
     },
     rootDir,
   );
-  return getFrontendStatus({ rootDir });
+  return getFrontendStatus({ rootDir, hostVersion });
 }
 
-export async function removeFrontend(
-  release: string,
-  options: FrontendStoreOptions = {},
-): Promise<FrontendStatus> {
+export async function removeFrontend(release, options = {}) {
   assertReleaseName(release);
-  const rootDir = options.rootDir || CONFIG_DIR;
+  const rootDir = options.rootDir || resolveFrontendRootDir();
+  const hostVersion = options.hostVersion || "0.8.0";
   const { frontendsDir } = storePaths(rootDir);
   const state = await readState(rootDir);
   if (state.activeRelease === release) {
@@ -539,9 +552,9 @@ export async function removeFrontend(
     );
   }
   const directory = join(frontendsDir, release);
-  if (!(await installedManifest(directory))) {
+  if (!(await installedManifest(directory, hostVersion))) {
     throw new FrontendError("FRONTEND_NOT_INSTALLED", `Frontend ${release} is not installed.`);
   }
   await rm(directory, { force: true, recursive: true });
-  return getFrontendStatus({ rootDir });
+  return getFrontendStatus({ rootDir, hostVersion });
 }

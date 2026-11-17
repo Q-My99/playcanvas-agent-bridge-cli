@@ -45,19 +45,19 @@ bun test test/<name>.test.mjs
 
 ## Repository Map
 
-- `src/cli.ts`: CLI parsing, RPC handling, and workspace/frontend/processing command dispatch.
+- `src/cli.ts`: CLI parsing, RPC handling, and workspace/processing command dispatch.
 - `src/config.ts`: shared version, ports, and local configuration paths.
 - `src/snippets.ts`: page-executed PlayCanvas operations used by structured commands.
 - `src/daemon/`: loopback HTTP/WebSocket daemon server and target/session management.
 - `src/workspace/`: event-driven bidirectional asset/scene sync (`manager.ts`) and canonical 3-way JSON merge (`json-sync.ts`).
-- `src/processing/`, `src/frontend/`: bounded local asset conversion executor and custom Editor frontend release manager.
+- `src/processing/`: bounded local asset conversion executor for self-hosted deployments.
 - `src/plugins/`: plugin store (`store.ts`: manifest validation, install/update/remove under `~/.pcbridge/plugins/`) and daemon plugin host (`host.ts`: node activation, action routing, page-script sync).
-- `plugins/`: official plugins shipped with the package. Each has its own `package.json`; `plugins/tinyapp-builder/` is the Tiny Builder S3 pipeline and the reference plugin.
+- `plugins/`: official plugins shipped with the package (`plugins/tinyapp-builder/` for the Tiny Builder S3 pipeline and `plugins/local-frontend/` for serving local PlayCanvas Editor builds on `playcanvas.com`).
 - `extension/main.js`: MAIN-world access to PlayCanvas page APIs.
 - `extension/isolated.js`: WebSocket and `postMessage` bridge.
 - `extension/service-worker.js`: tab metadata and generated extension configuration.
 - `extension/popup.*`: extension status and controls.
-- `test/`: Bun test suite (using the node:test compatibility API) for CLI, daemon, extension, workspace, and frontend behavior.
+- `test/`: Bun test suite (using the node:test compatibility API) for CLI, daemon, extension, workspace, and official plugin behavior.
 - `scripts/check-version.mjs`: release-version consistency check.
 - `skills/`: agent-specific installation artifacts, including the `pcbridge-plugin-authoring` skill that defines the plugin format.
 

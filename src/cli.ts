@@ -9,7 +9,6 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } 
 import { fileURLToPath } from "node:url";
 import {
   CONFIG_DIR,
-  DEFAULT_FRONTEND_PORT,
   DEFAULT_HOST,
   DEFAULT_PORT,
   EXTENSION_INSTALL_DIR,
@@ -20,14 +19,6 @@ import {
   readSessionIfExists,
 } from "./config.js";
 import { createDaemonServer } from "./daemon/server.js";
-import {
-  FrontendError,
-  getFrontendStatus,
-  installFrontend,
-  listFrontends,
-  removeFrontend,
-  useFrontend,
-} from "./frontend/store.js";
 import {
   assetDeleteSnippet,
   assetFolderEnsureSnippet,
@@ -584,20 +575,6 @@ async function doctor(args: Args = { _: ["doctor"], flags: {} }): Promise<Envelo
     nextActions.push(diagnosis.nextAction);
   }
 
-  const frontend = await getFrontendStatus();
-  checks.push({
-    name: "frontend",
-    ok: frontend.ready,
-    activeRelease: frontend.activeRelease,
-    installedCount: frontend.installed.length,
-    message: frontend.ready
-      ? `Frontend ${frontend.activeRelease} is ready.`
-      : "No active custom Editor frontend is installed.",
-  });
-  if (!frontend.ready) {
-    nextActions.push("Run pcbridge frontend install latest.");
-  }
-
   const extensionExists = Boolean(session) && (await pathExists(EXTENSION_INSTALL_DIR));
   let generatedExtensionVersion: string | null = null;
   if (extensionExists) {
@@ -783,7 +760,6 @@ async function runDaemon(
       workspaceRoot,
       restarted,
       extensionPath: EXTENSION_INSTALL_DIR,
-      frontend: await server.frontend.status() as unknown as JsonValue,
     }),
   );
 
@@ -976,75 +952,6 @@ async function daemon(args: Args): Promise<void> {
   } else {
     print(fail("UNKNOWN_COMMAND", `Unknown daemon command: ${subcommand}`));
     process.exitCode = 1;
-  }
-}
-
-async function handleFrontend(args: Args): Promise<Envelope> {
-  const subcommand = args._[1] || "status";
-
-  try {
-    if (subcommand === "install" || subcommand === "update") {
-      const requestedRelease = subcommand === "update" ? "latest" : args._[2] || "latest";
-      const installed = await installFrontend(requestedRelease, {
-        activate: !flagBool(args, "no-activate"),
-      });
-      const status = await getFrontendStatus();
-      return ok({
-        release: installed.manifest.release,
-        editorVersion: installed.manifest.editorVersion,
-        sourceCommit: installed.manifest.sourceCommit,
-        path: installed.path,
-        alreadyInstalled: installed.alreadyInstalled,
-        active: status.activeRelease === installed.manifest.release,
-        nextActions: [
-          "Run pcbridge daemon start if it is not already running.",
-          "Use the extension popup on a playcanvas.com Editor tab to select the custom frontend.",
-        ],
-      });
-    }
-
-    if (subcommand === "list") {
-      return ok(await listFrontends() as unknown as JsonValue);
-    }
-
-    if (subcommand === "status") {
-      try {
-        return await fetchDaemon("/frontend/status");
-      } catch {
-        return ok({
-          ...(await getFrontendStatus()),
-          server: {
-            host: DEFAULT_HOST,
-            port: DEFAULT_FRONTEND_PORT,
-            listening: false,
-            error: "Daemon is not reachable.",
-          },
-        } as unknown as JsonValue);
-      }
-    }
-
-    if (subcommand === "use") {
-      const release = args._[2];
-      if (!release) {
-        return fail("INVALID_REQUEST", "frontend use requires a release name.");
-      }
-      return ok(await useFrontend(release) as unknown as JsonValue);
-    }
-
-    if (subcommand === "remove") {
-      const release = args._[2];
-      if (!release) {
-        return fail("INVALID_REQUEST", "frontend remove requires a release name.");
-      }
-      return ok(await removeFrontend(release) as unknown as JsonValue);
-    }
-
-    return fail("UNKNOWN_COMMAND", `Unknown frontend command: ${subcommand}`);
-  } catch (error) {
-    if (error instanceof FrontendError) {
-      return fail(error.code, error.message);
-    }
-    throw error;
   }
 }
 
@@ -2211,7 +2118,6 @@ function help(group = "overview"): Envelope {
       "pcbridge help plugin",
       "pcbridge help processing",
       "pcbridge help import",
-      "pcbridge help frontend",
       "pcbridge help target",
       "pcbridge help entity",
       "pcbridge help asset",
@@ -2279,15 +2185,6 @@ function help(group = "overview"): Envelope {
       "list shows installed plugins, their actions, activation errors, and official plugins available to add.",
       "--link uses a local directory in place for development; reload re-reads its files without reinstalling.",
       "Plugins run with full local and page access. Add only plugins you trust.",
-    ],
-    frontend: [
-      "pcbridge frontend install [latest|playcanvas-editor-v<version>-r<revision>] [--no-activate]",
-      "pcbridge frontend update",
-      "pcbridge frontend status",
-      "pcbridge frontend list",
-      "pcbridge frontend use playcanvas-editor-v<version>-r<revision>",
-      "pcbridge frontend remove playcanvas-editor-v<version>-r<revision>",
-      "The active frontend is served from http://localhost:3487 while the daemon is running.",
     ],
     entity: [
       "pcbridge entity list --target editor:<sceneId> [--limit 50] [--offset 0] [--name Player] [--component render] [--tag enemy] [--full]",
@@ -2434,8 +2331,6 @@ async function main(): Promise<void> {
       envelope = await handleProcessing(args);
     } else if (command === "import") {
       envelope = await handleImportJob(args);
-    } else if (command === "frontend") {
-      envelope = await handleFrontend(args);
     } else if (command === "targets") {
       envelope = await fetchDaemon("/targets");
     } else if (command === "target") {
