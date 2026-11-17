@@ -89,7 +89,7 @@ plugin.handle("collectTemplateDependencies", (params) => {
     scripts,
     childTemplateIds: templateChildren(templateJson.data),
     projectUrl: window.config && window.config.project && window.config.project.id
-      ? "https://playcanvas.com/project/" + window.config.project.id + "/overview"
+      ? new URL("/project/" + window.config.project.id + "/overview", location.href).href
       : null,
     sceneUrl: location.href
   };

@@ -5,6 +5,86 @@ import { join } from "node:path";
 import test from "node:test";
 import { BuilderManager, normalizeS3Endpoint } from "../plugins/tinyapp-builder/node/builder.js";
 
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+
+async function runEditorPageCollect({ href, projectId }) {
+  const code = await readFile(
+    join(process.cwd(), "plugins/tinyapp-builder/page/editor.js"),
+    "utf8",
+  );
+  const handlers = new Map();
+  const disposers = [];
+  const templateAsset = {
+    get(path) {
+      if (path === "id") return 10;
+      if (path === "type") return "template";
+      return undefined;
+    },
+    json() {
+      return { id: 10, name: "Root", type: "template", data: { entities: {} } };
+    },
+  };
+  const editor = {
+    api: {
+      globals: {
+        assets: {
+          get: (id) => (id === 10 ? templateAsset : null),
+          list: () => [templateAsset],
+        },
+        selection: { items: [] },
+      },
+    },
+  };
+  const windowObj = projectId ? { config: { project: { id: projectId } } } : {};
+  const fn = new AsyncFunction(
+    "plugin",
+    "editor",
+    "pc",
+    "pcui",
+    "runtimeApp",
+    "window",
+    "location",
+    code,
+  );
+  await fn(
+    {
+      id: "tinyapp-builder",
+      version: "1.0.1",
+      kind: "editor",
+      handle: (name, handler) => handlers.set(name, handler),
+      call: async () => ({}),
+      onDispose: (dispose) => disposers.push(dispose),
+    },
+    editor,
+    {},
+    null,
+    null,
+    windowObj,
+    { href },
+  );
+  try {
+    return handlers.get("collectTemplateDependencies")({ assetId: 10 });
+  } finally {
+    for (const dispose of disposers) dispose();
+  }
+}
+
+test("Editor page script records projectUrl using the active platform origin", async () => {
+  const selfhost = await runEditorPageCollect({
+    href: "https://pc-editor.sightp.com/editor/scene/12?branchId=master",
+    projectId: 42,
+  });
+  assert.equal(selfhost.projectUrl, "https://pc-editor.sightp.com/project/42/overview");
+  assert.equal(selfhost.sceneUrl, "https://pc-editor.sightp.com/editor/scene/12?branchId=master");
+
+  const official = await runEditorPageCollect({
+    href: "https://playcanvas.com/editor/scene/2558183",
+    projectId: 1552681,
+  });
+  assert.equal(official.projectUrl, "https://playcanvas.com/project/1552681/overview");
+  assert.equal(official.sceneUrl, "https://playcanvas.com/editor/scene/2558183");
+});
+
 test("S3 endpoint normalization removes a duplicated bucket hostname", () => {
   assert.equal(
     normalizeS3Endpoint(
@@ -136,8 +216,8 @@ test("Template builder uses project env precedence and uploads files directly th
     ],
     scripts: [{ name: "mover", assetId: "4" }],
     childTemplateIds: [],
-    projectUrl: "https://playcanvas.com/project/1/overview",
-    sceneUrl: "https://playcanvas.com/editor/scene/1",
+    projectUrl: "https://pc-editor.sightp.com/project/1/overview",
+    sceneUrl: "https://pc-editor.sightp.com/editor/scene/1",
   };
   const workspace = {
     async prepareAssetFiles(_info, ids) {
@@ -219,6 +299,8 @@ test("Template builder uses project env precedence and uploads files directly th
   assert.doesNotMatch(gameScript, /\/\/-----script:/);
   assert.ok(gameScript.length < modernScript.length);
   const tinyapp = JSON.parse(await readFile(job.outputPath, "utf8"));
+  assert.equal(tinyapp.projectUrl, "https://pc-editor.sightp.com/project/1/overview");
+  assert.equal(tinyapp.sceneUrl, "https://pc-editor.sightp.com/editor/scene/1");
   assert.equal(tinyapp.assets["2"].data.shader, "blinn");
   assert.equal(
     tinyapp.assets["3"].file.url,

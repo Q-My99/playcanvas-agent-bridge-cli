@@ -1,7 +1,7 @@
 {
   "id": "tinyapp-builder",
   "name": "Tiny Builder",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "apiVersion": 1,
   "minPcbridgeVersion": "0.7.0",
   "description": "Build a PlayCanvas Template Asset into a TinyApp bundle and upload it to S3-compatible storage.",
