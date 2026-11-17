@@ -57,6 +57,10 @@ test("daemon connection diagnostics distinguish listener and loopback failures",
     diagnoseDaemonConnection({ cause: { code: "ECONNREFUSED" } }).code,
     "DAEMON_NOT_LISTENING",
   );
+  assert.equal(
+    diagnoseDaemonConnection({ code: "ConnectionRefused" }).code,
+    "DAEMON_NOT_LISTENING",
+  );
   const denied = diagnoseDaemonConnection({ cause: { code: "EPERM" } });
   assert.equal(denied.code, "LOOPBACK_ACCESS_DENIED");
   assert.match(denied.nextAction, /loopback permission/i);

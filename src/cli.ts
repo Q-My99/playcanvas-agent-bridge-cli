@@ -177,7 +177,7 @@ export function diagnoseDaemonConnection(
       nextAction: "Retry from an execution context with local-loopback permission.",
     };
   }
-  if (code === "ECONNREFUSED") {
+  if (code === "ECONNREFUSED" || code === "ConnectionRefused" || code === "FailedToOpenSocket") {
     return {
       code: "DAEMON_NOT_LISTENING",
       message: `No pcbridge daemon is listening on ${DEFAULT_HOST}:${port}.`,
