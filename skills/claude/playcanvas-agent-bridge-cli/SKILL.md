@@ -65,6 +65,7 @@ pcbridge help import
 pcbridge help entity
 pcbridge help asset
 pcbridge help template
+pcbridge help tinyapp
 pcbridge help scene
 pcbridge help viewport
 pcbridge help launch
@@ -139,15 +140,46 @@ see installed plugins, their actions, and the official plugins available to add;
 popup **Plugins** tab manages the same list. To create or change a plugin, use the
 `pcbridge-plugin-authoring` skill.
 
-Tiny Builder is the official `tinyapp-builder` plugin (`pcbridge plugin add tinyapp-builder`). While
-it is enabled, selecting a Template Asset exposes **pcbridge Tiny Builder** in the Attributes panel. It collects
-dependencies, materializes missing or remote-updated primary files, texture variants, and additional
-font maps under `assets/`, then uploads individual S3 objects without a ZIP. `local.resources` in the
-schema-v3 manifest identifies managed read-only auxiliary files; `.pcbridge/objects` is only the
-internal content cache. Project `.env` overrides workspace-root `.env`; never expose credential
-values. CLI equivalents are
-`pcbridge plugin call tinyapp-builder start --target editor:<sceneId> --params '{"templateAssetId":"<id>"}'` and
-`pcbridge plugin call tinyapp-builder status --params '{"jobId":"<jobId>"}'`.
+## TinyApp Architecture, Packaging, and Runtime Constraints
+
+A **TinyApp** is a hot-loadable PlayCanvas 3D module built from a **Template Asset** (`tinyapp.json` +
+ES5 `gamescript.js` + referenced asset/variant/font files under `<prefix>/<buildSlug>/`) and loaded
+at runtime by `tiny-runtime` (`TinyLuncher` / `TinyLoader` / `TinyRoot` / `sdsTinyRootHandler`).
+`TinyLoader` resolves `baseUrl` two `/` levels above `tinyapp.json` and disposes assets by
+`tinyRoot.assetTag` reference count. Builtin `sds*` scripts are provided by `tiny-runtime` and
+excluded from `gamescript.js` while keeping entity `attributes`; nested `sdsTinyRootHandler`
+(`type: "testTemplate"`, `testTemplate: <childAssetId>`) entries are rewritten to `type: "TinyAPP"`
+with their published `tinyAppUrl`.
+
+- **Self-hosted backend packaging (preferred on self-hosted servers — no local S3 keys, server-side
+  ES5 build + direct OSS/COS upload, nested child content-hash reuse, version history & S3 cleanup)**:
+  ```bash
+  pcbridge tinyapp status --target editor:<sceneId>
+  pcbridge tinyapp inspect --target editor:<sceneId> --template <template_asset_id>
+  pcbridge tinyapp build --target editor:<sceneId> --template <template_asset_id> --label "v1" --wait
+  pcbridge tinyapp list --target editor:<sceneId> [--template <template_asset_id>]
+  pcbridge tinyapp get --target editor:<sceneId> --build <build_id>
+  pcbridge tinyapp delete --target editor:<sceneId> --build <build_id> [--force]
+  ```
+  Also callable in `eval` via `editor.api.globals.tinyapps` (`status`, `inspect`, `buildAndWait`,
+  `list`, `get`, `delete`, `downloadTemplateArchive`).
+- **Local plugin packaging (`tinyapp-builder`)**: For official `playcanvas.com` or user-managed
+  `.env` S3 buckets (never expose credentials): `pcbridge plugin add tinyapp-builder`, then
+  `pcbridge plugin call tinyapp-builder start --target editor:<sceneId> --params '{"templateAssetId":"<id>"}'`
+  and `pcbridge plugin call tinyapp-builder status --params '{"jobId":"<jobId>"}'`.
+- **Mini-Program vs Web runtime constraints**:
+  - **Mini-Program (`wx` / `my` / Taobao / Douyin)**: Runs on **Engine v1.77.0 + WebGL 1.0**
+    (`preferWebGl2: false`, `antialias: false`; test in Launch with `?version=1.77.0&device=webgl1`).
+    Hot-update scripts execute inside **`eval5`** (`pc.e`), which **only supports ES5**: Babel
+    transpiles classic `pc.createScript` ES6+ syntax, **but never use ESM `import`/`export`,
+    `async`/`await`, or `function*` generators** (`eval5` breaks `_regenerator` `await` results;
+    use `.then()`/callbacks). **Never use DOM/browser APIs** (`window`, `document`, HTML/CSS DOM,
+    `localStorage`, `XMLHttpRequest`, `fetch`, `Image`, `Audio`, `Worker`); only `pc`, `console`,
+    `wx`, `my`, timers, typed arrays, `$TinyLoader`, `$TinyLuncher`, and `$GetTinyRoot` exist in
+    scope (use `this.app`, PlayCanvas `Element` UI, `sds*` scripts, and `pc.http`/`wx.request`).
+    Keep `pc.createScript` names unique across coexisting TinyApps.
+  - **Web**: Runs via `new Function(...)` in a real browser with few restrictions, but any TinyApp
+    targeting Mini-Programs must obey the Mini-Program subset above.
 
 Prefer local file edits for scripts, shaders, text, `*.material.json` / `*.template.json` data, and
 multi-property edits in the active `.scene.json`. Use structured commands for Editor pipelines

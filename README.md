@@ -285,6 +285,18 @@ implementation.
 
 ## Tiny Builder plugin: Template builds and S3 uploads
 
+On self-hosted PlayCanvas Editor servers with backend `TINYAPP_S3_*` configured, you can inspect,
+build, and manage TinyApp versions directly without local S3 credentials via `pcbridge tinyapp`:
+
+```bash
+pcbridge tinyapp status --target editor:<sceneId>
+pcbridge tinyapp inspect --target editor:<sceneId> --template <templateAssetId>
+pcbridge tinyapp build --target editor:<sceneId> --template <templateAssetId> --label "release" --wait
+pcbridge tinyapp list --target editor:<sceneId> --template <templateAssetId>
+pcbridge tinyapp delete --target editor:<sceneId> --build <buildId>
+```
+
+For official `playcanvas.com` or when managing your own S3/OSS/COS bucket locally,
 Tiny Builder is the official `tinyapp-builder` plugin. Add it once with
 `pcbridge plugin add tinyapp-builder` or **Install** in the popup **Plugins** tab.
 

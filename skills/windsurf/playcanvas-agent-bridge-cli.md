@@ -60,20 +60,30 @@ deletions are quarantined under `tmp/trash/remote/`; `tmp/conflicts/` contains c
 Optional features ship as plugins: `pcbridge plugin list` shows installed and available plugins with
 their actions, and `pcbridge plugin call <id> <action> --target editor:<sceneId> --params '<json>'`
 runs one. Use the pcbridge-plugin-authoring rule to create or change a plugin.
-With the official `tinyapp-builder` plugin enabled (`pcbridge plugin add tinyapp-builder`),
-Template selection exposes pcbridge Tiny Builder for direct S3 object uploads; project `.env`
-overrides workspace-root `.env`. A build materializes every primary dependency plus texture
-variants and additional font maps under the Asset's remote folder in `assets/`, then uploads only
-those projected files. Schema-v3 `local.resources` records the managed read-only auxiliary files;
-`.pcbridge/objects` is only an internal content cache. New builds do not use `tmp/cache/assets/`,
-and compatible files left there by older versions are migrated into `assets/` when needed.
+TinyApp packaging & runtime rules (`tiny-runtime`: `TinyLuncher` / `TinyLoader` / `TinyRoot` / `sdsTinyRootHandler`):
+- A TinyApp packages a Template Asset into `<prefix>/<buildSlug>/tinyapp.json`, ES5 `gamescript.js`
+  (excluding host-builtin `sds*` scripts while keeping their entity attributes), and dependency files
+  (rewriting nested `sdsTinyRootHandler` `testTemplate` slots to `type: "TinyAPP"` + `tinyAppUrl`).
+- **Self-hosted Editor backend (preferred when `tinyapp status` reports `supported: true`)**:
+  `pcbridge tinyapp status|inspect|build|wait|list|get|delete` (and `editor.api.globals.tinyapps`)
+  builds ES5 on the server, uploads directly to server-configured OSS/COS + CDN without local S3
+  keys, reuses unchanged nested child TinyApps by content hash, and manages/deletes version history.
+- **Local plugin (`pcbridge plugin add tinyapp-builder`)**: For `playcanvas.com` or user-managed
+  `.env` S3 credentials (`pcbridge plugin call tinyapp-builder start|status`).
+- **Mini-Program vs Web constraints**: Mini-programs run on **Engine v1.77.0 + WebGL 1.0** (verify
+  in Launch with `?version=1.77.0&device=webgl1`) and execute `gamescript.js` in **`eval5` (ES5
+  only)**. Never use ESM `import`/`export`, `async`/`await`, or `function*` generators (`eval5`
+  corrupts regenerator `await` return values), and never use browser/DOM APIs (`window`, `document`,
+  `localStorage`, `fetch`, `XMLHttpRequest`, `Image`, `Audio`, `Worker`); use `this.app`,
+  `$GetTinyRoot(this)`, PlayCanvas `Element` UI, `sds*` scripts, and `pc.http`/`wx.request`. Web
+  hosts use `new Function` with far fewer limits, but Mini-Program targets must obey the strict subset.
 
 For switching `playcanvas.com` projects to the optional locally served Editor build (unnecessary on
 self-hosted PlayCanvas), install the official `local-frontend` plugin (`pcbridge plugin add
 local-frontend`), run `pcbridge plugin call local-frontend install`, and switch modes via the
 Editor toolbar popover or `pcbridge plugin call local-frontend mode`.
 
-Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help core|target|workspace|plugin|processing|import|entity|asset|material|template|script|scene|store|viewport|launch|logs|eval`.
+Use layered help to load only the command surface you need: `pcbridge help`, then `pcbridge help core|target|workspace|plugin|processing|import|entity|asset|material|template|tinyapp|script|scene|store|viewport|launch|logs|eval`.
 
 Prefer local file edits for scripts, shaders, text, `*.material.json` / `*.template.json` data, and multi-property
 edits in the active `.scene.json`. Use structured commands for Editor pipelines (`scene open`,

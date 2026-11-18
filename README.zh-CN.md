@@ -271,6 +271,18 @@ Editor / Launch 页面，无需刷新页面。`plugin update` 会从添加时记
 
 ## Tiny Builder 插件：Template 构建与 S3 上传
 
+在已配置 `TINYAPP_S3_*` 的自托管 PlayCanvas 编辑器服务端上，无需本地携带密钥即可直接通过
+`pcbridge tinyapp` 调用后端进行 ES5 编译、直传 OSS/COS CDN、子模板增量复用与历史版本管理：
+
+```bash
+pcbridge tinyapp status --target editor:<sceneId>
+pcbridge tinyapp inspect --target editor:<sceneId> --template <templateAssetId>
+pcbridge tinyapp build --target editor:<sceneId> --template <templateAssetId> --label "正式版" --wait
+pcbridge tinyapp list --target editor:<sceneId> --template <templateAssetId>
+pcbridge tinyapp delete --target editor:<sceneId> --build <buildId>
+```
+
+在官方 `playcanvas.com` 或希望自行管理对象存储密钥与桶时，仍可使用本地插件方案：
 Tiny Builder 是官方插件 `tinyapp-builder`，执行一次 `pcbridge plugin add tinyapp-builder`
 或在弹窗 **Plugins** 标签页点击 **Install** 即可添加。
 

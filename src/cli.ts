@@ -56,6 +56,7 @@ import {
   templateApplySnippet,
   templateCreateSnippet,
   templateOverridesSnippet,
+  tinyappManageSnippet,
 } from "./snippets.js";
 import { fail, ok, type Envelope, type JsonValue } from "./shared/protocol.js";
 import {
@@ -1495,6 +1496,147 @@ async function handleTemplate(args: Args): Promise<Envelope> {
   return fail("UNKNOWN_COMMAND", `Unknown template command: ${subcommand || ""}`);
 }
 
+async function rpcTinyAppEval(
+  args: Args,
+  commandArgs: Record<string, JsonValue>,
+  defaultTimeoutMs = 30000,
+): Promise<Envelope> {
+  const serializeOptions: Record<string, JsonValue> = {
+    maxDepth: 12,
+    maxArray: 1000,
+    maxKeys: 500,
+    maxString: 50000,
+  };
+  return rpcCall(
+    args,
+    "bridge:eval",
+    {
+      code: tinyappManageSnippet(),
+      args: commandArgs as JsonValue,
+      serializeOptions: serializeOptions as JsonValue,
+    },
+    defaultTimeoutMs,
+  );
+}
+
+async function handleTinyApp(args: Args): Promise<Envelope> {
+  const subcommand = args._[1];
+  if (subcommand === "status") {
+    return rpcTinyAppEval(args, {
+      action: "status",
+      branchId: flagString(args, "branch") || null,
+    });
+  }
+  if (subcommand === "inspect") {
+    const templateAssetId = flagString(args, "template") || flagString(args, "asset-id") || flagString(args, "id");
+    if (!templateAssetId || !/^\d+$/.test(templateAssetId)) {
+      return fail("INVALID_REQUEST", "tinyapp inspect requires --template <template_asset_id>.");
+    }
+    return rpcTinyAppEval(args, {
+      action: "inspect",
+      templateAssetId: Number(templateAssetId),
+      branchId: flagString(args, "branch") || null,
+    });
+  }
+  if (subcommand === "list") {
+    const templateRaw = flagString(args, "template") || flagString(args, "asset-id");
+    if (templateRaw !== undefined && !/^\d+$/.test(templateRaw)) {
+      return fail("INVALID_REQUEST", "--template must be a numeric Template Asset ID.");
+    }
+    const limit = Number(flagString(args, "limit", "20"));
+    const offset = Number(flagString(args, "offset", "0"));
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      return fail("INVALID_REQUEST", "--limit must be an integer from 1 to 100.");
+    }
+    if (!Number.isInteger(offset) || offset < 0) {
+      return fail("INVALID_REQUEST", "--offset must be a non-negative integer.");
+    }
+    return rpcTinyAppEval(args, {
+      action: "list",
+      templateAssetId: templateRaw ? Number(templateRaw) : null,
+      branchId: flagString(args, "branch") || null,
+      filterBranch: Boolean(flagString(args, "branch")),
+      status: flagString(args, "status") || null,
+      query: flagString(args, "q") || null,
+      limit,
+      offset,
+    });
+  }
+  if (subcommand === "get") {
+    const buildId = flagString(args, "build") || flagString(args, "id");
+    if (!buildId || !/^\d+$/.test(buildId)) {
+      return fail("INVALID_REQUEST", "tinyapp get requires --build <build_id>.");
+    }
+    return rpcTinyAppEval(args, {
+      action: "get",
+      buildId: Number(buildId),
+    });
+  }
+  if (subcommand === "build") {
+    const templateAssetId = flagString(args, "template") || flagString(args, "asset-id") || flagString(args, "id");
+    if (!templateAssetId || !/^\d+$/.test(templateAssetId)) {
+      return fail("INVALID_REQUEST", "tinyapp build requires --template <template_asset_id>.");
+    }
+    const childStrategy = flagString(args, "child-strategy");
+    if (
+      childStrategy !== undefined &&
+      !["reuse-if-unchanged", "reuse-latest", "force-rebuild"].includes(childStrategy)
+    ) {
+      return fail(
+        "INVALID_REQUEST",
+        "--child-strategy must be reuse-if-unchanged, reuse-latest, or force-rebuild.",
+      );
+    }
+    const wait = flagBool(args, "wait");
+    const waitTimeoutMs = readTimeoutMs(args, wait ? 120000 : 30000);
+    if (waitTimeoutMs === null) return invalidTimeoutEnvelope();
+    return rpcTinyAppEval(
+      args,
+      {
+        action: "build",
+        templateAssetId: Number(templateAssetId),
+        branchId: flagString(args, "branch") || null,
+        label: flagString(args, "label") || null,
+        suffix: flagString(args, "suffix") || null,
+        prefix: flagString(args, "prefix") || null,
+        childStrategy: childStrategy || null,
+        wait,
+        waitTimeoutMs,
+      },
+      waitTimeoutMs,
+    );
+  }
+  if (subcommand === "wait") {
+    const buildId = flagString(args, "build") || flagString(args, "id");
+    if (!buildId || !/^\d+$/.test(buildId)) {
+      return fail("INVALID_REQUEST", "tinyapp wait requires --build <build_id>.");
+    }
+    const waitTimeoutMs = readTimeoutMs(args, 120000);
+    if (waitTimeoutMs === null) return invalidTimeoutEnvelope();
+    return rpcTinyAppEval(
+      args,
+      {
+        action: "wait",
+        buildId: Number(buildId),
+        waitTimeoutMs,
+      },
+      waitTimeoutMs,
+    );
+  }
+  if (subcommand === "delete") {
+    const buildId = flagString(args, "build") || flagString(args, "id");
+    if (!buildId || !/^\d+$/.test(buildId)) {
+      return fail("INVALID_REQUEST", "tinyapp delete requires --build <build_id>.");
+    }
+    return rpcTinyAppEval(args, {
+      action: "delete",
+      buildId: Number(buildId),
+      force: flagBool(args, "force"),
+    }, 60000);
+  }
+  return fail("UNKNOWN_COMMAND", `Unknown tinyapp command: ${subcommand || ""}`);
+}
+
 async function handleScript(args: Args): Promise<Envelope> {
   const subcommand = args._[1];
   if (subcommand === "upsert") {
@@ -2123,6 +2265,7 @@ function help(group = "overview"): Envelope {
       "pcbridge help asset",
       "pcbridge help material",
       "pcbridge help template",
+      "pcbridge help tinyapp",
       "pcbridge help script",
       "pcbridge help scene",
       "pcbridge help store",
@@ -2227,6 +2370,17 @@ function help(group = "overview"): Envelope {
       "pcbridge template apply-many --target editor:<sceneId> --json ./template-roots.json [--timeout-ms 120000]",
       "When apply is needed, completion requires the pipeline callback plus two zero-override observations; timeout is an error.",
       "verified covers the current Editor observer only, not persistence across a reload; apply-many runs serially.",
+    ],
+    tinyapp: [
+      "pcbridge tinyapp status --target editor:<sceneId>",
+      "pcbridge tinyapp inspect --target editor:<sceneId> --template <template_asset_id> [--branch <branchId>]",
+      "pcbridge tinyapp build --target editor:<sceneId> --template <template_asset_id> [--label <note>] [--suffix <suffix>] [--prefix <prefix>] [--child-strategy reuse-if-unchanged|reuse-latest|force-rebuild] [--wait] [--timeout-ms 120000]",
+      "pcbridge tinyapp wait --target editor:<sceneId> --build <build_id> [--timeout-ms 120000]",
+      "pcbridge tinyapp list --target editor:<sceneId> [--template <template_asset_id>] [--status complete|error|running] [--q <query>] [--limit 20] [--offset 0]",
+      "pcbridge tinyapp get --target editor:<sceneId> --build <build_id>",
+      "pcbridge tinyapp delete --target editor:<sceneId> --build <build_id> [--force]",
+      "Self-hosted PlayCanvas Editor backend builds ES5 gamescript.js and uploads directly to server-configured OSS/COS + CDN without local S3 keys.",
+      "For playcanvas.com or user-managed S3 credentials, use 'pcbridge plugin add tinyapp-builder' instead.",
     ],
     script: [
       "pcbridge script upsert --target editor:<sceneId> --filename controller.js --file ./controller.js --folder \"AI Agent Bridge/Task/Scripts\" [--parse] [--wait]",
@@ -2354,6 +2508,8 @@ async function main(): Promise<void> {
       envelope = await handleMaterial(args);
     } else if (command === "template") {
       envelope = await handleTemplate(args);
+    } else if (command === "tinyapp" || command === "tinyapps") {
+      envelope = await handleTinyApp(args);
     } else if (command === "script") {
       envelope = await handleScript(args);
     } else if (command === "scene") {

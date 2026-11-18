@@ -1828,3 +1828,174 @@ return {
 };
 `;
 }
+
+export function tinyappManageSnippet(): string {
+  return `
+const args = command.args || {};
+if (!editor || !editor.api || !editor.api.globals) {
+  throw new Error("tinyapp commands require an open PlayCanvas Editor target.");
+}
+const globals = editor.api.globals;
+const cfg = typeof window !== "undefined" ? window.config : null;
+const supported = Boolean(
+  (globals.tinyapps && typeof globals.tinyapps.isSupported === "function" && globals.tinyapps.isSupported()) ||
+  (cfg && cfg.selfhost && cfg.selfhost.tinyAppPipeline === "server-v1")
+);
+const projectId = Number(globals.projectId || (cfg && cfg.project && cfg.project.id));
+const branchId = String(args.branchId || globals.branchId || (cfg && cfg.self && cfg.self.branch && cfg.self.branch.id) || "");
+const apiUrl = String(globals.apiUrl || (cfg && cfg.url && cfg.url.api) || "/api").replace(/\\/+$/, "");
+
+if (args.action === "status" && !supported) {
+  return {
+    supported: false,
+    reason: "Target Editor server does not advertise backend TinyApp packaging (selfhost.tinyAppPipeline=server-v1). Use 'pcbridge plugin add tinyapp-builder' for local S3 packaging.",
+    projectId: Number.isFinite(projectId) ? projectId : null,
+    branchId: branchId || null
+  };
+}
+if (!supported) {
+  throw new Error(
+    "Backend TinyApp packaging is only available on self-hosted PlayCanvas Editor servers (tinyAppPipeline=server-v1). For playcanvas.com or self-managed S3 keys, use the tinyapp-builder plugin."
+  );
+}
+if (!Number.isInteger(projectId) || projectId < 1) {
+  throw new Error("Unable to resolve current PlayCanvas projectId.");
+}
+
+async function apiJson(path, init = {}) {
+  const headers = Object.assign({}, init.headers || {});
+  if (init.body !== undefined && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (globals.accessToken) {
+    headers["Authorization"] = "Bearer " + globals.accessToken;
+  }
+  const res = await fetch(apiUrl + path, Object.assign({}, init, {
+    credentials: "same-origin",
+    headers
+  }));
+  let payload = null;
+  try {
+    payload = await res.json();
+  } catch {
+    payload = null;
+  }
+  if (!res.ok) {
+    const msg = (payload && (payload.error || payload.message)) || ("HTTP " + res.status);
+    throw new Error(msg);
+  }
+  return payload;
+}
+
+function encodeQuery(values) {
+  const parts = [];
+  for (const [k, v] of Object.entries(values || {})) {
+    if (v === undefined || v === null || v === "") continue;
+    parts.push(encodeURIComponent(k) + "=" + encodeURIComponent(String(v)));
+  }
+  return parts.length ? ("?" + parts.join("&")) : "";
+}
+
+async function waitBuild(buildId, timeoutMs) {
+  const deadline = Date.now() + Math.max(5000, Number(timeoutMs) || 120000);
+  while (true) {
+    const detail = await apiJson("/projects/" + projectId + "/tinyapps/builds/" + Number(buildId));
+    if (detail.status === "complete") return detail;
+    if (detail.status === "error") {
+      throw new Error(detail.error || detail.message || ("TinyApp build " + buildId + " failed."));
+    }
+    if (Date.now() >= deadline) {
+      throw new Error("Timed out waiting for TinyApp build " + buildId + " (still " + detail.status + "). Use 'pcbridge tinyapp get --build " + buildId + "' to check progress.");
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
+if (args.action === "status") {
+  const summary = await apiJson("/projects/" + projectId + "/tinyapps" + encodeQuery({ limit: 10 }));
+  return {
+    supported: true,
+    projectId,
+    branchId,
+    service: summary.service,
+    totals: summary.totals,
+    templates: summary.templates
+  };
+}
+
+if (args.action === "inspect") {
+  const assetId = Number(args.templateAssetId);
+  return await apiJson(
+    "/projects/" + projectId + "/templates/" + assetId + "/tinyapp/inspect" + encodeQuery({ branchId })
+  );
+}
+
+if (args.action === "list") {
+  const limit = Number(args.limit || 20);
+  const skip = Number(args.offset || 0);
+  if (args.templateAssetId) {
+    const res = await apiJson(
+      "/projects/" + projectId + "/templates/" + Number(args.templateAssetId) + "/tinyapp/builds" +
+      encodeQuery({
+        branchId: args.filterBranch ? branchId : undefined,
+        status: args.status,
+        limit,
+        skip
+      })
+    );
+    return {
+      service: res.service,
+      builds: res.result,
+      pagination: res.pagination
+    };
+  }
+  return await apiJson(
+    "/projects/" + projectId + "/tinyapps" +
+    encodeQuery({
+      q: args.query,
+      status: args.status,
+      limit,
+      skip
+    })
+  );
+}
+
+if (args.action === "get") {
+  return await apiJson("/projects/" + projectId + "/tinyapps/builds/" + Number(args.buildId));
+}
+
+if (args.action === "build") {
+  const sceneId = cfg && cfg.scene && cfg.scene.id ? cfg.scene.id : null;
+  const started = await apiJson(
+    "/projects/" + projectId + "/templates/" + Number(args.templateAssetId) + "/tinyapp/builds",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        branchId,
+        sceneId,
+        label: args.label || undefined,
+        suffix: args.suffix || undefined,
+        prefix: args.prefix || undefined,
+        childStrategy: args.childStrategy || undefined
+      })
+    }
+  );
+  if (!args.wait) return started;
+  return await waitBuild(started.id, args.waitTimeoutMs);
+}
+
+if (args.action === "wait") {
+  return await waitBuild(args.buildId, args.waitTimeoutMs);
+}
+
+if (args.action === "delete") {
+  return await apiJson(
+    "/projects/" + projectId + "/tinyapps/builds/" + Number(args.buildId) +
+    encodeQuery({ force: args.force ? "true" : undefined }),
+    { method: "DELETE" }
+  );
+}
+
+throw new Error("Unsupported tinyapp action: " + String(args.action));
+`;
+}
