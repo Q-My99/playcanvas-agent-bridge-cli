@@ -296,6 +296,8 @@ pcbridge tinyapp list --target editor:<sceneId> --template <templateAssetId>
 pcbridge tinyapp delete --target editor:<sceneId> --build <buildId>
 ```
 
+The backend publishes each version at `<projectId>/<templateAssetId>-<templateName>-v<version>/tinyapp.json`.
+
 For official `playcanvas.com` or when managing your own S3/OSS/COS bucket locally,
 Tiny Builder is the official `tinyapp-builder` plugin. Add it once with
 `pcbridge plugin add tinyapp-builder` or **Install** in the popup **Plugins** tab.

@@ -158,6 +158,7 @@ loaded dynamically at runtime by `tiny-runtime` (`TinyLuncher` / `TinyLoader` / 
 Choose the packaging path that matches the target Editor:
 
 1. **Self-hosted Editor backend (`pcbridge tinyapp ...` / `editor.api.globals.tinyapps`) — preferred on self-hosted servers**:
+   The backend publishes to `<projectId>/<templateAssetId>-<templateName>-v<version>/tinyapp.json`.
    Uses server-configured OSS/COS + CDN (`TINYAPP_S3_*`) without local S3 keys, uploads directly
    from the backend without browser download/re-upload, reuses unchanged nested child TinyApps by
    content hash, tracks version history per Template (also manageable at `/tinyapps` and

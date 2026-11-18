@@ -1598,7 +1598,6 @@ async function handleTinyApp(args: Args): Promise<Envelope> {
         branchId: flagString(args, "branch") || null,
         label: flagString(args, "label") || null,
         suffix: flagString(args, "suffix") || null,
-        prefix: flagString(args, "prefix") || null,
         childStrategy: childStrategy || null,
         wait,
         waitTimeoutMs,
@@ -2374,7 +2373,7 @@ function help(group = "overview"): Envelope {
     tinyapp: [
       "pcbridge tinyapp status --target editor:<sceneId>",
       "pcbridge tinyapp inspect --target editor:<sceneId> --template <template_asset_id> [--branch <branchId>]",
-      "pcbridge tinyapp build --target editor:<sceneId> --template <template_asset_id> [--label <note>] [--suffix <suffix>] [--prefix <prefix>] [--child-strategy reuse-if-unchanged|reuse-latest|force-rebuild] [--wait] [--timeout-ms 120000]",
+      "pcbridge tinyapp build --target editor:<sceneId> --template <template_asset_id> [--label <note>] [--suffix <suffix>] [--child-strategy reuse-if-unchanged|reuse-latest|force-rebuild] [--wait] [--timeout-ms 120000]",
       "pcbridge tinyapp wait --target editor:<sceneId> --build <build_id> [--timeout-ms 120000]",
       "pcbridge tinyapp list --target editor:<sceneId> [--template <template_asset_id>] [--status complete|error|running] [--q <query>] [--limit 20] [--offset 0]",
       "pcbridge tinyapp get --target editor:<sceneId> --build <build_id>",

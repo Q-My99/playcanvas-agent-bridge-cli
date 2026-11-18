@@ -153,6 +153,7 @@ with their published `tinyAppUrl`.
 
 - **Self-hosted backend packaging (preferred on self-hosted servers — no local S3 keys, server-side
   ES5 build + direct OSS/COS upload, nested child content-hash reuse, version history & S3 cleanup)**:
+  The backend publishes to `<projectId>/<templateAssetId>-<templateName>-v<version>/tinyapp.json`.
   ```bash
   pcbridge tinyapp status --target editor:<sceneId>
   pcbridge tinyapp inspect --target editor:<sceneId> --template <template_asset_id>

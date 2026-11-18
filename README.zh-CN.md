@@ -282,6 +282,8 @@ pcbridge tinyapp list --target editor:<sceneId> --template <templateAssetId>
 pcbridge tinyapp delete --target editor:<sceneId> --build <buildId>
 ```
 
+后端按项目和模板生成发布地址 `<projectId>/<templateAssetId>-<templateName>-v<version>/tinyapp.json`。
+
 在官方 `playcanvas.com` 或希望自行管理对象存储密钥与桶时，仍可使用本地插件方案：
 Tiny Builder 是官方插件 `tinyapp-builder`，执行一次 `pcbridge plugin add tinyapp-builder`
 或在弹窗 **Plugins** 标签页点击 **Install** 即可添加。

@@ -73,6 +73,7 @@ TinyApp packaging & runtime rules (`tiny-runtime`: `TinyLuncher` / `TinyLoader` 
   `pcbridge tinyapp status|inspect|build|wait|list|get|delete` (and `editor.api.globals.tinyapps`)
   builds ES5 on the server, uploads directly to server-configured OSS/COS + CDN without local S3
   keys, reuses unchanged nested child TinyApps by content hash, and manages/deletes version history.
+  The backend publishes to `<projectId>/<templateAssetId>-<templateName>-v<version>/tinyapp.json`.
 - **Local plugin (`pcbridge plugin add tinyapp-builder`)**: For `playcanvas.com` or user-managed
   `.env` S3 credentials (`pcbridge plugin call tinyapp-builder start|status`).
 - **Mini-Program vs Web constraints**: Mini-programs run on **Engine v1.77.0 + WebGL 1.0** (verify

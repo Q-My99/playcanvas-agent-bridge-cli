@@ -80,7 +80,7 @@ test("tinyappManageSnippet supports self-hosted Editor APIs and reports clear fa
       return {
         ok: true,
         json: async () => ({
-          service: { enabled: true, publicBaseUrl: "https://cdn.example.com", defaultPrefix: "tinyapps" },
+          service: { enabled: true, publicBaseUrl: "https://cdn.example.com" },
           totals: { buildCount: 1, templateCount: 1, totalBytes: 2048, orphanedBuildCount: 0 },
           templates: [],
         }),
@@ -100,7 +100,7 @@ test("tinyappManageSnippet supports self-hosted Editor APIs and reports clear fa
           id: 501,
           status: buildPollCount >= 2 ? "complete" : "running",
           version: 3,
-          publicUrl: "https://cdn.example.com/tinyapps/Booth-v3-501/tinyapp.json",
+          publicUrl: "https://cdn.example.com/42/88-Booth-v3/tinyapp.json",
         }),
       };
     }
@@ -148,7 +148,7 @@ test("tinyappManageSnippet supports self-hosted Editor APIs and reports clear fa
     },
   });
   assert.equal(built.status, "complete");
-  assert.equal(built.publicUrl, "https://cdn.example.com/tinyapps/Booth-v3-501/tinyapp.json");
+  assert.equal(built.publicUrl, "https://cdn.example.com/42/88-Booth-v3/tinyapp.json");
 
   const deleted = await fn(selfhostEditor, selfhostWindow, mockFetch, {
     args: { action: "delete", buildId: 501, force: true },

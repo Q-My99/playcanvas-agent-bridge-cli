@@ -1975,7 +1975,6 @@ if (args.action === "build") {
         sceneId,
         label: args.label || undefined,
         suffix: args.suffix || undefined,
-        prefix: args.prefix || undefined,
         childStrategy: args.childStrategy || undefined
       })
     }
