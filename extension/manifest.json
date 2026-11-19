@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "PlayCanvas Agent Bridge",
   "description": "Connects open PlayCanvas Editor and Launch tabs to the local pcbridge daemon.",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "permissions": [
     "activeTab",
     "storage",
