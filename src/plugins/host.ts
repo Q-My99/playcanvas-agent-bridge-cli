@@ -255,7 +255,7 @@ export class PluginHost {
   }
 
   async list(
-    options: { refresh?: boolean } = {},
+    options: { refresh?: boolean; allowNetwork?: boolean } = {},
   ): Promise<{ plugins: PluginStatus[]; available: AvailablePlugin[] }> {
     const [installed, catalog, available] = await Promise.all([
       this.#store.list(),

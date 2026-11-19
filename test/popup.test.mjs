@@ -101,6 +101,14 @@ async function runPopup(initialUrl, statusData, options = {}) {
       }
       return new Response(JSON.stringify({ ok: true, data: { plugins: [], available: [] } }));
     }
+    if (rawUrl.includes("/updates")) {
+      if (options.onUpdatesRequest) {
+        return new Response(JSON.stringify(await options.onUpdatesRequest(rawUrl)));
+      }
+      const currentStatus = typeof statusData === "function" ? statusData() : statusData;
+      if (!currentStatus) throw new Error("daemon offline");
+      return new Response(JSON.stringify({ ok: true, data: currentStatus.updates || null }));
+    }
     if (rawUrl.endsWith("/workspace/settings") && reqOptions.method === "POST") {
       const payload = JSON.parse(String(reqOptions.body || "{}"));
       daemonCalls.push(payload);
@@ -342,4 +350,152 @@ test("extension popup shows core update banner, plugin update count, discovers n
   await popup.elements.get("update-apply").handlers.click();
   assert.ok(popup.daemonCalls.some((c) => c.endpoint === "/update" && c.includePlugins === true && c.reloadTabs === true));
   assert.ok(popup.runtimeMessages.some((m) => m.type === "pcbridge:reloadExtension" && m.reloadTabs === true));
+});
+
+test("extension popup renders local status and installed plugins immediately without waiting for slow remote update checks", async () => {
+  let resolveUpdatesRefresh;
+  const pendingUpdatesRefresh = new Promise((resolve) => {
+    resolveUpdatesRefresh = resolve;
+  });
+  let resolvePluginsRefresh;
+  const pendingPluginsRefresh = new Promise((resolve) => {
+    resolvePluginsRefresh = resolve;
+  });
+
+  const localStatus = {
+    daemon: { version: "0.8.0", targetCount: 1, eagerMaxMb: 2 },
+    target: {
+      connected: true,
+      ready: true,
+      kind: "editor",
+      projectId: "1552681",
+      projectName: "pcbridge-test",
+      sceneId: "2558608",
+      sceneName: "Main",
+    },
+    workspace: {
+      available: true,
+      state: "synced",
+      eagerMaxMb: 2,
+      projectDirectory: "/workspace/1552681-pcbridge-test",
+      counts: { scripts: 1, scriptsSynced: 1, assets: 5, lazyAssets: 2, conflicts: 0 },
+    },
+    updates: {
+      checkedAt: "2026-11-19T00:00:00.000Z",
+      hasUpdates: false,
+      core: {
+        currentVersion: "0.8.0",
+        latestVersion: "0.8.0",
+        updateAvailable: false,
+        canSelfUpdate: true,
+        installKind: "bun-global",
+      },
+      plugins: [],
+    },
+  };
+
+  const popup = await runPopup("https://playcanvas.com/editor/scene/2558608", () => localStatus, {
+    onUpdatesRequest: async () => pendingUpdatesRefresh,
+    onPluginRequest: async (url) => {
+      if (url.endsWith("/plugins?refresh=1")) {
+        return pendingPluginsRefresh;
+      }
+      return {
+        ok: true,
+        data: {
+          plugins: [
+            {
+              id: "tinyapp-builder",
+              name: "Tiny Builder",
+              version: "1.0.1",
+              latestVersion: "1.0.1",
+              updateAvailable: false,
+              compatible: true,
+              enabled: true,
+              state: "active",
+              source: { type: "official", name: "tinyapp-builder" },
+              runtimes: { node: true, editor: true, launch: false },
+              pages: [],
+            },
+          ],
+          available: [],
+        },
+      };
+    },
+  });
+
+  // Local Bridge info is rendered immediately while /updates?refresh=1 is still stalled!
+  assert.equal(popup.elements.get("overall-status").textContent, "Ready");
+  assert.equal(popup.elements.get("daemon-status").textContent, "Connected");
+  assert.equal(popup.elements.get("project").textContent, "pcbridge-test · 1552681");
+  assert.equal(popup.elements.get("scene").textContent, "Main · 2558608");
+  assert.equal(popup.elements.get("workspace-status").textContent, "Synced");
+  assert.equal(popup.elements.get("workspace-path").textContent, "/workspace/1552681-pcbridge-test");
+  assert.equal(popup.elements.get("metric-scripts").textContent, "1/1");
+  assert.equal(popup.elements.get("update-banner").hidden, true);
+
+  // Clicking Plugins tab renders local installed plugins immediately while /plugins?refresh=1 is still stalled!
+  popup.elements.get("tab-plugins").handlers.click();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(popup.elements.get("plugin-list").children.length, 1);
+  assert.equal(popup.elements.get("plugin-count").textContent, "1 enabled");
+
+  // Once slow remote checks finish, both Bridge banner and Plugins tab smoothly update!
+  resolveUpdatesRefresh({
+    ok: true,
+    data: {
+      checkedAt: "2026-11-19T06:00:00.000Z",
+      hasUpdates: true,
+      core: {
+        currentVersion: "0.8.0",
+        latestVersion: "0.9.0",
+        updateAvailable: true,
+        canSelfUpdate: true,
+        installKind: "bun-global",
+      },
+      plugins: [
+        {
+          id: "tinyapp-builder",
+          name: "Tiny Builder",
+          currentVersion: "1.0.1",
+          latestVersion: "1.2.0",
+          updateAvailable: true,
+          compatible: true,
+        },
+      ],
+    },
+  });
+  resolvePluginsRefresh({
+    ok: true,
+    data: {
+      plugins: [
+        {
+          id: "tinyapp-builder",
+          name: "Tiny Builder",
+          version: "1.0.1",
+          latestVersion: "1.2.0",
+          updateAvailable: true,
+          compatible: true,
+          enabled: true,
+          state: "active",
+          source: { type: "official", name: "tinyapp-builder" },
+          runtimes: { node: true, editor: true, launch: false },
+          pages: [],
+        },
+      ],
+      available: [],
+    },
+  });
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(popup.elements.get("update-banner").hidden, false);
+  assert.equal(popup.elements.get("update-status").textContent, "v0.9.0");
+  assert.equal(popup.elements.get("tab-plugins").textContent, "Plugins · 1↑");
+  assert.equal(popup.elements.get("plugin-count").textContent, "1 update");
+
+  // Subsequent 1s local /status polls preserve the newer background update state
+  await popup.intervals[0]();
+  assert.equal(popup.elements.get("update-banner").hidden, false);
+  assert.equal(popup.elements.get("update-status").textContent, "v0.9.0");
 });

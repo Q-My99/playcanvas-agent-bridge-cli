@@ -52,6 +52,22 @@ async function loadStatus(config, tabId, refresh = false) {
   }
 }
 
+async function loadUpdates(config, refresh = true) {
+  if (!config || !config.token) return null;
+  try {
+    const host = config.host || "127.0.0.1";
+    const port = config.port || 17329;
+    const response = await fetch(`http://${host}:${port}/updates${refresh ? "?refresh=1" : ""}`, {
+      headers: { "X-PCBridge-Token": config.token }
+    });
+    if (!response.ok) return null;
+    const envelope = await response.json();
+    return envelope && envelope.ok && envelope.data && envelope.data.core ? envelope.data : null;
+  } catch {
+    return null;
+  }
+}
+
 async function sendRuntimeMessage(message) {
   try {
     return await chrome.runtime.sendMessage(message);
@@ -93,6 +109,7 @@ function setupPlugins(config) {
   const note = document.getElementById("plugin-note");
   const source = document.getElementById("plugin-source");
   const defaultNote = note.textContent;
+  let refreshSeq = 0;
   const states = {
     active: ["Active", "success"],
     stopped: ["Stopped", "warning"],
@@ -106,6 +123,7 @@ function setupPlugins(config) {
   }
 
   async function run(path, body, pending) {
+    refreshSeq += 1;
     showNote(pending, false);
     view.inert = true;
     const result = await pluginRequest(config, path, body);
@@ -183,7 +201,9 @@ function setupPlugins(config) {
   }
 
   async function refresh(forceRefresh = false) {
+    const seq = ++refreshSeq;
     const result = await pluginRequest(config, `/plugins${forceRefresh ? "?refresh=1" : ""}`);
+    if (seq !== refreshSeq) return false;
     const count = document.getElementById("plugin-count");
     const updateAllBtn = document.getElementById("plugin-update-all");
     const pluginsTab = document.getElementById("tab-plugins");
@@ -216,6 +236,7 @@ function setupPlugins(config) {
       setStatus(count, "Unavailable", "danger");
       showNote(result.error.message, true);
     }
+    return result.ok;
   }
 
   document.getElementById("plugin-update-all").addEventListener("click", async () => {
@@ -234,7 +255,15 @@ function setupPlugins(config) {
         button.setAttribute("aria-selected", String(other === name));
         document.getElementById(`view-${other}`).hidden = other !== name;
       }
-      if (name === "plugins") void refresh(true);
+      if (name === "plugins") {
+        void (async () => {
+          const seqBefore = refreshSeq;
+          const ok = await refresh(false);
+          if (ok && refreshSeq === seqBefore + 1) {
+            await refresh(true);
+          }
+        })();
+      }
     });
   }
 }
@@ -408,7 +437,11 @@ function renderStatus(status, context) {
 }
 
 async function main() {
-  const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const [[active], config, storedWorkspaceSettings] = await Promise.all([
+    chrome.tabs.query({ active: true, currentWindow: true }),
+    loadConfig(),
+    sendRuntimeMessage({ type: "pcbridge:getWorkspaceSettings" })
+  ]);
   const url = active && active.url ? new URL(active.url) : null;
   const isEditor = Boolean(
     url &&
@@ -421,7 +454,24 @@ async function main() {
         url.hostname === "pc-launch.sightp.com" ||
         /^\/launch\//.test(url.pathname))
   );
-  const site = await sendRuntimeMessage({ type: "pcbridge:siteStatus", url: url?.href });
+  setupPlugins(config);
+  let fallbackEagerMaxMb = clampEagerMaxMb(storedWorkspaceSettings && storedWorkspaceSettings.eagerMaxMb);
+  const [site, initialStatus] = await Promise.all([
+    sendRuntimeMessage({ type: "pcbridge:siteStatus", url: url?.href }),
+    loadStatus(config, active && active.id, false)
+  ]);
+  let status = initialStatus;
+  let refreshedUpdates = null;
+
+  function mergeFreshUpdates(nextStatus) {
+    if (!nextStatus || !refreshedUpdates) return nextStatus;
+    const existingCheckedAt = nextStatus.updates && nextStatus.updates.checkedAt;
+    if (!existingCheckedAt || (refreshedUpdates.checkedAt && existingCheckedAt < refreshedUpdates.checkedAt)) {
+      return { ...nextStatus, updates: refreshedUpdates };
+    }
+    return nextStatus;
+  }
+
   const siteToggle = document.getElementById("site-toggle");
   const siteStatus = document.getElementById("site-status");
   siteStatus.textContent = site?.enabled ? "Enabled" : "Not enabled";
@@ -436,25 +486,6 @@ async function main() {
     siteToggle.textContent = site.enabled ? "Disable on this site" : "Enable on this site";
     siteStatus.textContent = site.enabled ? "Enabled. Refresh Editor / Launch to connect." : "Disabled. Existing connections closed.";
   });
-  const config = await loadConfig();
-  setupPlugins(config);
-  const storedWorkspaceSettings = await sendRuntimeMessage({ type: "pcbridge:getWorkspaceSettings" });
-  let fallbackEagerMaxMb = clampEagerMaxMb(storedWorkspaceSettings && storedWorkspaceSettings.eagerMaxMb);
-  let status = await loadStatus(config, active && active.id, true);
-  if (status && status.updates) {
-    void sendRuntimeMessage({ type: "pcbridge:syncUpdateBadge", updates: status.updates });
-  }
-  if (status && storedWorkspaceSettings && storedWorkspaceSettings.pendingDaemonSync) {
-    const synced = await updateDaemonWorkspaceSettings(config, fallbackEagerMaxMb);
-    if (synced) {
-      await sendRuntimeMessage({
-        type: "pcbridge:setWorkspaceSettings",
-        eagerMaxMb: fallbackEagerMaxMb,
-        pendingDaemonSync: false
-      });
-      status = await loadStatus(config, active && active.id);
-    }
-  }
   const context = {
     isEditor,
     isLaunch,
@@ -463,6 +494,38 @@ async function main() {
     updatingCore: false
   };
   renderStatus(status, context);
+  if (status && status.updates) {
+    void sendRuntimeMessage({ type: "pcbridge:syncUpdateBadge", updates: status.updates });
+  }
+
+  if (status) {
+    void loadUpdates(config, true).then((freshUpdates) => {
+      if (!freshUpdates) return;
+      refreshedUpdates = freshUpdates;
+      if (status) {
+        status = { ...status, updates: freshUpdates };
+      }
+      void sendRuntimeMessage({ type: "pcbridge:syncUpdateBadge", updates: freshUpdates });
+      renderStatus(status, context);
+    });
+  }
+
+  if (status && storedWorkspaceSettings && storedWorkspaceSettings.pendingDaemonSync) {
+    void (async () => {
+      const synced = await updateDaemonWorkspaceSettings(config, fallbackEagerMaxMb);
+      if (!synced) return;
+      await sendRuntimeMessage({
+        type: "pcbridge:setWorkspaceSettings",
+        eagerMaxMb: fallbackEagerMaxMb,
+        pendingDaemonSync: false
+      });
+      const nextStatus = await loadStatus(config, active && active.id, false);
+      if (nextStatus) {
+        status = mergeFreshUpdates(nextStatus);
+        renderStatus(status, context);
+      }
+    })();
+  }
 
   const updateApply = document.getElementById("update-apply");
   const updateReloadExt = document.getElementById("update-reload-ext");
@@ -513,7 +576,7 @@ async function main() {
         pendingDaemonSync: !updated
       });
       if (updated) {
-        status = await loadStatus(config, active && active.id);
+        status = mergeFreshUpdates(await loadStatus(config, active && active.id, false));
       }
     } finally {
       context.sliderActive = false;
@@ -531,7 +594,7 @@ async function main() {
   });
 
   setInterval(async () => {
-    status = await loadStatus(config, active && active.id);
+    status = mergeFreshUpdates(await loadStatus(config, active && active.id, false));
     if (status && status.updates) {
       void sendRuntimeMessage({ type: "pcbridge:syncUpdateBadge", updates: status.updates });
     }

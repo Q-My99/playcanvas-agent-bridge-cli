@@ -9,6 +9,10 @@ import test from "node:test";
 import { c as createTar } from "tar";
 import { WebSocket } from "ws";
 import { VERSION } from "../dist/config.js";
+import {
+  installGlobalPackage,
+  OFFICIAL_NPM_REGISTRY,
+} from "../dist/updates.js";
 
 const cliPath = join(process.cwd(), "dist", "cli.js");
 
@@ -268,4 +272,59 @@ test("update status, meta.updates, and one-click pcbridge update converge CLI, s
   }).then((r) => r.json());
   assert.equal(healthAfter.ok, true);
   assert.equal(healthAfter.data.workspaceRoot, workspaceRoot);
+});
+
+test("installGlobalPackage retries against official npm registry when configured mirror lags behind latest version", async () => {
+  const prevCustomCmd = process.env.PCBRIDGE_UPDATE_INSTALL_CMD;
+  const prevFallback = process.env.PCBRIDGE_NPM_FALLBACK_REGISTRY;
+  delete process.env.PCBRIDGE_UPDATE_INSTALL_CMD;
+  delete process.env.PCBRIDGE_NPM_FALLBACK_REGISTRY;
+
+  try {
+    const calls = [];
+    const result = await installGlobalPackage(
+      "bun-global",
+      "0.9.0",
+      "/tmp/pcbridge-config",
+      async (command, args) => {
+        calls.push({ command, args });
+        if (calls.length === 1) {
+          return {
+            code: 1,
+            stdout: "",
+            stderr:
+              'error: No version matching "0.9.0" found for specifier "playcanvas-agent-bridge-cli" (but package exists)\n' +
+              "error: playcanvas-agent-bridge-cli@0.9.0 failed to resolve",
+          };
+        }
+        return { code: 0, stdout: "installed playcanvas-agent-bridge-cli@0.9.0", stderr: "" };
+      },
+    );
+    assert.equal(result.code, 0);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0].args, ["add", "--global", "playcanvas-agent-bridge-cli@0.9.0"]);
+    assert.deepEqual(calls[1].args, [
+      "add",
+      "--global",
+      "playcanvas-agent-bridge-cli@0.9.0",
+      `--registry=${OFFICIAL_NPM_REGISTRY}`,
+    ]);
+
+    // Non-registry errors (such as EACCES) do not trigger a redundant retry
+    const permCalls = [];
+    const permResult = await installGlobalPackage(
+      "npm-global",
+      "0.9.0",
+      "/tmp/pcbridge-config",
+      async (command, args) => {
+        permCalls.push({ command, args });
+        return { code: 1, stdout: "", stderr: "npm ERR! code EACCES\nnpm ERR! syscall mkdir" };
+      },
+    );
+    assert.equal(permResult.code, 1);
+    assert.equal(permCalls.length, 1);
+  } finally {
+    if (prevCustomCmd !== undefined) process.env.PCBRIDGE_UPDATE_INSTALL_CMD = prevCustomCmd;
+    if (prevFallback !== undefined) process.env.PCBRIDGE_NPM_FALLBACK_REGISTRY = prevFallback;
+  }
 });

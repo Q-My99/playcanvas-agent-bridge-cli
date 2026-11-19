@@ -446,7 +446,9 @@ export class PluginStore {
     }
   }
 
-  async catalog(options: { refresh?: boolean } = {}): Promise<Map<string, OfficialPluginCatalogEntry>> {
+  async catalog(
+    options: { refresh?: boolean; allowNetwork?: boolean } = {},
+  ): Promise<Map<string, OfficialPluginCatalogEntry>> {
     const now = Date.now();
     if (!options.refresh && this.#catalogCache && now - this.#catalogCache.at < 60_000) {
       return new Map(this.#catalogCache.entries);
@@ -477,7 +479,10 @@ export class PluginStore {
       mergeEntries(cachedStateEntries);
     }
 
-    if (options.refresh || this.#remoteCatalogUrl !== undefined || process.env.PCBRIDGE_PLUGINS_INDEX_URL) {
+    if (
+      options.allowNetwork !== false &&
+      (options.refresh || this.#remoteCatalogUrl !== undefined || process.env.PCBRIDGE_PLUGINS_INDEX_URL)
+    ) {
       const remote = await this.#fetchRemoteCatalog();
       if (remote) mergeEntries(remote);
     }
@@ -504,7 +509,7 @@ export class PluginStore {
     return Promise.all(Object.entries(records).map(([id, record]) => this.#describe(id, record)));
   }
 
-  async summaries(options: { refresh?: boolean } = {}): Promise<PluginSummary[]> {
+  async summaries(options: { refresh?: boolean; allowNetwork?: boolean } = {}): Promise<PluginSummary[]> {
     const [installed, catalog] = await Promise.all([
       this.list(),
       this.catalog(options),
@@ -518,7 +523,7 @@ export class PluginStore {
     return this.#describe(id, record);
   }
 
-  async available(options: { refresh?: boolean } = {}): Promise<AvailablePlugin[]> {
+  async available(options: { refresh?: boolean; allowNetwork?: boolean } = {}): Promise<AvailablePlugin[]> {
     const [records, catalog] = await Promise.all([
       this.#records(),
       this.catalog(options),

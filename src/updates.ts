@@ -23,6 +23,7 @@ import {
 import type { JsonValue } from "./shared/protocol.js";
 
 export const UPDATE_CACHE_TTL_MS = 60 * 60 * 1000;
+export const OFFICIAL_NPM_REGISTRY = "https://registry.npmjs.org/";
 
 export type InstallKind = "source" | "bun-global" | "npm-global" | "pnpm-global";
 
@@ -110,27 +111,36 @@ export async function detectInstallKind(packageRoot?: string): Promise<InstallKi
 export function globalInstallCommand(
   installKind: InstallKind,
   targetVersion = "latest",
+  registry?: string,
 ): { command: string; args: string[]; display: string } {
   const spec = `${PACKAGE_NAME}@${targetVersion}`;
+  const registryArgs = registry ? [`--registry=${registry}`] : [];
+  const registrySuffix = registry ? ` --registry=${registry}` : "";
   if (installKind === "pnpm-global") {
     return {
       command: "pnpm",
-      args: ["add", "--global", spec],
-      display: `pnpm add --global ${spec}`,
+      args: ["add", "--global", spec, ...registryArgs],
+      display: `pnpm add --global ${spec}${registrySuffix}`,
     };
   }
   if (installKind === "npm-global") {
     return {
       command: "npm",
-      args: ["install", "--global", spec],
-      display: `npm install --global ${spec}`,
+      args: ["install", "--global", spec, ...registryArgs],
+      display: `npm install --global ${spec}${registrySuffix}`,
     };
   }
   return {
     command: process.execPath,
-    args: ["add", "--global", spec],
-    display: `bun add --global ${spec}`,
+    args: ["add", "--global", spec, ...registryArgs],
+    display: `bun add --global ${spec}${registrySuffix}`,
   };
+}
+
+export function isRegistryVersionLagError(output: string): boolean {
+  return /no (?:matching )?version|ETARGET|ERR_PNPM_NO_MATCHING_VERSION|ERR_PNPM_FETCH_404|E404|404 Not Found|failed to resolve/i.test(
+    output,
+  );
 }
 
 export async function readGeneratedExtensionVersion(
@@ -247,8 +257,8 @@ export async function getUpdateReport(
     await Promise.all([
       detectInstallKind(),
       readGeneratedExtensionVersion(extensionDir),
-      store.summaries({ refresh: false }),
-      store.available({ refresh: false }),
+      store.summaries({ refresh: false, allowNetwork: false }),
+      store.available({ refresh: false, allowNetwork: false }),
     ]);
 
   const currentVersion = VERSION;
@@ -528,6 +538,40 @@ function runCommand(
   });
 }
 
+export async function installGlobalPackage(
+  installKind: InstallKind,
+  targetVersion: string,
+  configDir: string,
+  runner: typeof runCommand = runCommand,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const customCmd = process.env.PCBRIDGE_UPDATE_INSTALL_CMD;
+  if (customCmd) {
+    return runner(
+      process.platform === "win32" ? "cmd" : "sh",
+      process.platform === "win32" ? ["/c", customCmd] : ["-c", customCmd],
+      { ...process.env, PCBRIDGE_TARGET_VERSION: targetVersion, PCBRIDGE_CONFIG_DIR: configDir },
+    );
+  }
+  const childEnv = { ...process.env, PCBRIDGE_CONFIG_DIR: configDir };
+  const primarySpec = globalInstallCommand(installKind, targetVersion);
+  const primaryResult = await runner(primarySpec.command, primarySpec.args, childEnv);
+  if (primaryResult.code === 0) {
+    return primaryResult;
+  }
+  const fallbackRegistry =
+    process.env.PCBRIDGE_NPM_FALLBACK_REGISTRY !== undefined
+      ? process.env.PCBRIDGE_NPM_FALLBACK_REGISTRY
+      : OFFICIAL_NPM_REGISTRY;
+  if (
+    fallbackRegistry &&
+    isRegistryVersionLagError(`${primaryResult.stderr}\n${primaryResult.stdout}`)
+  ) {
+    const fallbackSpec = globalInstallCommand(installKind, targetVersion, fallbackRegistry);
+    return runner(fallbackSpec.command, fallbackSpec.args, childEnv);
+  }
+  return primaryResult;
+}
+
 export type ExecuteUpdateResult = {
   previousVersion: string;
   version: string;
@@ -579,20 +623,11 @@ export async function executeOneClickUpdate(options: {
   let packageUpdated = false;
   if (before.core.updateAvailable && before.core.canSelfUpdate) {
     const targetVersion = before.core.latestVersion || "latest";
-    const customCmd = process.env.PCBRIDGE_UPDATE_INSTALL_CMD;
-    const installResult = customCmd
-      ? await runCommand(
-          process.platform === "win32" ? "cmd" : "sh",
-          process.platform === "win32" ? ["/c", customCmd] : ["-c", customCmd],
-          { ...process.env, PCBRIDGE_TARGET_VERSION: targetVersion, PCBRIDGE_CONFIG_DIR: configDir },
-        )
-      : await (() => {
-          const spec = globalInstallCommand(before.core.installKind, targetVersion);
-          return runCommand(spec.command, spec.args, {
-            ...process.env,
-            PCBRIDGE_CONFIG_DIR: configDir,
-          });
-        })();
+    const installResult = await installGlobalPackage(
+      before.core.installKind,
+      targetVersion,
+      configDir,
+    );
     if (installResult.code !== 0) {
       throw Object.assign(
         new Error(

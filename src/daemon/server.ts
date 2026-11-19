@@ -20,6 +20,7 @@ import {
   getUpdateReport,
   readGeneratedExtensionVersion,
   UPDATE_CACHE_TTL_MS,
+  type UpdateReport,
 } from "../updates.js";
 import {
   fail,
@@ -128,6 +129,35 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
   const pending = new Map<string, PendingRequest>();
   const autoReloadedClients = new Set<string>();
   const log = options.log || (() => undefined);
+  let inflightUpdateRefresh: Promise<UpdateReport> | null = null;
+
+  function resolveUpdateReport(params: { refresh: boolean; allowNetwork: boolean }): Promise<UpdateReport> {
+    if (!params.refresh || !params.allowNetwork) {
+      return getUpdateReport({
+        refresh: params.refresh,
+        allowNetwork: params.allowNetwork,
+        configDir,
+        store: pluginStore,
+        daemonVersion: VERSION,
+        connectedExtensionVersions: connectedExtensionVersions(),
+        fetch: options.fetch,
+      });
+    }
+    if (!inflightUpdateRefresh) {
+      inflightUpdateRefresh = getUpdateReport({
+        refresh: true,
+        allowNetwork: true,
+        configDir,
+        store: pluginStore,
+        daemonVersion: VERSION,
+        connectedExtensionVersions: connectedExtensionVersions(),
+        fetch: options.fetch,
+      }).finally(() => {
+        inflightUpdateRefresh = null;
+      });
+    }
+    return inflightUpdateRefresh;
+  }
 
   function requireToken(req: http.IncomingMessage): boolean {
     return req.headers["x-pcbridge-token"] === options.token;
@@ -335,15 +365,7 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
           return;
         }
         const refresh = url.searchParams.get("refresh") === "1";
-        const report = await getUpdateReport({
-          refresh,
-          allowNetwork: true,
-          configDir,
-          store: pluginStore,
-          daemonVersion: VERSION,
-          connectedExtensionVersions: connectedExtensionVersions(),
-          fetch: options.fetch,
-        });
+        const report = await resolveUpdateReport({ refresh, allowNetwork: true });
         writeJson(res, 200, ok(report as unknown as JsonValue));
         return;
       }
@@ -412,15 +434,7 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
         const tabId = Number(url.searchParams.get("tabId"));
         const refresh = url.searchParams.get("refresh") === "1";
         const target = Number.isFinite(tabId) ? registry.getByTabId(tabId) : undefined;
-        const updates = await getUpdateReport({
-          refresh,
-          allowNetwork: refresh,
-          configDir,
-          store: pluginStore,
-          daemonVersion: VERSION,
-          connectedExtensionVersions: connectedExtensionVersions(),
-          fetch: options.fetch,
-        });
+        const updates = await resolveUpdateReport({ refresh, allowNetwork: refresh });
         writeJson(res, 200, ok({
           daemon: {
             version: VERSION,
@@ -543,7 +557,7 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
           return;
         }
         const refresh = url.searchParams.get("refresh") === "1";
-        writeJson(res, 200, ok(await plugins.list({ refresh }) as unknown as JsonValue));
+        writeJson(res, 200, ok(await plugins.list({ refresh, allowNetwork: refresh }) as unknown as JsonValue));
         return;
       }
 
@@ -781,15 +795,7 @@ export function createDaemonServer(options: DaemonOptions): DaemonServer {
 
   async function runBackgroundUpdateCheck(refresh: boolean): Promise<void> {
     try {
-      const report = await getUpdateReport({
-        refresh,
-        allowNetwork: true,
-        configDir,
-        store: pluginStore,
-        daemonVersion: VERSION,
-        connectedExtensionVersions: connectedExtensionVersions(),
-        fetch: options.fetch,
-      });
+      const report = await resolveUpdateReport({ refresh, allowNetwork: true });
       const hint = formatHumanUpdateHint(report);
       if (hint && hint !== lastLoggedUpdateHint) {
         lastLoggedUpdateHint = hint;
